@@ -125,8 +125,15 @@ Lifecycle, dispatched by the runtime:
 Modules never call each other directly — only via the blackboard. Core modules run as
 threads. Concrete:
 
-- **LLMModule** — calls the model (Anthropic Claude over HTTPS). Provider behind an
-  interface so others can be added. Proposes next actions / generates text.
+- **LLMModule** — calls the model over HTTPS through a **generic provider** behind a
+  `Provider` interface. A provider is configured, not hard-coded: `endpoint + api_key +
+  model`. Two wire-format implementations:
+  - **`openai_compat`** (default) — the `/v1/chat/completions` shape spoken by OpenAI,
+    OpenRouter, PPQ, Together/Groq/DeepSeek, and local servers (llama.cpp, ollama, vLLM,
+    LM Studio); Claude is also reachable via its OpenAI-compat endpoint.
+  - **`anthropic`** — the native `/v1/messages` shape (for Claude-specific features).
+  The key is read from a named **env var** (never inlined in the manifest) and is
+  **redacted** in the Eventlog. Proposes next actions / generates text.
 - **ToolRunner** — owns the tool registry; spawns tool subprocesses (native JSON-lines or
   via the MCP adapter), enforces **timeout + sandbox (rlimit)**, posts results. Tracks and
   reaps every child.
@@ -214,8 +221,11 @@ this format, and matches the "just a text config, Linux style" requirement.
 
 Session
 {
-  name  = hades-dev
-  model = claude-opus-4-8          # provider behind an interface; Anthropic default
+  name        = hades-dev
+  provider    = openai_compat      # openai_compat (generic, default) | anthropic (native)
+  endpoint    = https://api.ppq.ai/v1
+  model       = claude-opus-4-8     # any model the endpoint serves
+  api_key_env = HADES_API_KEY       # NAME of the env var holding the key — never inline the secret
 }
 
 Module = llm
@@ -262,8 +272,9 @@ tool runs as an isolated subprocess with timeout + sandbox.
 
 - **C++20**, **CMake**, built inside a **Nix dev shell** (`flake.nix`, pinned
   `nixos-26.05`; `nix develop`) — reproducible toolchain, no ad-hoc system packages.
-- **cpr** (C++ Requests, libcurl-backed) — HTTPS to the Anthropic API, including SSE token
-  streaming. Provider behind an interface so other backends can be added.
+- **cpr** (C++ Requests, libcurl-backed) — HTTPS to any configured LLM endpoint, including
+  SSE token streaming. Generic `Provider` interface: `openai_compat` (default) +
+  `anthropic` impls; endpoint/key/model from config, key from a named env var.
 - **nlohmann/json** — LLM message bodies + MCP JSON-RPC (not the manifest).
 - **Plain-text MOOS-style manifest**, parsed by hades itself — no TOML/JSON config dep.
 - **std::thread + condition_variable** for the blackboard and module threads (introduce an
@@ -288,7 +299,7 @@ hades/
   src/module/      llm_module.cpp tool_runner.cpp memory_module.cpp chat_module.cpp
   src/arbiter/     arbiter.cpp policy_v1.cpp policy_v2.cpp mode.cpp
   src/objective/   answer_user.cpp stay_on_budget.cpp verify_claim.cpp avoid_destructive.cpp
-  src/llm/         anthropic_provider.cpp
+  src/llm/         openai_compat_provider.cpp anthropic_provider.cpp   # impl the Provider iface
   src/tool/        native_tool.cpp mcp_adapter.cpp subprocess.cpp
   src/obs/         status.cpp scope.cpp poke.cpp
   manifests/       dev.hades
@@ -303,7 +314,9 @@ A working chat agent end-to-end that proves the architecture (pub/sub + module l
 pluggable arbiter + isolated tool + real Claude loop):
 
 1. **Blackboard + Eventlog + Module base + Launcher + manifest parse.**
-2. **LLMModule** → one real Anthropic Claude call.
+2. **LLMModule** → one real LLM call via the generic `openai_compat` provider (point
+   `endpoint`/`model`/`api_key_env` at any compatible backend — PPQ, OpenRouter, a local
+   server, or Claude's compat endpoint).
 3. **ToolRunner** with ONE native tool (e.g. read a file / run a bounded shell command) +
    an MCP-adapter stub.
 4. **Arbiter v1** — LLM decides; `avoid_destructive` (veto + confirmation gate) and
@@ -319,8 +332,10 @@ state-machine (MVP ships a stub phase).
 
 ## 9. Success criteria
 
-- A user can write a manifest, run the launcher, and **chat with a Claude-backed agent**
+- A user can write a manifest, run the launcher, and **chat with an LLM-backed agent**
   in the terminal that can call at least one tool.
+- **Switching provider / endpoint / model** (e.g. PPQ → OpenRouter → local) is a manifest
+  change only — no code change; the secret never leaves its env var.
 - A destructive/over-budget action is **vetoed or gated**, demonstrably, not merely
   down-weighted.
 - The full session is **replayable** from the Eventlog.
