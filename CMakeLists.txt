@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(hades LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+find_package(cpr REQUIRED)
+find_package(nlohmann_json REQUIRED)
+find_package(GTest REQUIRED)
+enable_testing()
+
+add_library(hades_core src/core/version.cpp)
+target_include_directories(hades_core PUBLIC include)
+target_link_libraries(hades_core PUBLIC nlohmann_json::nlohmann_json cpr::cpr)
+
+add_executable(hades_tests tests/test_smoke.cpp)
+target_link_libraries(hades_tests PRIVATE hades_core GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(hades_tests)
