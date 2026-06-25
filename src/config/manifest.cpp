@@ -58,6 +58,8 @@ Manifest parse_manifest(const std::string& text) {
       continue;
     }
 
+    if (line == "}") { m.warnings.push_back("unexpected '}' outside block"); continue; }
+
     // Bare opening brace on its own line attaches to most recent block
     if (line == "{") {
       if (!m.blocks.empty()) open = &m.blocks.back();
@@ -83,25 +85,26 @@ Manifest parse_manifest(const std::string& text) {
       m.blocks.push_back(b);
     }
   }
+  if (open) m.warnings.push_back("unclosed '{' block: " + open->section);
   return m;
 }
 
 std::optional<Block> Manifest::session() const {
-  for (auto& b : blocks)
+  for (const auto& b : blocks)
     if (lower(b.section) == "session") return b;
   return std::nullopt;
 }
 
 std::vector<Block> Manifest::of(const std::string& s) const {
   std::vector<Block> r;
-  for (auto& b : blocks)
+  for (const auto& b : blocks)
     if (lower(b.section) == lower(s)) r.push_back(b);
   return r;
 }
 
 bool set_double_on_string(const std::string& v, double& out) {
   try {
-    std::size_t i;
+    std::size_t i = 0;
     double d = std::stod(v, &i);
     if (i != v.size()) return false;
     out = d;
@@ -112,7 +115,7 @@ bool set_double_on_string(const std::string& v, double& out) {
 }
 
 bool set_pos_double_on_string(const std::string& v, double& out) {
-  double d;
+  double d = 0.0;
   if (!set_double_on_string(v, d) || d <= 0) return false;
   out = d;
   return true;
