@@ -9,3 +9,4 @@
 # editor / tooling
 /.cache/
 compile_commands.json
+/.superpowers/
