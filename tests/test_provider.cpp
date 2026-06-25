@@ -29,3 +29,18 @@ TEST(Provider, ParsesToolCall) {
   EXPECT_EQ((*r.tool_call)["name"],"fs_read");
   EXPECT_EQ((*r.tool_call)["arguments"]["path"],"/a");
 }
+TEST(Provider, HandlesMalformedResponse) {
+  OpenAICompatProvider p("https://x/v1","k","m",[](auto,auto,auto){ return HttpResponse{200,"not-json"}; });
+  auto r=p.complete({});
+  EXPECT_EQ(r.stop_reason,"parse_error"); EXPECT_EQ(r.text,""); EXPECT_FALSE(r.tool_call.has_value());
+}
+TEST(Provider, HandlesEmptyChoices) {
+  OpenAICompatProvider p("https://x/v1","k","m",[](auto,auto,auto){ return HttpResponse{200,R"({"choices":[]})"}; });
+  EXPECT_EQ(p.complete({}).stop_reason,"parse_error");
+}
+TEST(Provider, ToolCallMissingFunctionDoesNotThrow) {
+  std::string canned=R"({"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1"}]},"finish_reason":"tool_calls"}],"usage":{}})";
+  OpenAICompatProvider p("https://x/v1","k","m",[&](auto,auto,auto){ return HttpResponse{200,canned}; });
+  auto r=p.complete({});
+  EXPECT_FALSE(r.tool_call.has_value());
+}
