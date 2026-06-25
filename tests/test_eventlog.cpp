@@ -24,3 +24,11 @@ TEST(Eventlog, RedactsSecret) {
   EXPECT_EQ(body.find("sk-TOPSECRET"), std::string::npos);
   EXPECT_NE(body.find("***REDACTED***"), std::string::npos);
 }
+TEST(Eventlog, RedactsSecretInMemory) {
+  Eventlog ev("");                 // in-memory only
+  ev.add_redaction("sk-TOPSECRET");
+  ev.append({"LLM_REQUEST", nlohmann::json("auth: sk-TOPSECRET"), "llm", "", 0.1, 3});
+  std::string dumped = ev.entries().back().value.dump();
+  EXPECT_EQ(dumped.find("sk-TOPSECRET"), std::string::npos);
+  EXPECT_NE(dumped.find("***REDACTED***"), std::string::npos);
+}
