@@ -32,3 +32,12 @@ TEST(Eventlog, RedactsSecretInMemory) {
   EXPECT_EQ(dumped.find("sk-TOPSECRET"), std::string::npos);
   EXPECT_NE(dumped.find("***REDACTED***"), std::string::npos);
 }
+TEST(Eventlog, RedactsSecretInKeyAndSource) {
+  Eventlog ev("");
+  ev.add_redaction("sekret");
+  ev.append({"K_sekret", nlohmann::json("x"), "src_sekret", "aux_sekret", 0.1, 4});
+  auto& back = ev.entries().back();
+  EXPECT_EQ(back.key.find("sekret"), std::string::npos);
+  EXPECT_EQ(back.source.find("sekret"), std::string::npos);
+  EXPECT_EQ(back.aux.find("sekret"), std::string::npos);
+}

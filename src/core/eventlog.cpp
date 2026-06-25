@@ -16,16 +16,20 @@ static std::string redact(std::string s, const std::vector<std::string>& secrets
   return s;
 }
 void Eventlog::append(const Entry& e){
-  std::string raw = e.value.dump();
-  std::string red = redact(raw, secrets_);
+  const std::string raw = e.value.dump();
+  const std::string red = redact(raw, secrets_);
   Entry stored = e;
-  if (red != raw) stored.value = red;        // a secret was present -> store masked string
+  stored.key    = redact(e.key, secrets_);
+  stored.source = redact(e.source, secrets_);
+  stored.aux    = redact(e.aux, secrets_);
+  if (red != raw) stored.value = red;
+  const std::string line = std::to_string(e.ts) + "\t" + stored.key + "\t" +
+                           stored.source + "\t" + red + "\n";
   entries_.push_back(std::move(stored));
-  std::string line = std::to_string(e.ts) + "\t" + e.key + "\t" + e.source + "\t" + red + "\n";
   if(!path_.empty()){
     std::ofstream f(path_, std::ios::app);
     f << line;
-    if(!f) std::cerr << "[eventlog] write failed: " << path_ << "\n";   // surface write errors
+    if(!f) std::cerr << "[eventlog] write failed: " << path_ << "\n";
   }
 }
 }  // namespace hades
