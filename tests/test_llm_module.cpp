@@ -19,3 +19,26 @@ TEST(LLMModule, AnswersRequestAndTracksBudget) {
   EXPECT_EQ(text,"ok");
   EXPECT_DOUBLE_EQ(spent, 2.0);    // 1e6 prompt tokens * $2/Mtok
 }
+TEST(LLMModule, BudgetAccumulatesAcrossTurns) {
+  Blackboard bb;
+  LLMModule m(std::make_unique<StubProvider>());
+  Block cfg; cfg.kv["price_per_mtok"]="2.0";
+  m.on_start(cfg, bb); m.on_attach(bb);
+  double spent=-1;
+  bb.subscribe("BUDGET_SPENT_USD", [&](const Entry& e){ spent=e.value.get<double>(); });
+  bb.post("LLM_REQUEST", {{"messages",nlohmann::json::array()},{"tools",nlohmann::json::array()}}, "arb");
+  bb.pump();
+  bb.post("LLM_REQUEST", {{"messages",nlohmann::json::array()},{"tools",nlohmann::json::array()}}, "arb");
+  bb.pump();
+  EXPECT_DOUBLE_EQ(spent, 4.0);   // cumulative: $2 + $2
+}
+TEST(LLMModule, MalformedRequestDoesNotThrow) {
+  Blackboard bb;
+  LLMModule m(std::make_unique<StubProvider>());
+  Block cfg; m.on_start(cfg, bb); m.on_attach(bb);
+  bool got=false;
+  bb.subscribe("LLM_RESPONSE", [&](const Entry&){ got=true; });
+  bb.post("LLM_REQUEST", {{"tools", 42}}, "arb");   // no messages; tools wrong type
+  EXPECT_NO_THROW(bb.pump());
+  EXPECT_TRUE(got);   // still produced a response
+}

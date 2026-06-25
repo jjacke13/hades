@@ -24,17 +24,27 @@ void LLMModule::on_start(const Block& cfg, Blackboard&) {
 
 void LLMModule::on_attach(Blackboard& bb) {
   bb_ = &bb;
+  // SAFETY: `this`/bb_ are non-owning. LLMModule lifetime is managed by Launcher
+  // and outlives the Blackboard's subscription (modules are cleared before the
+  // Blackboard is destroyed).
   bb.subscribe("LLM_REQUEST", [this](const Entry& e) {
     LlmRequest req;
-    req.messages = e.value.value("messages", nlohmann::json::array())
-                     .get<std::vector<nlohmann::json>>();
-    req.model    = e.value.value("model", std::string{});
-    for (const auto& t : e.value.value("tools", nlohmann::json::array())) {
-      req.tools.push_back({
-          t.value("name", ""),
-          t.value("description", ""),
-          t.value("schema", nlohmann::json::object())
-      });
+    try {
+      req.messages = e.value.value("messages", nlohmann::json::array())
+                       .get<std::vector<nlohmann::json>>();
+      req.model    = e.value.value("model", std::string{});
+      auto tools_val = e.value.contains("tools") && e.value["tools"].is_array()
+                         ? e.value["tools"]
+                         : nlohmann::json::array();
+      for (const auto& t : tools_val) {
+        req.tools.push_back({
+            t.value("name", ""),
+            t.value("description", ""),
+            t.value("schema", nlohmann::json::object())
+        });
+      }
+    } catch (const nlohmann::json::exception&) {
+      // Malformed request: proceed with whatever was parsed so far
     }
     LlmResponse r = provider_->complete(req);
     nlohmann::json out{
@@ -45,7 +55,7 @@ void LLMModule::on_attach(Blackboard& bb) {
     };
     if (r.tool_call) out["tool_call"] = *r.tool_call;
     bb_->post("LLM_RESPONSE", out, "llm");
-    spent_ += (r.prompt_tokens + r.completion_tokens) / 1e6 * price_per_mtok_;
+    spent_ += (static_cast<double>(r.prompt_tokens) + r.completion_tokens) / 1e6 * price_per_mtok_;
     bb_->post("BUDGET_SPENT_USD", spent_, "llm");
   });
 }
