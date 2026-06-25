@@ -10,14 +10,16 @@ Launcher::Launcher(Blackboard& bb): p_(std::make_unique<Impl>(bb)) {}
 Launcher::~Launcher() = default;
 void Launcher::register_factory(const std::string& t, Factory f){ p_->factories[t]=std::move(f); }
 void Launcher::build(const Manifest& m){
-  for(const auto& blk : m.of("Module")){
-    auto it=p_->factories.find(blk.name);
-    if(it==p_->factories.end()) throw MalConfig("unknown module type: "+blk.name);
-    auto mod=it->second();
-    mod->on_start(blk, p_->bb);
-    mod->on_attach(p_->bb);
-    p_->mods.push_back(std::move(mod));
-  }
+  try {
+    for(const auto& blk : m.of("Module")){
+      auto it=p_->factories.find(blk.name);
+      if(it==p_->factories.end()) throw MalConfig("unknown module type: "+blk.name);
+      auto mod=it->second();
+      mod->on_start(blk, p_->bb);
+      mod->on_attach(p_->bb);
+      p_->mods.push_back(std::move(mod));
+    }
+  } catch(...) { p_->mods.clear(); throw; }
 }
 void Launcher::shutdown(){ p_->mods.clear(); }   // module dtors reap their subprocesses
 std::vector<Module*> Launcher::modules() const {
