@@ -1,0 +1,11 @@
+# build
+/build/
+/result
+/result-*
+
+# direnv
+/.direnv/
+
+# editor / tooling
+/.cache/
+compile_commands.json

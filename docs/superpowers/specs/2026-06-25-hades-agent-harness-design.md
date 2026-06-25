@@ -202,29 +202,44 @@ separate from runtime).
 
 ---
 
-## 4. Manifest (the `.moos` analog)
+## 4. Manifest (the `.moos` analog) — plain-text MOOS-style blocks
 
-```toml
-[session]
-name  = "hades-dev"
-model = "claude-opus-4-8"            # provider behind interface; Anthropic default
+The manifest is plain text in the MOOS `.moos` style — `#` comments and
+`Section = name { key = value }` blocks — parsed by hades itself, with **no TOML/JSON
+config dependency**. This keeps hades faithful to MOOS, where the mission file is exactly
+this format, and matches the "just a text config, Linux style" requirement.
 
-[[module]] type = "llm"
-[[module]] type = "tool_runner"
-[[module]] type = "chat"
+```ini
+# manifests/dev.hades — plain text, MOOS-style blocks
 
-[[tool]] name = "fs"    mcp    = "npx @modelcontextprotocol/server-filesystem /work"
-[[tool]] name = "shell" native = "./tools/shell-tool"
+Session
+{
+  name  = hades-dev
+  model = claude-opus-4-8          # provider behind an interface; Anthropic default
+}
 
-[arbiter] policy = "v1"             # swap to "v2" for the experiment
+Module = llm
+Module = tool_runner
+Module = chat
 
-[[objective]] type = "answer_user"       weight = 100
-[[objective]] type = "stay_on_budget"    weight = 60   hard_cap_usd = 1.0
-[[objective]] type = "avoid_destructive" veto   = true
+Tool = fs    { mcp    = npx @modelcontextprotocol/server-filesystem /work }
+Tool = shell { native = ./tools/shell-tool }
+
+Arbiter { policy = v1 }            # swap to v2 for the experiment
+
+Objective = answer_user        { weight = 100 }
+Objective = stay_on_budget     { weight = 60  hard_cap_usd = 1.0 }
+Objective = avoid_destructive  { veto = true }
 ```
 
-Validated against a schema at the boundary. Unknown keys → surfaced warning; fatal errors
-→ visible MALCONFIG, not a silent default.
+The parser reuses the MOOS `GetConfiguration` idiom: read a block's lines, split each on
+the first `=`, lower-case the key, and dispatch through `set*OnString`-style validators
+(bounds/type checks, one line each). An **unknown key → a surfaced warning** (not silent);
+a malformed/unrecognized block → **visible MALCONFIG**, never a silent default. Values that
+legitimately contain spaces (an MCP command line, a short prompt) keep their internal
+whitespace (the preserve-space variant). A long system prompt is given as a file reference
+(`system_prompt_file = …`) rather than inlined — the one place MOOS's flat `key = value`
+style is too thin, handled by indirection instead of a nested data format.
 
 ---
 
@@ -245,9 +260,12 @@ tool runs as an isolated subprocess with timeout + sandbox.
 
 ## 6. Technology
 
-- **C++20**, **CMake**.
-- **nlohmann/json** — messages, MCP JSON-RPC, manifest (via `toml++` or JSON).
-- **libcurl** — HTTPS to the Anthropic API (provider interface for others later).
+- **C++20**, **CMake**, built inside a **Nix dev shell** (`flake.nix`, pinned
+  `nixos-26.05`; `nix develop`) — reproducible toolchain, no ad-hoc system packages.
+- **cpr** (C++ Requests, libcurl-backed) — HTTPS to the Anthropic API, including SSE token
+  streaming. Provider behind an interface so other backends can be added.
+- **nlohmann/json** — LLM message bodies + MCP JSON-RPC (not the manifest).
+- **Plain-text MOOS-style manifest**, parsed by hades itself — no TOML/JSON config dep.
 - **std::thread + condition_variable** for the blackboard and module threads (introduce an
   async runtime such as asio only if a concrete need appears).
 - **posix_spawn + pipes + rlimit** for tool/sub-agent subprocesses.
@@ -261,17 +279,19 @@ Libraries-first to move fast; replace with custom code once the problem is under
 
 ```
 hades/
+  flake.nix  flake.lock  .gitignore
   CMakeLists.txt
   include/hades/   blackboard.h module.h objective.h arbiter.h launcher.h eventlog.h
-                   llm/provider.h tool/registry.h
+                   config.h llm/provider.h tool/registry.h
   src/core/        blackboard.cpp eventlog.cpp launcher.cpp
+  src/config/      manifest.cpp        # MOOS-style plain-text block parser
   src/module/      llm_module.cpp tool_runner.cpp memory_module.cpp chat_module.cpp
   src/arbiter/     arbiter.cpp policy_v1.cpp policy_v2.cpp mode.cpp
   src/objective/   answer_user.cpp stay_on_budget.cpp verify_claim.cpp avoid_destructive.cpp
   src/llm/         anthropic_provider.cpp
   src/tool/        native_tool.cpp mcp_adapter.cpp subprocess.cpp
   src/obs/         status.cpp scope.cpp poke.cpp
-  manifests/       dev.toml
+  manifests/       dev.hades
   tests/
 ```
 
