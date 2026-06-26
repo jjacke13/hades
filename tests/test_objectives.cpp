@@ -18,3 +18,27 @@ TEST(AvoidDestructive, ConfirmGatesDangerousShell) {
   auto v=o.veto(bb,bad);
   EXPECT_TRUE(v.vetoed); EXPECT_TRUE(v.needs_confirm);
 }
+TEST(StayOnBudget, VetoesExactlyAtCap) {
+  Blackboard bb; StayOnBudget o(1.0);
+  bb.post("BUDGET_SPENT_USD", 1.0, "llm"); bb.pump();
+  EXPECT_TRUE(o.veto(bb, {Action::Kind::Answer}).vetoed);
+}
+TEST(StayOnBudget, NoKeyDefaultsToZeroNoVeto) {
+  Blackboard bb; StayOnBudget o(1.0);
+  EXPECT_FALSE(o.veto(bb, {Action::Kind::Answer}).vetoed);
+}
+TEST(StayOnBudget, NonNumericBudgetDoesNotThrow) {
+  Blackboard bb; StayOnBudget o(1.0);
+  bb.post("BUDGET_SPENT_USD", "oops", "x"); bb.pump();
+  EXPECT_NO_THROW({ auto v=o.veto(bb,{Action::Kind::Answer}); EXPECT_FALSE(v.vetoed); });
+}
+TEST(AvoidDestructive, IgnoresNonToolCallWithDangerousText) {
+  Blackboard bb; AvoidDestructive o;
+  Action a{Action::Kind::Answer}; a.text="i will rm -rf / everything";
+  EXPECT_FALSE(o.veto(bb,a).vetoed);
+}
+TEST(AvoidDestructive, CatchesMkfs) {
+  Blackboard bb; AvoidDestructive o;
+  Action a{Action::Kind::ToolCall}; a.tool="shell"; a.args={{"cmd","mkfs.ext4 /dev/sda"}};
+  EXPECT_TRUE(o.veto(bb,a).vetoed);
+}
