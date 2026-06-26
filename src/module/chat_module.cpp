@@ -8,12 +8,13 @@ namespace hades {
 void ChatModule::on_attach(Blackboard& bb) {
   bb_ = &bb;
   bb.subscribe("ASSISTANT_MESSAGE", [this](const Entry& e) {
-    if (out_) (*out_) << "assistant> " << e.value.get<std::string>() << "\n";
+    if (out_ && e.value.is_string()) (*out_) << "assistant> " << e.value.get<std::string>() << "\n";
   });
   bb.subscribe("CONFIRM_REQUEST", [this](const Entry& e) {
+    if (!in_) return;  // no interactive stream -> cannot answer; skip
     if (out_) (*out_) << "confirm> " << e.value.value("prompt", "") << " [y/N]: ";
     std::string ans;
-    if (in_) std::getline(*in_, ans);
+    std::getline(*in_, ans);
     bool yes = (ans == "y" || ans == "Y" || ans == "yes");
     bb_->post("CONFIRM_RESPONSE",
               {{"id", e.value.value("id", "")}, {"approved", yes}},
@@ -24,6 +25,7 @@ void ChatModule::on_attach(Blackboard& bb) {
 void ChatModule::run_repl(std::istream& in, std::ostream& out) {
   in_  = &in;
   out_ = &out;
+  struct Guard { ChatModule* self; ~Guard(){ self->in_=nullptr; self->out_=nullptr; } } guard{this};
   std::string line;
   while (true) {
     out << "user> " << std::flush;

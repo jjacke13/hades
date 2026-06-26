@@ -5,6 +5,9 @@ namespace hades {
 class Blackboard;
 class ChatModule : public Module {
 public:
+  ChatModule() = default;
+  ChatModule(const ChatModule&) = delete;
+  ChatModule& operator=(const ChatModule&) = delete;
   std::string type() const override { return "chat"; }
   void on_attach(Blackboard& bb) override;
   void run_repl(std::istream& in, std::ostream& out);  // blocks until EOF or /quit
