@@ -33,7 +33,9 @@ private:
   std::vector<std::unique_ptr<Objective>> objectives_;
   std::vector<ToolSpec> tools_;
   std::string model_;
+  // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm
+  int steps_ = 0;               // tool-call steps within the current turn (reset on USER_MESSAGE)
 };
 }  // namespace hades

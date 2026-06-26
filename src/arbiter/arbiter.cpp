@@ -2,11 +2,16 @@
 #include "hades/blackboard.h"
 namespace hades {
 
+static constexpr int kMaxSteps = 25;
+
 void Arbiter::on_attach(Blackboard& bb) {
+  // SAFETY: bb_ is non-owning; Arbiter outlives the Blackboard subscription
+  // (Launcher clears modules before bb destruct).
   bb_ = &bb;
   bb.subscribe("USER_MESSAGE", [this](const Entry& e) {
     if (!e.value.is_string()) return;  // ignore malformed user input
     history_.push_back({{"role", "user"}, {"content", e.value}});
+    steps_ = 0;
     bb_->post("MODE", "EXECUTING", "arbiter");
     start_turn();
   });
@@ -89,14 +94,20 @@ void Arbiter::on_tool_result(const Entry& e) {
   const auto& v = e.value;
   if (!v.is_object()) return;  // malformed tool result: ignore
   const auto content = v.contains("content") ? v["content"] : nlohmann::json::object();
+  // History push BEFORE the guard so the assistant/tool message pair is always preserved.
   history_.push_back({{"role", "tool"},
                       {"tool_call_id", v.value("id", "")},
                       {"content", content.dump()}});
+  if (++steps_ > kMaxSteps) {
+    bb_->post("ASSISTANT_MESSAGE", "[stopped: reached max tool steps]", "arbiter");
+    return;
+  }
   start_turn();  // feed the result back to the LLM, continuing the turn
 }
 
 void Arbiter::on_confirm(const Entry& e) {
   if (pending_.is_null()) return;  // no action awaiting confirmation
+  if (pending_.value("tool_id","") != e.value.value("id","")) return;  // stale/mismatched confirm
   const auto& v = e.value;
   bool approved = v.is_object() && v.value("approved", false);
   if (approved) {
