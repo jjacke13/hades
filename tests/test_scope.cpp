@@ -1,0 +1,13 @@
+#include <gtest/gtest.h>
+#include "hades/obs/scope.h"   // std::vector<std::string> scope_filter(const std::vector<std::string>&, const std::string&)
+using namespace hades;
+TEST(Scope, FiltersByKeyPrefix) {
+  std::vector<std::string> lines={
+    "0.1\tUSER_MESSAGE\tchat\t\"hi\"",
+    "0.2\tTOOL_REQUEST\tarbiter\t{}",
+    "0.3\tTOOL_RESULT\ttool_runner\t{}"};
+  auto out=scope_filter(lines,"TOOL_");
+  ASSERT_EQ(out.size(),2u);
+  EXPECT_NE(out[0].find("TOOL_REQUEST"), std::string::npos);
+  EXPECT_EQ(scope_filter(lines,"").size(), 3u);
+}
