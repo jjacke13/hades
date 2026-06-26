@@ -1,0 +1,75 @@
+// hades: the agent binary entrypoint.
+//
+//   hades <manifest>
+//
+// Parses the manifest, resolves the LLM api key from the Session block's
+// api_key_env, REDACTS it in the eventlog BEFORE anything is logged, builds the
+// full agent graph onto a logged blackboard, and runs the chat REPL until EOF
+// or /quit. Bad config (missing arg / Session / api key) fails fast and visibly
+// (return code 2 for usage, 1 for config/runtime errors) rather than crashing.
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include "app/agent_wiring.h"
+#include "hades/blackboard.h"
+#include "hades/config.h"
+#include "hades/eventlog.h"
+#include "hades/launcher.h"  // MalConfig
+using namespace hades;
+
+namespace {
+
+std::string read_file(const std::string& path) {
+  std::ifstream f(path);
+  if (!f) throw MalConfig("cannot open manifest: " + path);
+  std::stringstream s;
+  s << f.rdbuf();
+  return s.str();
+}
+
+// Resolve the api key from the Session block so we can redact it in the eventlog
+// BEFORE any post() is logged. Mirrors the resolution build_agent() performs;
+// throwing here keeps the failure visible at the top level.
+std::string resolve_api_key(const Manifest& m) {
+  auto session = m.session();
+  if (!session) throw MalConfig("manifest has no Session block");
+  const std::string env =
+      session->kv.count("api_key_env") ? session->kv.at("api_key_env") : "HADES_API_KEY";
+  const char* key = std::getenv(env.c_str());
+  if (!key) throw MalConfig("LLM api key env var not set: " + env);
+  return key;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc < 2) {
+    std::cerr << "usage: hades <manifest>\n";
+    return 2;
+  }
+  try {
+    const Manifest manifest = parse_manifest(read_file(argv[1]));
+
+    // Resolve + redact the key BEFORE constructing the blackboard, so the secret
+    // can never appear unredacted in session.log.
+    const std::string key = resolve_api_key(manifest);
+    Eventlog eventlog("session.log");
+    eventlog.add_redaction(key);
+
+    Blackboard bb(&eventlog);
+    Agent agent = build_agent(bb, manifest);  // owns every module for the session
+
+    agent.chat->run_repl(std::cin, std::cout);
+    // Agent's RAII teardown (reverse-declared) releases the modules; tool
+    // subprocesses are short-lived and reaped synchronously per call.
+    return 0;
+  } catch (const MalConfig& e) {
+    std::cerr << "hades: configuration error: " << e.what() << "\n";
+    return 1;
+  } catch (const std::exception& e) {
+    std::cerr << "hades: error: " << e.what() << "\n";
+    return 1;
+  }
+}

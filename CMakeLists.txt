@@ -48,5 +48,15 @@ target_sources(hades_core PRIVATE src/obs/scope.cpp)
 add_executable(hades-scope src/obs/scope_main.cpp)
 target_link_libraries(hades-scope PRIVATE hades_core)
 target_sources(hades_tests PRIVATE tests/test_scope.cpp)
+
+# Task 13: end-to-end agent wiring, the `hades` binary, and the e2e test.
+# agent_wiring lives in hades_core so both the binary and the tests share the
+# same graph builder. The repo root is on the include path for "app/..." headers.
+target_sources(hades_core PRIVATE app/agent_wiring.cpp)
+target_include_directories(hades_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+add_executable(hades app/hades_main.cpp)
+target_link_libraries(hades PRIVATE hades_core)
+target_sources(hades_tests PRIVATE tests/test_e2e.cpp)
+add_dependencies(hades_tests hades-fs-read)
 include(GoogleTest)
 gtest_discover_tests(hades_tests)

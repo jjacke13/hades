@@ -1,0 +1,17 @@
+# hades MVP manifest
+Session
+{
+  provider       = openai_compat
+  endpoint       = https://api.ppq.ai/v1
+  model          = claude-opus-4-8
+  api_key_env    = HADES_API_KEY
+  price_per_mtok = 5.0
+}
+Module = llm
+Module = tool_runner
+Module = chat
+Module = arbiter
+Tool = fs { native = ./build/hades-fs-read }
+Arbiter { policy = v1 }
+Objective = stay_on_budget   { hard_cap_usd = 1.0 }
+Objective = avoid_destructive { veto = true }
