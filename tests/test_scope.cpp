@@ -9,5 +9,6 @@ TEST(Scope, FiltersByKeyPrefix) {
   auto out=scope_filter(lines,"TOOL_");
   ASSERT_EQ(out.size(),2u);
   EXPECT_NE(out[0].find("TOOL_REQUEST"), std::string::npos);
+  EXPECT_NE(out[1].find("TOOL_RESULT"), std::string::npos);
   EXPECT_EQ(scope_filter(lines,"").size(), 3u);
 }

@@ -10,6 +10,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   std::ifstream f(argv[1]);
+  if (!f) { std::cerr << "hades-scope: cannot open: " << argv[1] << "\n"; return 1; }
   std::vector<std::string> lines;
   std::string l;
   while (std::getline(f, l)) lines.push_back(l);
