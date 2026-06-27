@@ -11,6 +11,26 @@
 #include "hades/blackboard.h"
 #include "hades/objective/avoid_destructive.h"
 using namespace hades;
+TEST(Arbiter, PrependsSystemPromptToLlmRequest) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_system_prompt("you are hades");
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  ASSERT_FALSE(req.is_null());
+  const auto& msgs = req["messages"];
+  ASSERT_GE(msgs.size(), 2u);
+  EXPECT_EQ(msgs[0]["role"], "system");
+  EXPECT_EQ(msgs[0]["content"], "you are hades");
+  EXPECT_EQ(msgs[1]["role"], "user");
+}
+TEST(Arbiter, NoSystemMessageWhenPromptEmpty) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  EXPECT_EQ(req["messages"][0]["role"], "user");   // no leading system message
+}
 TEST(Arbiter, PlainAnswerReachesChat) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   std::string out; std::vector<nlohmann::json> reqs;

@@ -6,6 +6,9 @@ Session
   model          = claude-haiku-4.5
   api_key_env    = HADES_API_KEY
   price_per_mtok = 5.0
+  system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
+  # user_file        = prompts/user.md   # USER — your profile (optional)
+  # memory_file      = memory/facts.md   # MEMORY — standing facts (optional)
 }
 Module = llm
 Module = tool_runner

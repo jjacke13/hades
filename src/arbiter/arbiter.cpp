@@ -32,8 +32,15 @@ void Arbiter::start_turn() {
   nlohmann::json tools = nlohmann::json::array();
   for (auto& t : tools_)
     tools.push_back({{"name", t.name}, {"description", t.description}, {"schema", t.schema}});
+  // Prepend the assembled system prompt (if any) as messages[0]; the conversation
+  // history follows. system_prompt_ is NOT stored in history_ so it stays exactly one
+  // leading message and never duplicates across turns.
+  nlohmann::json messages = nlohmann::json::array();
+  if (!system_prompt_.empty())
+    messages.push_back({{"role", "system"}, {"content", system_prompt_}});
+  for (const auto& m : history_) messages.push_back(m);
   bb_->post("LLM_REQUEST",
-            {{"messages", history_}, {"tools", tools}, {"model", model_}}, "arbiter");
+            {{"messages", messages}, {"tools", tools}, {"model", model_}}, "arbiter");
 }
 
 void Arbiter::on_llm_response(const Entry& e) {

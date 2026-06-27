@@ -14,6 +14,7 @@
 #include "hades/llm/openai_compat_provider.h"
 #include "hades/objective/avoid_destructive.h"
 #include "hades/objective/stay_on_budget.h"
+#include "hades/prompt.h"  // assemble_system_prompt
 namespace hades {
 namespace {
 
@@ -60,6 +61,7 @@ Agent build_agent_impl(Blackboard& bb,
   //    and objectives, then attach it to the event loop.
   a.arbiter->set_tools(a.tools->registry().specs());
   a.arbiter->set_model(std::move(model));
+  a.arbiter->set_system_prompt(assemble_system_prompt(session));  // SOUL/USER/MEMORY (empty Block -> "")
   for (const auto& ob : objectives)
     if (auto o = make_objective(ob)) a.arbiter->add_objective(std::move(o));
   a.arbiter->on_attach(bb);

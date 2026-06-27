@@ -24,6 +24,8 @@ public:
   void add_objective(std::unique_ptr<Objective> o) { objectives_.push_back(std::move(o)); }
   void set_tools(std::vector<ToolSpec> t) { tools_ = std::move(t); }
   void set_model(std::string m) { model_ = std::move(m); }
+  // Assembled system prompt (SOUL/USER/MEMORY); prepended as messages[0] each turn.
+  void set_system_prompt(std::string s) { system_prompt_ = std::move(s); }
 
 private:
   void start_turn();
@@ -37,6 +39,7 @@ private:
   std::vector<std::unique_ptr<Objective>> objectives_;
   std::vector<ToolSpec> tools_;
   std::string model_;
+  std::string system_prompt_;   // prepended as a {role:system} message each turn (may be empty)
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm
