@@ -50,3 +50,9 @@ TEST(AvoidDestructive, CatchesMkfs) {
   Action a{Action::Kind::ToolCall}; a.tool="shell"; a.args={{"cmd","mkfs.ext4 /dev/sda"}};
   EXPECT_TRUE(o.veto(bb,a).vetoed);
 }
+TEST(AvoidDestructive, ConfirmGatesWriteFile) {
+  Blackboard bb; AvoidDestructive o;
+  Action a{Action::Kind::ToolCall}; a.tool="write_file"; a.args={{"path","/etc/x"},{"content","hi"}};
+  auto v = o.veto(bb, a);
+  EXPECT_TRUE(v.vetoed); EXPECT_TRUE(v.needs_confirm);   // overwrite = data loss -> confirm
+}

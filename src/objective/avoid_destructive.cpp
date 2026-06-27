@@ -10,6 +10,11 @@
 namespace hades {
 VetoResult AvoidDestructive::veto(const Blackboard&, const Action& a) const {
   if(a.kind!=Action::Kind::ToolCall) return {};
+  // File-mutating tools always need confirmation: an overwrite is data loss, and the
+  // args (path/content) won't match the shell-command patterns below.
+  static const std::array<const char*,1> mutating_tools={"write_file"};
+  for(const char* t: mutating_tools) if(a.tool==t)
+    return {true, std::string("writes/overwrites a file via tool: ")+a.tool, true};
   std::string hay=a.tool+" "+a.args.dump();
   static const std::array<const char*,9> pat={
     "rm -rf","rm -r","mkfs","dd if=",":(){","> /dev/","shutdown","reboot","chmod -R 000"};
