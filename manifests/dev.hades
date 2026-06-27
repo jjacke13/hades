@@ -14,7 +14,11 @@ Module = llm
 Module = tool_runner
 Module = chat
 Module = arbiter
-Tool = fs { native = ./build/hades-fs-read }
+Tool = fs         { native = ./build/hades-fs-read }
+Tool = shell      { native = ./build/hades-shell }
+Tool = write_file { native = ./build/hades-write-file }
+Tool = list_dir   { native = ./build/hades-list-dir }
+Tool = http_fetch { native = ./build/hades-http-fetch }
 Arbiter { policy = v1 }
 Objective = stay_on_budget   { hard_cap_usd = 1.0 }
 Objective = avoid_destructive { veto = true }

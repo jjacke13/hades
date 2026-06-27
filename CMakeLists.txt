@@ -33,12 +33,27 @@ target_sources(hades_core PRIVATE src/tool/subprocess.cpp)
 target_sources(hades_tests PRIVATE tests/test_subprocess.cpp)
 add_executable(hades-fs-read tools/fs_read_main.cpp)
 target_link_libraries(hades-fs-read PRIVATE nlohmann_json::nlohmann_json)
+add_executable(hades-write-file tools/write_file_main.cpp)
+target_link_libraries(hades-write-file PRIVATE nlohmann_json::nlohmann_json)
+add_executable(hades-list-dir tools/list_dir_main.cpp)
+target_link_libraries(hades-list-dir PRIVATE nlohmann_json::nlohmann_json)
+add_executable(hades-shell tools/shell_main.cpp)
+target_link_libraries(hades-shell PRIVATE hades_core)               # reuses run_subprocess
+add_executable(hades-http-fetch tools/http_fetch_main.cpp)
+target_link_libraries(hades-http-fetch PRIVATE cpr::cpr nlohmann_json::nlohmann_json)
 target_sources(hades_core PRIVATE src/tool/registry.cpp)
 target_sources(hades_core PRIVATE src/tool/mcp_adapter.cpp)
 target_sources(hades_core PRIVATE src/module/tool_runner.cpp)
 target_sources(hades_tests PRIVATE tests/test_toolrunner.cpp)
 target_compile_definitions(hades_tests PRIVATE FS_READ_BIN="$<TARGET_FILE:hades-fs-read>")
 add_dependencies(hades_tests hades-fs-read)
+target_sources(hades_tests PRIVATE tests/test_tools.cpp)
+target_compile_definitions(hades_tests PRIVATE
+  SHELL_BIN="$<TARGET_FILE:hades-shell>"
+  WRITE_FILE_BIN="$<TARGET_FILE:hades-write-file>"
+  LIST_DIR_BIN="$<TARGET_FILE:hades-list-dir>"
+  HTTP_FETCH_BIN="$<TARGET_FILE:hades-http-fetch>")
+add_dependencies(hades_tests hades-shell hades-write-file hades-list-dir hades-http-fetch)
 target_sources(hades_core PRIVATE src/objective/stay_on_budget.cpp)
 target_sources(hades_core PRIVATE src/objective/avoid_destructive.cpp)
 target_sources(hades_tests PRIVATE tests/test_objectives.cpp)
