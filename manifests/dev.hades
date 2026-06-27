@@ -3,7 +3,7 @@ Session
 {
   provider       = openai_compat
   endpoint       = https://api.ppq.ai/v1
-  model          = claude-opus-4-8
+  model          = claude-haiku-4.5
   api_key_env    = HADES_API_KEY
   price_per_mtok = 5.0
 }
