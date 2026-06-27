@@ -1,3 +1,10 @@
+// tests/test_blackboard.cpp — unit tests for Blackboard pub/sub and pump dispatch
+//
+// Covers post/pump delivery ordering (FIFO event queue, latest-value store),
+// prefix-wildcard ("TOOL_*") and catch-all ("*") subscription matching, and
+// the case where a handler re-posts during pump() — the foundation all Module
+// communication relies on.
+
 #include <gtest/gtest.h>
 #include "hades/blackboard.h"
 using namespace hades;

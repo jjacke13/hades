@@ -1,3 +1,10 @@
+// include/hades/config.h — MOOS-style block manifest parser and types
+//
+// Defines Block (section/name/kv) and Manifest (ordered Block list + warnings).
+// parse_manifest() is pure and never throws; unknown syntax emits warnings.
+// The Launcher consumes a Manifest to instantiate Module and Objective blocks;
+// Arbiter and LLMModule read their config from a Block's kv map.
+
 #pragma once
 #include <map>
 #include <optional>

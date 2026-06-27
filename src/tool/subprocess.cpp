@@ -1,3 +1,10 @@
+// src/tool/subprocess.cpp — fork/exec isolation primitive with timeout + memory cap
+//
+// Implements run_subprocess(): forks the child, wires stdin/stdout/stderr through
+// non-blocking pipes driven by poll(), enforces a wall-clock deadline (SIGKILL on
+// expiry), and optionally caps virtual memory via RLIMIT_AS. Used by ToolRunner
+// (native tool calls), ToolRegistry::ensure_warm (describe probes), and mcp_adapter.
+
 #include "hades/tool/subprocess.h"
 #include <cerrno>
 #include <csignal>

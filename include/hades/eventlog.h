@@ -1,3 +1,10 @@
+// include/hades/eventlog.h — append-only, redacted session transcript
+//
+// Eventlog records every Entry the Blackboard posts as a TSV line (ts, key,
+// source, compact-JSON value) to a file (the .alog analog) and an in-memory
+// vector. Backs hades-scope replay and the scope CLI. Registered secret
+// substrings are masked to "***REDACTED***" before any write or storage.
+
 #pragma once
 #include <string>
 #include <vector>

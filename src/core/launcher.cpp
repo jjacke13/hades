@@ -1,3 +1,10 @@
+// src/core/launcher.cpp — Launcher module-graph construction implementation
+//
+// Implements Launcher::build(): iterates Manifest Module blocks, resolves each by name
+// in the registered factory map, instantiates the Module, and calls on_start(blk, bb)
+// then on_attach(bb) to wire it onto the Blackboard. Throws MalConfig for unknown
+// module types and rolls back (clears mods) on any error, matching pAntler semantics.
+
 #include "hades/launcher.h"
 #include "hades/blackboard.h"
 namespace hades {

@@ -1,3 +1,9 @@
+// tests/test_manifest.cpp — unit tests for parse_manifest and Block accessor helpers
+//
+// Exercises Section/inline block parsing, case-insensitive of() lookup, the
+// set_double/set_bool validator helpers, and warning collection for malformed
+// lines or stray braces — the config layer consumed by Launcher and all modules.
+
 #include <gtest/gtest.h>
 #include "hades/config.h"
 using namespace hades;

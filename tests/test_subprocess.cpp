@@ -1,3 +1,10 @@
+// tests/test_subprocess.cpp — unit tests for run_subprocess isolation primitive
+//
+// Covers normal stdin->stdout pass-through via cat, non-zero exit codes,
+// wall-clock timeout with SIGKILL (timed_out flag), and a 1 MB large-stdin
+// round-trip to confirm the interleaved I/O loop avoids deadlock — the
+// foundation ToolRunner uses to sandbox every native tool call.
+
 #include <gtest/gtest.h>
 #include "hades/tool/subprocess.h"
 using namespace hades;

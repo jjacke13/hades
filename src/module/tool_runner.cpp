@@ -1,3 +1,10 @@
+// src/module/tool_runner.cpp — TOOL_REQUEST executor via subprocess/MCP
+//
+// Subscribes to TOOL_REQUEST on the Blackboard; dispatches native tools as
+// isolated subprocesses (run_subprocess, one-JSON-line protocol) and MCP
+// servers via mcp_adapter. Posts TOOL_RESULT with ok/content back to the
+// Blackboard; ToolRegistry is warmed once in on_start() to cache tool specs.
+
 #include "hades/module/tool_runner.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"

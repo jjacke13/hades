@@ -1,3 +1,11 @@
+// include/hades/arbiter.h — the "helm"; drives the per-turn agent decision loop
+//
+// Arbiter subscribes USER_MESSAGE -> posts LLM_REQUEST; on LLM_RESPONSE it
+// constructs an Action, runs it through each Objective's veto(), then either
+// posts TOOL_REQUEST / ASSISTANT_MESSAGE or a CONFIRM_REQUEST (soft veto).
+// Tool results loop back via TOOL_RESULT; the turn ends when the LLM emits an
+// Answer or the max-steps guard fires. Event-driven via the Blackboard; no threads.
+
 #pragma once
 #include <memory>
 #include <string>
@@ -9,10 +17,6 @@
 #include "hades/llm/provider.h"   // ToolSpec
 namespace hades {
 class Blackboard;
-// Arbiter v1 ("the helm"): the per-turn agent loop. On USER_MESSAGE it asks
-// the LLM (LLM_REQUEST); on LLM_RESPONSE it builds an Action and gates it
-// through the active objectives (veto / confirm) before dispatching a tool
-// call or surfacing an answer. Event-driven via the blackboard; no threads.
 class Arbiter : public Module {
 public:
   std::string type() const override { return "arbiter"; }

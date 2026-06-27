@@ -1,3 +1,10 @@
+// src/core/eventlog.cpp — Eventlog append and secret-redaction implementation
+//
+// Implements Eventlog::append(): redacts all registered secrets from key, source, aux,
+// and value before storing to the in-memory entries_ vector and writing a tab-separated
+// line to the .alog file on disk. Called by Blackboard::post() on every published Entry;
+// the resulting file backs replay and the hades-scope CLI.
+
 #include "hades/eventlog.h"
 #include <fstream>
 #include <iostream>

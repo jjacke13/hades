@@ -1,3 +1,11 @@
+// include/hades/launcher.h — pAntler analog; builds modules from the Manifest
+//
+// Launcher holds a type->Factory registry; build() walks the Manifest's Module
+// blocks, calls the matching Factory, then drives on_start() and on_attach()
+// for each Module on the shared Blackboard. Throws MalConfig on an unknown
+// block type or missing required key. agent_wiring registers all concrete
+// factories (LLMModule, ToolRunner, ChatModule, Arbiter) before calling build().
+
 #pragma once
 #include <functional>
 #include <map>

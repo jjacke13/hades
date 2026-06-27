@@ -1,3 +1,10 @@
+// src/core/blackboard.cpp — Blackboard pub/sub store implementation
+//
+// Implements the FIFO event queue, latest-value map, and pattern-matched subscription
+// dispatch (exact / PREFIX* / *). post() appends each Entry to the Eventlog and
+// enqueues it; pump() drains the queue and fires matching handlers with optional
+// min-interval rate-limiting. Pimpl (Impl) holds the Eventlog pointer and sub list.
+
 #include "hades/blackboard.h"
 #include "hades/eventlog.h"
 #include <chrono>

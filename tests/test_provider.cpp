@@ -1,3 +1,10 @@
+// tests/test_provider.cpp — unit tests for OpenAICompatProvider request/response handling
+//
+// Uses an injected stub HttpFn (no real HTTP) to verify build_body() emits the
+// correct model/messages/tools JSON and that complete() correctly parses text
+// responses, tool_calls, usage tokens, malformed JSON, and missing-function
+// edge cases — the Provider contract LLMModule depends on.
+
 #include <gtest/gtest.h>
 #include "hades/llm/openai_compat_provider.h"
 using namespace hades;

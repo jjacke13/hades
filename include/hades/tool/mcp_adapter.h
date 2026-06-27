@@ -1,3 +1,9 @@
+// include/hades/tool/mcp_adapter.h — MCP stdio client for ToolRunner
+//
+// mcp_call() spawns an MCP server by command, performs the JSON-RPC
+// initialize handshake, issues a single tools/call, and returns its result.
+// ToolRunner delegates here for ToolEntry entries with kind == "mcp".
+
 #pragma once
 #include <string>
 #include <nlohmann/json.hpp>

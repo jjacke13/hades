@@ -1,3 +1,9 @@
+// src/llm/http_cpr.cpp — cpr-backed HttpClient factory
+//
+// Provides cpr_http(), which wraps libcpr's blocking POST into the HttpClient
+// std::function signature declared in llm/http.h. Injected into
+// OpenAICompatProvider at construction; replaced with a stub in unit tests.
+
 #include "hades/llm/http.h"
 #include <cpr/cpr.h>
 namespace hades {

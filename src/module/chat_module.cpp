@@ -1,3 +1,10 @@
+// src/module/chat_module.cpp — stdin/stdout REPL; USER_MESSAGE / CONFIRM I/O
+//
+// Implements ChatModule: run_repl() drives a line-by-line user prompt loop,
+// posting USER_MESSAGE and calling Blackboard::pump() each turn. Subscribes
+// to ASSISTANT_MESSAGE (prints to stdout) and CONFIRM_REQUEST (reads y/N from
+// stdin, posts CONFIRM_RESPONSE) so the Arbiter's gating loop reaches the user.
+
 #include "hades/module/chat_module.h"
 #include "hades/blackboard.h"
 #include <istream>

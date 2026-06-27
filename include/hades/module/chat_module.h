@@ -1,3 +1,9 @@
+// include/hades/module/chat_module.h — stdin/stdout REPL Module
+//
+// ChatModule attaches to the Blackboard and drives the human-facing loop:
+// posts USER_MESSAGE from stdin, prints ASSISTANT_MESSAGE to stdout, and
+// answers CONFIRM_REQUEST y/n. run_repl() blocks until EOF or /quit.
+
 #pragma once
 #include <iosfwd>
 #include "hades/module.h"

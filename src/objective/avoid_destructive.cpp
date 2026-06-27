@@ -1,3 +1,10 @@
+// src/objective/avoid_destructive.cpp — confirm-veto Objective: destructive tool patterns
+//
+// Implements AvoidDestructive::veto(): pattern-matches Action.tool+args against a
+// set of destructive shell idioms (rm -rf, mkfs, dd, …) and returns a confirm-veto
+// so the Arbiter routes a CONFIRM_REQUEST to ChatModule before proceeding.
+// Best-effort heuristic; not an adversarial security boundary.
+
 #include "hades/objective/avoid_destructive.h"
 #include <array>
 namespace hades {

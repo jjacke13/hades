@@ -1,3 +1,9 @@
+// include/hades/entry.h — the atomic message type on the Blackboard
+//
+// Defines Entry: every post() on the Blackboard produces one Entry (key, JSON
+// value, source module, aux provenance, timestamp, monotonic seq). The Eventlog
+// appends each Entry to disk; Handlers receive a const Entry& on delivery.
+
 #pragma once
 #include <cstdint>
 #include <functional>

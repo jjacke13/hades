@@ -1,3 +1,9 @@
+// tests/test_launcher.cpp — unit tests for Launcher factory registration and build
+//
+// Verifies that Launcher builds Module instances from a Manifest via registered
+// factories (calling on_start), throws MalConfig for unknown types, and clears
+// all modules on shutdown — the pAntler-analog wiring exercised in isolation.
+
 #include <gtest/gtest.h>
 #include "hades/launcher.h"
 #include "hades/blackboard.h"

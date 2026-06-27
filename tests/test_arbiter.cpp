@@ -1,3 +1,11 @@
+// tests/test_arbiter.cpp — unit tests for Arbiter decision loop on the Blackboard
+//
+// Covers the full per-turn flow: USER_MESSAGE -> LLM_REQUEST; LLM_RESPONSE ->
+// ASSISTANT_MESSAGE (plain answer) or TOOL_REQUEST (tool-call round-trip);
+// AvoidDestructive confirm-gating via CONFIRM_REQUEST/RESPONSE; history pairing
+// (assistant tool_calls + matching tool role entries) for the next LLM call; and
+// the max-steps guard that terminates runaway tool loops.
+
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"

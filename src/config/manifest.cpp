@@ -1,3 +1,10 @@
+// src/config/manifest.cpp — MOOS-style block manifest parser implementation
+//
+// Implements parse_manifest(): tokenizes plain-text "Section = name { key = value }"
+// input into a Manifest of Block structs; collects warnings, never throws. Provides
+// Manifest::session() and Manifest::of() accessors plus string-to-typed-value helpers
+// (set_double_on_string, set_bool_on_string) used by Launcher and module on_start() handlers.
+
 #include "hades/config.h"
 #include <algorithm>
 #include <cctype>

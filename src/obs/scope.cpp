@@ -1,3 +1,9 @@
+// src/obs/scope.cpp — Eventlog line filter by key prefix
+//
+// Implements scope_filter(): given raw tab-separated Eventlog lines and a key prefix,
+// returns only the lines whose key field starts with that prefix. Called by
+// scope_main.cpp to back the hades-scope CLI's filter/replay behaviour (uXMS analog).
+
 #include "hades/obs/scope.h"
 #include <sstream>
 

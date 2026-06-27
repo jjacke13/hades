@@ -1,3 +1,11 @@
+// tests/test_e2e.cpp — end-to-end wiring test: USER_MESSAGE through full module graph
+//
+// Uses a ScriptProvider stub (first complete() returns a fs_read tool_call,
+// second returns a final text answer) wired via build_agent() onto a single
+// Blackboard with a live ToolRunner subprocess; asserts TOOL_RESULT contains
+// the file payload and ASSISTANT_MESSAGE carries the final answer — exercises
+// Arbiter, LLMModule, ToolRunner, and the native fs_read binary together.
+
 #include <gtest/gtest.h>
 #include <fstream>
 #include "app/agent_wiring.h"

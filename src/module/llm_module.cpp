@@ -1,3 +1,12 @@
+// src/module/llm_module.cpp — Blackboard bridge from LLM_REQUEST to Provider
+//
+// Subscribes to LLM_REQUEST on the Blackboard; on each entry unmarshals the
+// messages/tools JSON, calls Provider::complete() (OpenAICompatProvider by
+// default, injected in tests), and posts LLM_RESPONSE plus a cumulative
+// BUDGET_SPENT_USD back to the Blackboard. Reads endpoint/model/api_key_env
+// from the Manifest block in on_start(); throws MalConfig if the API key env
+// var is absent.
+
 #include "hades/module/llm_module.h"
 #include "hades/blackboard.h"
 #include "hades/launcher.h"   // MalConfig

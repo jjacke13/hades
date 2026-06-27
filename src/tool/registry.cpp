@@ -1,3 +1,11 @@
+// src/tool/registry.cpp — ToolRegistry: manifest-loaded tool table + lazy warm
+//
+// Implements add_from_block() (native / mcp entries from the Manifest), find(),
+// find_by_tool_name(), and ensure_warm(): on first warm, each native tool is probed
+// via run_subprocess with {"call":"describe"} to collect ToolSpec schemas that
+// build_agent() hands to the Arbiter so the LLM sees tool definitions. MCP tool
+// discovery is deferred (MVP); entries route by block name.
+
 #include "hades/tool/registry.h"
 #include "hades/tool/subprocess.h"
 #include <sstream>

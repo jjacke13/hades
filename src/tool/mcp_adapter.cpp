@@ -1,3 +1,10 @@
+// src/tool/mcp_adapter.cpp — MCP server bridge over JSON-RPC / subprocess stdio
+//
+// Implements mcp_call(): launches the MCP server command via run_subprocess, feeds
+// JSON-RPC initialize + tools/call on stdin as newline-delimited JSON, then scans
+// stdout for the id==2 reply. Called by ToolRunner for "mcp" kind entries resolved
+// from ToolRegistry. Every JSON access is guarded; a malformed server line never throws.
+
 #include "hades/tool/mcp_adapter.h"
 #include "hades/tool/subprocess.h"
 #include <sstream>

@@ -1,3 +1,9 @@
+// include/hades/llm/http.h — injected HTTP transport for LLM calls
+//
+// Defines HttpResponse and HttpClient (a std::function type alias) — the
+// transport interface injected into OpenAICompatProvider. cpr_http() is the
+// default cpr-backed implementation; tests may substitute a stub.
+
 #pragma once
 #include <functional>
 #include <string>

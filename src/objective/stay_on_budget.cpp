@@ -1,3 +1,9 @@
+// src/objective/stay_on_budget.cpp — hard-veto Objective: USD budget cap
+//
+// Implements StayOnBudget::veto(): reads BUDGET_SPENT_USD from the Blackboard
+// and returns a non-confirm hard veto once cumulative spend reaches the cap.
+// Consulted by Arbiter before every Action; posts nothing to the Blackboard itself.
+
 #include "hades/objective/stay_on_budget.h"
 #include "hades/blackboard.h"
 namespace hades {

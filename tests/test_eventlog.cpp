@@ -1,3 +1,9 @@
+// tests/test_eventlog.cpp — unit tests for Eventlog append and secret redaction
+//
+// Verifies that Eventlog writes TSV lines to disk, keeps an in-memory Entry
+// vector, and scrubs registered secrets from key, value, source, and aux
+// fields before they reach either the file or the in-memory entries() view.
+
 #include <gtest/gtest.h>
 #include <fstream>
 #include <sstream>

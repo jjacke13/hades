@@ -1,3 +1,10 @@
+// include/hades/module/tool_runner.h — Module: TOOL_REQUEST -> TOOL_RESULT
+//
+// ToolRunner subscribes to TOOL_REQUEST on the Blackboard, dispatches to a
+// native subprocess or MCP server via ToolRegistry, and posts TOOL_RESULT.
+// on_start() warms the registry (one `describe` per native tool); the Arbiter
+// reads specs() from the embedded ToolRegistry to build LLM_REQUEST payloads.
+
 #pragma once
 #include "hades/module.h"
 #include "hades/tool/registry.h"

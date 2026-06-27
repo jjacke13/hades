@@ -1,3 +1,11 @@
+// include/hades/objective.h — "behavior" veto interface consulted by the Arbiter
+//
+// Defines Action (Answer / ToolCall / Wait with tool name, args, id) and
+// Objective — the base class for policy guards. The Arbiter calls veto() on
+// each active Objective before dispatching an Action; a veto halts the action
+// (hard) or routes it through CONFIRM_REQUEST (needs_confirm). Concrete
+// subclasses: StayOnBudget (USD cap) and AvoidDestructive (destructive tools).
+
 #pragma once
 #include <string>
 #include <nlohmann/json.hpp>

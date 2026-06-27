@@ -1,3 +1,11 @@
+// src/llm/openai_compat_provider.cpp — OpenAI-compatible LLM provider impl
+//
+// Implements OpenAICompatProvider::complete(): serialises an LlmRequest into a
+// /chat/completions JSON body (including tool definitions), dispatches it via
+// the injected HttpClient (http_cpr.cpp in production), and parses the
+// response into an LlmResponse with text, tool_call, stop_reason, and usage
+// tokens. Called synchronously by LLMModule on each LLM_REQUEST.
+
 #include "hades/llm/openai_compat_provider.h"
 namespace hades {
 OpenAICompatProvider::OpenAICompatProvider(std::string e, std::string k, std::string m, HttpClient h)

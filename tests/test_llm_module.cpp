@@ -1,3 +1,10 @@
+// tests/test_llm_module.cpp — unit tests for LLMModule Blackboard integration
+//
+// Uses a StubProvider to verify that LLMModule subscribes LLM_REQUEST, posts
+// LLM_RESPONSE with the provider text, accumulates BUDGET_SPENT_USD across
+// turns at a configurable price_per_mtok, and survives a malformed request
+// without throwing — all interactions are through the Blackboard pump().
+
 #include <gtest/gtest.h>
 #include "hades/module/llm_module.h"
 #include "hades/blackboard.h"

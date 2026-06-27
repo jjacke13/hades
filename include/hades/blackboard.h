@@ -1,3 +1,11 @@
+// include/hades/blackboard.h — central pub/sub store; sole inter-module bus
+//
+// Maintains a latest-value key->Entry map and a FIFO event queue drained by
+// pump(). Modules subscribe with exact, "PREFIX*", or "*" patterns and receive
+// Handler callbacks on pump(); they post via post() — never calling each other
+// directly. Optionally forwards every Entry to an Eventlog for transcript and
+// replay.
+
 #pragma once
 #include <map>
 #include <memory>

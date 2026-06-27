@@ -1,3 +1,11 @@
+// src/arbiter/arbiter.cpp — decision core: USER_MESSAGE -> LLM -> act -> gate
+//
+// Subscribes to USER_MESSAGE, LLM_RESPONSE, TOOL_RESULT, and CONFIRM_RESPONSE
+// on the Blackboard. Per turn: posts LLM_REQUEST with conversation history and
+// tool specs; on LLM_RESPONSE builds an Action, runs it through registered
+// Objectives (veto / confirm gate), then drives TOOL_REQUEST or
+// ASSISTANT_MESSAGE; loops tool results back via start_turn() up to kMaxSteps.
+
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
 namespace hades {

@@ -1,3 +1,11 @@
+// app/agent_wiring.cpp — build_agent implementation: wire modules onto the Blackboard
+//
+// Instantiates LLMModule, ToolRunner, Arbiter, and ChatModule in dependency order:
+// ToolRunner is started first so ToolRegistry::ensure_warm() runs native describe
+// probes exactly once; Arbiter then receives the resulting ToolSpecs and any Objective
+// instances (StayOnBudget, AvoidDestructive) before attaching to the Blackboard.
+// The Manifest overload resolves the api key and builds an OpenAICompatProvider via cpr_http().
+
 #include "app/agent_wiring.h"
 #include <cstdlib>
 #include "hades/blackboard.h"

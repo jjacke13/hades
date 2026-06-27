@@ -10,3 +10,6 @@
 /.cache/
 compile_commands.json
 /.superpowers/
+
+# runtime
+/session.log

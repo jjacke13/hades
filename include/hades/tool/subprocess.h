@@ -1,3 +1,9 @@
+// include/hades/tool/subprocess.h — fork/exec isolation primitive
+//
+// Declares run_subprocess(): fork/exec with interleaved I/O, a wall-clock
+// timeout enforced via SIGKILL, and optional RLIMIT_AS memory cap. ToolRunner
+// calls this for every native-tool TOOL_REQUEST to isolate execution.
+
 #pragma once
 #include <cstddef>
 #include <string>

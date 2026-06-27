@@ -1,3 +1,10 @@
+// tests/test_chat.cpp — unit tests for ChatModule stdin/stdout REPL on the Blackboard
+//
+// Verifies that run_repl() posts USER_MESSAGE for each input line, prints
+// ASSISTANT_MESSAGE replies to the output stream, and correctly handles
+// CONFIRM_REQUEST by prompting inline and posting a CONFIRM_RESPONSE — the
+// human-facing I/O layer that drives the Arbiter and receives its answers.
+
 #include <gtest/gtest.h>
 #include <sstream>
 #include "hades/module/chat_module.h"

@@ -1,3 +1,10 @@
+// tests/test_toolrunner.cpp — unit tests for ToolRunner and ToolRegistry on the Blackboard
+//
+// Verifies that ToolRunner subscribes TOOL_REQUEST, dispatches to the native
+// fs_read subprocess by reported tool name (via ToolRegistry::find_by_tool_name),
+// and posts TOOL_RESULT; also covers unknown-tool and missing-file error paths
+// that Arbiter must handle when deciding next actions.
+
 #include <gtest/gtest.h>
 #include <fstream>
 #include "hades/module/tool_runner.h"

@@ -1,3 +1,10 @@
+// include/hades/module.h — abstract base for all Blackboard participants
+//
+// Module is the lifecycle interface the Launcher calls: on_start() receives the
+// config Block and a Blackboard reference for setup; on_attach() is called after
+// all modules are constructed so subscriptions see sibling posts. Concrete
+// modules — LLMModule, ToolRunner, ChatModule, Arbiter — implement this base.
+
 #pragma once
 #include <string>
 #include "hades/config.h"

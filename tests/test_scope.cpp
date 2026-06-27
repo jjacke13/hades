@@ -1,3 +1,10 @@
+// tests/test_scope.cpp — unit tests for scope_filter TSV line filtering
+//
+// Verifies that scope_filter retains only TSV lines whose key column matches
+// a given prefix (e.g. "TOOL_" keeps TOOL_REQUEST and TOOL_RESULT) and that
+// an empty prefix passes all lines — the pure filter function backing the
+// hades-scope CLI replay of the Eventlog.
+
 #include <gtest/gtest.h>
 #include "hades/obs/scope.h"   // std::vector<std::string> scope_filter(const std::vector<std::string>&, const std::string&)
 using namespace hades;

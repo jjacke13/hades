@@ -1,3 +1,9 @@
+// include/hades/module/llm_module.h — Module: LLM_REQUEST -> LLM_RESPONSE
+//
+// LLMModule subscribes to LLM_REQUEST on the Blackboard, calls
+// Provider::complete(), and posts LLM_RESPONSE plus a cumulative
+// BUDGET_SPENT_USD entry; the Provider is injected for testability.
+
 #pragma once
 #include <memory>
 #include "hades/module.h"

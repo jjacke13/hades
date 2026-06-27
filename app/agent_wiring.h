@@ -1,3 +1,10 @@
+// app/agent_wiring.h — build_agent: assemble the full hades module graph
+//
+// Declares the Agent holder struct (unique_ptrs to LLMModule, ToolRunner, Arbiter,
+// ChatModule — alive for the full session) and two build_agent() overloads: one for
+// tests (injected Provider + explicit Block lists) and one for the real binary (reads
+// the Manifest's Session block and constructs an OpenAICompatProvider).
+
 #pragma once
 #include <memory>
 #include <string>

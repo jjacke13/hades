@@ -1,3 +1,9 @@
+// include/hades/llm/provider.h — abstract LLM Provider + wire types
+//
+// Defines ToolSpec, LlmRequest, LlmResponse, and the abstract Provider base.
+// LLMModule holds a Provider and calls complete() to satisfy LLM_REQUEST
+// events; OpenAICompatProvider is the concrete production implementation.
+
 #pragma once
 #include <optional>
 #include <string>

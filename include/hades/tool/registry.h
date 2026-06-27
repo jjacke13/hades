@@ -1,3 +1,10 @@
+// include/hades/tool/registry.h — registry of configured tools + spec cache
+//
+// ToolRegistry parses Tool blocks from the Manifest (add_from_block()), runs
+// each native tool's `describe` subprocess exactly once (warm()), and caches
+// ToolSpecs for the Arbiter. ToolRunner owns the registry; the Arbiter calls
+// specs() to attach tool definitions to LLM_REQUEST messages.
+
 #pragma once
 #include <map>
 #include <string>

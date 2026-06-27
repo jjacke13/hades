@@ -1,12 +1,10 @@
-// hades: the agent binary entrypoint.
+// app/hades_main.cpp — hades binary entrypoint: parse manifest, build agent, run REPL
 //
-//   hades <manifest>
-//
-// Parses the manifest, resolves the LLM api key from the Session block's
-// api_key_env, REDACTS it in the eventlog BEFORE anything is logged, builds the
-// full agent graph onto a logged blackboard, and runs the chat REPL until EOF
-// or /quit. Bad config (missing arg / Session / api key) fails fast and visibly
-// (return code 2 for usage, 1 for config/runtime errors) rather than crashing.
+// Parses the Manifest from argv[1], resolves and redacts the LLM api key in the
+// Eventlog before any post() is logged (so the secret never appears in session.log),
+// then calls build_agent() and runs ChatModule::run_repl(). Bad config (missing
+// Session block, unset api key env var) exits with code 1 via MalConfig; missing
+// argv exits 2.
 #include <cstdlib>
 #include <fstream>
 #include <iostream>

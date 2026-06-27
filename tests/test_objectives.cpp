@@ -1,3 +1,11 @@
+// tests/test_objectives.cpp — unit tests for StayOnBudget and AvoidDestructive objectives
+//
+// StayOnBudget reads BUDGET_SPENT_USD from the Blackboard and hard-vetoes any
+// Action at or above its USD cap; AvoidDestructive vetoes+confirm-gates ToolCall
+// actions whose tool/args match a destructive pattern (rm, mkfs, …) while
+// ignoring non-ToolCall actions — both are Objective implementations the Arbiter
+// consults each turn.
+
 #include <gtest/gtest.h>
 #include "hades/objective/stay_on_budget.h"
 #include "hades/objective/avoid_destructive.h"

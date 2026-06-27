@@ -1,13 +1,10 @@
-// hades-fs-read: a native tool following the hades native tool protocol.
+// tools/fs_read_main.cpp — bundled fs_read native tool binary
 //
-// Reads ONE JSON line on stdin: {"call": <name|"describe">, "args": {...}}
-// Writes ONE JSON line on stdout:
-//   describe -> {"ok":true,"result":{"name","description","schema"}}
-//   call ok  -> {"ok":true,"result":{...}}
-//   call err -> {"ok":false,"result":{"error":"..."}}
-//
-// All external input (the stdin line, its `args`) is guarded so a malformed
-// request can never throw — we always emit a single well-formed JSON line.
+// Reads one JSON line from stdin ({"call":"describe"|"fs_read","args":{...}}),
+// handles describe (returns name/description/schema) or fs_read (opens a UTF-8
+// file and returns its content), then writes one JSON line to stdout. Launched
+// as a subprocess by ToolRunner via ToolRegistry; speaks the hades one-JSON-line
+// native tool protocol. All stdin parsing is guarded — a malformed request never throws.
 #include <fstream>
 #include <iostream>
 #include <sstream>
