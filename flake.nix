@@ -35,6 +35,7 @@
             libcpr         # C++ Requests (cpr) — HTTPS to the Anthropic API (libcurl-backed, SSE streaming)
             curl           # libcurl + curl CLI (cpr links it; explicit for debugging)
             nlohmann_json  # JSON — LLM messages + MCP JSON-RPC (NOT the manifest; that's plain-text)
+            httplib        # cpp-httplib: header-only HTTP server — the `--serve` front-end module
             gtest          # GoogleTest — TDD
           ];
           # Manifest is a plain-text MOOS-style block format parsed by hades itself

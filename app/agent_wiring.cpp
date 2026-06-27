@@ -44,6 +44,7 @@ Agent build_agent_impl(Blackboard& bb,
   a.tools   = std::make_unique<ToolRunner>();
   a.arbiter = std::make_unique<Arbiter>();
   a.chat    = std::make_unique<ChatModule>();
+  a.serve   = std::make_unique<HttpServerModule>();
 
   // 1) ToolRunner first: load every Tool block, then on_start WARMS the registry
   //    (each native `describe` runs exactly once) so the schemas exist before the
@@ -69,6 +70,10 @@ Agent build_agent_impl(Blackboard& bb,
   // 4) Chat last: it is the user-facing surface and only needs attach (its REPL
   //    is driven by the caller).
   a.chat->on_attach(bb);
+
+  // 5) HTTP front-end: attach its capture subscriptions; only drives the agent if
+  //    the binary calls serve->listen() (--serve mode). Inert otherwise.
+  a.serve->on_attach(bb);
   return a;
 }
 

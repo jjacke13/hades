@@ -44,8 +44,13 @@ std::string resolve_api_key(const Manifest& m) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::cerr << "usage: hades <manifest>\n";
+    std::cerr << "usage: hades <manifest> [--serve <port>]\n";
     return 2;
+  }
+  // Optional `--serve <port>`: run the HTTP front-end instead of the stdin REPL.
+  int serve_port = 0;
+  for (int i = 2; i < argc; ++i) {
+    if (std::string(argv[i]) == "--serve" && i + 1 < argc) serve_port = std::atoi(argv[++i]);
   }
   try {
     const Manifest manifest = parse_manifest(read_file(argv[1]));
@@ -59,7 +64,10 @@ int main(int argc, char** argv) {
     Blackboard bb(&eventlog);
     Agent agent = build_agent(bb, manifest);  // owns every module for the session
 
-    agent.chat->run_repl(std::cin, std::cout);
+    if (serve_port > 0)
+      agent.serve->listen("127.0.0.1", serve_port);  // blocks until killed
+    else
+      agent.chat->run_repl(std::cin, std::cout);
     // Agent's RAII teardown (reverse-declared) releases the modules; tool
     // subprocesses are short-lived and reaped synchronously per call.
     return 0;
