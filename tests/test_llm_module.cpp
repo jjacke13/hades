@@ -61,9 +61,15 @@ TEST(LLMModule, OffloadsToExecutorWithoutBlockingTheBus) {
       LlmResponse r; r.text = "slow ok"; return r;
     }
   };
+  // Declaration order is load-bearing: Executor MUST be declared LAST so it is
+  // destroyed FIRST (reverse order: ex -> m -> bb). Its dtor joins the worker
+  // while the module and Blackboard are still alive — the worker mutates spent_
+  // and posts BUDGET_SPENT_USD AFTER posting LLM_RESPONSE, so run_until() seeing
+  // LLM_RESPONSE does NOT prove the worker has returned. Joining first closes a
+  // use-after-free on the module/Blackboard.
   Blackboard bb;
-  Executor ex(2);
   LLMModule m(std::make_unique<SlowProvider>());
+  Executor ex(2);
   m.set_executor(&ex);
   Block cfg; cfg.kv["price_per_mtok"] = "0";
   m.on_start(cfg, bb); m.on_attach(bb);

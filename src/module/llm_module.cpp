@@ -66,7 +66,7 @@ void LLMModule::on_attach(Blackboard& bb) {
     // at most ONE in-flight LLM call per agent (turns are serial), so there is no
     // data race. If overlapping LLM calls are ever introduced, spent_ must become
     // an atomic or switch to a post-a-delta scheme.
-    auto run = [this](LlmRequest req) {
+    auto run = [this](const LlmRequest& req) {
       LlmResponse r = provider_->complete(req);
       nlohmann::json out{
           {"text",              r.text},
@@ -80,7 +80,13 @@ void LLMModule::on_attach(Blackboard& bb) {
       bb_->post("BUDGET_SPENT_USD", spent_, "llm");
     };
     if (executor_) {
-      executor_->submit([req, run]{ run(req); });   // req captured by value
+      // SAFETY: the worker mutates spent_ and touches bb_ AFTER posting
+      // LLM_RESPONSE, so a front-end's run_until() observing LLM_RESPONSE does
+      // NOT prove this task has returned. The Executor MUST be destroyed (joined)
+      // BEFORE this module and the Blackboard — teardown order is load-bearing.
+      // Move req into the task to avoid a redundant copy on submit (run takes
+      // it by const&, so no further copy when invoked).
+      executor_->submit([req = std::move(req), run]{ run(req); });
     } else {
       run(req);                                      // inline (default, unchanged)
     }
