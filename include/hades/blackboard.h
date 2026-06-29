@@ -22,6 +22,8 @@ class Blackboard {
 public:
   explicit Blackboard(Eventlog* log = nullptr);
   ~Blackboard();
+  // NOT thread-safe: mutates the unguarded subs list. Call all subscribe()s
+  // before any worker thread / run_until() begins (the established convention).
   void subscribe(const std::string& pattern, Handler h, double min_interval = 0.0); // exact|"PFX*"|"*"
   void post(const std::string& key, nlohmann::json value,
             const std::string& source, const std::string& aux = "");

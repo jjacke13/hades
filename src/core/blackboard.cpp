@@ -41,10 +41,12 @@ void Blackboard::post(const std::string& key, nlohmann::json value,
                       const std::string& source, const std::string& aux){
   // Thread-safe: may be called from worker threads. Mutate shared state under
   // the lock, then notify outside it so a woken run_until() doesn't immediately
-  // contend on a still-held mutex. now() is lock-free (reads only const t0).
-  const double ts = now();
+  // contend on a still-held mutex. ts is read INSIDE the lock so it stays
+  // monotonic with seq/queue/eventlog order under concurrent cross-thread posts
+  // (otherwise pump()'s min_interval could see a negative e.ts-last and skip).
   {
     std::lock_guard<std::mutex> lk(p_->mu);
+    const double ts = now();
     Entry e{key, std::move(value), source, aux, ts, ++p_->seq};
     p_->latest[key] = e;
     if(p_->log) p_->log->append(e);
