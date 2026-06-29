@@ -23,11 +23,14 @@ bool authorize(const httplib::Request& req) {
   return true;
 }
 
-// Generous per-turn ceiling for run_until: a turn may offload a (possibly slow) LLM
-// call onto a worker, so collect_ waits on the bus rather than busy-pumping. A hung
-// worker trips this and returns "[timed out]" instead of blocking the HTTP thread
-// forever. Socket-free tests run inline (no executor) -> the predicate holds during
-// the first pump -> run_until returns at once, well under this bound.
+// Generous IDLE ceiling for run_until — NOT a per-turn wall-clock cap. The timer
+// resets on every bus event, so it fires only after this many seconds of NO bus
+// activity (a genuinely hung/stalled worker), returning "[timed out]" instead of
+// blocking the HTTP thread forever. A turn may offload a (possibly slow) LLM call
+// onto a worker, so collect_ waits on the bus rather than busy-pumping; a
+// legitimately long but bus-active multi-step turn can exceed this wall-clock and is
+// NOT killed — only true silence trips it. Socket-free tests run inline (no
+// executor) -> the predicate holds during the first pump -> run_until returns at once.
 constexpr double kCollectTimeoutS = 180.0;
 }  // namespace
 

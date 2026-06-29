@@ -26,11 +26,14 @@ constexpr const char* kBoldGreen  = "\033[1;32m";
 constexpr const char* kBoldYellow = "\033[1;33m";
 constexpr const char* kReset      = "\033[0m";
 
-// Generous per-turn ceiling for run_until: a turn may offload a (possibly slow) LLM
-// call onto a worker, so the REPL waits on the bus instead of busy-pumping. A hung
-// worker trips this and the loop simply moves on to the next prompt. Inline turns
-// (no executor, e.g. the echo test) set turn_done_ during the first pump -> returns
-// immediately, well under this bound.
+// Generous IDLE ceiling for run_until — NOT a per-turn wall-clock cap. The timer
+// resets on every bus event, so it fires only after this many seconds of NO bus
+// activity (a genuinely hung/stalled worker). A turn may offload a (possibly slow)
+// LLM call onto a worker, so the REPL waits on the bus instead of busy-pumping; a
+// legitimately long but bus-active multi-step turn can exceed this wall-clock and is
+// NOT killed. Only true silence trips it, and the loop moves on to the next prompt.
+// Inline turns (no executor, e.g. the echo test) set turn_done_ during the first
+// pump -> returns immediately.
 constexpr double kTurnTimeoutS = 180.0;
 }  // namespace
 
