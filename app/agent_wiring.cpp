@@ -49,19 +49,28 @@ Agent build_agent_impl(Blackboard& bb,
   a.chat    = std::make_unique<ChatModule>();
   a.serve   = std::make_unique<HttpServerModule>();
 
-  // Single source of truth: the save_memory tool writes to the same store the
-  // MemoryModule reads. Append the configured store path to the save_memory tool's
-  // command so the two cannot drift. Copy-then-modify; never touch the caller's blocks.
+  // Single source of truth: each memory tool writes the same file its reader uses.
+  //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
+  //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
+  // Append each configured path to the matching tool's command; copy-then-modify (never
+  // touch the caller's blocks). A path is whitespace-split downstream, so reject whitespace.
+  auto reject_ws = [](const std::string& p, const char* what) {
+    for (char c : p)
+      if (std::isspace(static_cast<unsigned char>(c)))
+        throw MalConfig(std::string(what) + " path must not contain whitespace: " + p);
+  };
   const std::string store_path =
       memory.kv.count("store") ? memory.kv.at("store") : ".hades/memory.jsonl";
-  for (char c : store_path)
-    if (std::isspace(static_cast<unsigned char>(c)))
-      throw MalConfig("memory store path must not contain whitespace: " + store_path);
+  const std::string core_path = session.kv.count("memory_file") ? session.kv.at("memory_file") : "";
+  reject_ws(store_path, "memory store");
+  if (!core_path.empty()) reject_ws(core_path, "memory_file");
   std::vector<Block> tools_resolved;
   tools_resolved.reserve(tools.size());
   for (Block t : tools) {
     if (t.name == "save_memory" && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + store_path;
+    else if (t.name == "pin_fact" && t.kv.count("native") && !core_path.empty())
+      t.kv["native"] = t.kv["native"] + " " + core_path;
     tools_resolved.push_back(std::move(t));
   }
 
@@ -88,6 +97,7 @@ Agent build_agent_impl(Blackboard& bb,
   a.arbiter->set_tools(a.tools->registry().specs());
   a.arbiter->set_model(std::move(model));
   a.arbiter->set_system_prompt(assemble_system_prompt(session));  // SOUL/USER/MEMORY (empty Block -> "")
+  a.arbiter->set_memory_path(core_path);  // live core memory (memory_file), re-read each turn
   for (const auto& ob : objectives)
     if (auto o = make_objective(ob)) a.arbiter->add_objective(std::move(o));
   a.arbiter->on_attach(bb);
@@ -109,8 +119,9 @@ Agent build_agent(Blackboard& bb,
                   const std::vector<Block>& tools,
                   const std::vector<Block>& objectives,
                   std::string model,
-                  const Block& memory) {
-  return build_agent_impl(bb, Block{}, std::move(llm), tools, objectives, memory, std::move(model));
+                  const Block& memory,
+                  const Block& session) {
+  return build_agent_impl(bb, session, std::move(llm), tools, objectives, memory, std::move(model));
 }
 
 Agent build_agent(Blackboard& bb, const Manifest& m) {

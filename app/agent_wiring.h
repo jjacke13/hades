@@ -46,7 +46,8 @@ Agent build_agent(Blackboard& bb,
                   const std::vector<Block>& tools,
                   const std::vector<Block>& objectives,
                   std::string model,
-                  const Block& memory = Block{});
+                  const Block& memory = Block{},
+                  const Block& session = Block{});
 
 // Convenience overload for the real binary: builds the live OpenAI-compatible
 // provider from the manifest's Session block (endpoint/model/api_key_env via

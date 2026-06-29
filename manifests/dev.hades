@@ -8,7 +8,7 @@ Session
   price_per_mtok = 5.0
   system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
   # user_file        = prompts/user.md   # USER — your profile (optional)
-  # memory_file      = memory/facts.md   # MEMORY — standing facts (optional)
+  memory_file        = memory/facts.md   # MEMORY — always-on core memory (pin_fact writes it)
 }
 Module = llm
 Module = tool_runner
@@ -20,6 +20,7 @@ Tool = write_file { native = ./build/hades-write-file }
 Tool = list_dir   { native = ./build/hades-list-dir }
 Tool = http_fetch { native = ./build/hades-http-fetch }
 Tool = save_memory { native = ./build/hades-save-memory }
+Tool = pin_fact    { native = ./build/hades-pin-fact }
 Memory
 {
   store = .hades/memory.jsonl
