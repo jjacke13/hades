@@ -22,6 +22,7 @@ void Arbiter::on_attach(Blackboard& bb) {
     if (!e.value.is_string()) return;  // ignore malformed user input
     history_.push_back({{"role", "user"}, {"content", e.value}});
     steps_ = 0;
+    ++turn_epoch_;   // a new user turn: later LLM_RESPONSEs stamped with prior epochs are stale
     bb_->post("MODE", "EXECUTING", "arbiter");
     start_turn();
   });
@@ -63,13 +64,24 @@ void Arbiter::start_turn() {
     if (last_user >= 0) messages.insert(messages.begin() + last_user, block);
   }
 
+  // The epoch is carried unchanged through tool-loop continuations (start_turn is re-called from
+  // on_tool_result WITHOUT bumping it), so a within-turn LLM round-trip keeps the current epoch.
   bb_->post("LLM_REQUEST",
-            {{"messages", messages}, {"tools", tools}, {"model", model_}}, "arbiter");
+            {{"messages", messages}, {"tools", tools}, {"model", model_}, {"epoch", turn_epoch_}},
+            "arbiter");
 }
 
 void Arbiter::on_llm_response(const Entry& e) {
   const auto& v = e.value;
   if (!v.is_object()) return;  // malformed response: ignore, never throw
+  // Freshness gate: a response stamped with a superseded turn epoch (e.g. a timed-out turn's
+  // worker completing late) is dropped, never applied to the current turn. Tool-loop
+  // continuations share the current turn's epoch and so are NOT dropped.
+  const std::uint64_t ep = v.value("epoch", static_cast<std::uint64_t>(0));
+  if (ep != turn_epoch_) {
+    bb_->post("DROPPED_STALE_LLM_RESPONSE", {{"epoch", ep}, {"current", turn_epoch_}}, "arbiter");
+    return;
+  }
   Action act;
   nlohmann::json assistant_msg;
   if (v.contains("tool_call") && v["tool_call"].is_object()) {

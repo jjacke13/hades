@@ -7,6 +7,7 @@
 // Answer or the max-steps guard fires. Event-driven via the Blackboard; no threads.
 
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -47,5 +48,9 @@ private:
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm
   int steps_ = 0;               // tool-call steps within the current turn (reset on USER_MESSAGE)
+  // Per-user-turn freshness stamp: bumped on each USER_MESSAGE (NOT on tool-loop continuations),
+  // stamped onto every LLM_REQUEST, and matched on LLM_RESPONSE so a timed-out turn's late
+  // response is dropped instead of answering the next prompt.
+  std::uint64_t turn_epoch_ = 0;
 };
 }  // namespace hades

@@ -51,6 +51,7 @@ void LLMModule::on_attach(Blackboard& bb) {
       req.messages = e.value.value("messages", nlohmann::json::array())
                        .get<std::vector<nlohmann::json>>();
       req.model    = e.value.value("model", std::string{});
+      req.epoch    = e.value.value("epoch", static_cast<std::uint64_t>(0));  // bus turn stamp; echoed back
       auto tools_val = e.value.contains("tools") && e.value["tools"].is_array()
                          ? e.value["tools"]
                          : nlohmann::json::array();
@@ -77,7 +78,8 @@ void LLMModule::on_attach(Blackboard& bb) {
           {"text",              r.text},
           {"prompt_tokens",     r.prompt_tokens},
           {"completion_tokens", r.completion_tokens},
-          {"stop_reason",       r.stop_reason}
+          {"stop_reason",       r.stop_reason},
+          {"epoch",             req.epoch}   // echo the request's turn stamp on BOTH inline + worker paths
       };
       if (r.tool_call) out["tool_call"] = *r.tool_call;
       bb_->post("LLM_RESPONSE", out, "llm");

@@ -6,6 +6,7 @@
 // (assistant tool_calls + matching tool role entries) for the next LLM call; and
 // the max-steps guard that terminates runaway tool loops.
 
+#include <cstdint>
 #include <fstream>
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
@@ -39,7 +40,7 @@ TEST(Arbiter, PlainAnswerReachesChat) {
   bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ out=e.value; });
   bb.post("USER_MESSAGE","hello","chat"); bb.pump();
   ASSERT_EQ(reqs.size(),1u);                       // turn started
-  bb.post("LLM_RESPONSE", {{"text","hi there"}}, "llm"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","hi there"},{"epoch",1}}, "llm"); bb.pump();
   EXPECT_EQ(out,"hi there");
 }
 TEST(Arbiter, ToolCallRoundTrips) {
@@ -49,11 +50,11 @@ TEST(Arbiter, ToolCallRoundTrips) {
   bb.subscribe("TOOL_REQUEST",[&](const Entry& e){ toolreq=e.value; });
   std::string out; bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ out=e.value; });
   bb.post("USER_MESSAGE","read it","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text",""},{"tool_call",{{"id","c1"},{"name","fs_read"},
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","fs_read"},
           {"arguments",{{"path","/a"}}}}}}, "llm"); bb.pump();
   ASSERT_EQ(toolreq["tool"],"fs_read");
   bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"content","FILE"}}}}, "tool_runner"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text","the file says FILE"}}, "llm"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","the file says FILE"},{"epoch",1}}, "llm"); bb.pump();
   EXPECT_EQ(out,"the file says FILE");
 }
 TEST(Arbiter, DestructiveToolCallIsConfirmGated) {
@@ -63,7 +64,7 @@ TEST(Arbiter, DestructiveToolCallIsConfirmGated) {
   bb.subscribe("CONFIRM_REQUEST",[&](const Entry& e){ confirm=e.value; });
   bb.subscribe("TOOL_REQUEST",[&](const Entry&){ tool_called=true; });
   bb.post("USER_MESSAGE","wipe","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text",""},{"tool_call",{{"id","c1"},{"name","shell"},
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","shell"},
           {"arguments",{{"cmd","rm -rf /"}}}}}}, "llm"); bb.pump();
   ASSERT_FALSE(confirm.is_null());
   EXPECT_FALSE(tool_called);                       // gated, not executed
@@ -76,7 +77,7 @@ TEST(Arbiter, ConfirmApproveExecutesStashedTool) {
   nlohmann::json toolreq; bool tool_called=false;
   bb.subscribe("TOOL_REQUEST",[&](const Entry& e){ tool_called=true; toolreq=e.value; });
   bb.post("USER_MESSAGE","wipe","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text",""},{"tool_call",{{"id","c1"},{"name","shell"},
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","shell"},
           {"arguments",{{"cmd","rm -rf /"}}}}}}, "llm"); bb.pump();
   ASSERT_FALSE(tool_called);                       // gated until approval
   bb.post("CONFIRM_RESPONSE", {{"id","c1"},{"approved",true}}, "chat"); bb.pump();
@@ -90,7 +91,7 @@ TEST(Arbiter, ToolRoundTripPairsHistoryForNextLlmCall) {
   std::vector<nlohmann::json> reqs;
   bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
   bb.post("USER_MESSAGE","read it","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text",""},{"tool_call",{{"id","c1"},{"name","fs_read"},
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","fs_read"},
           {"arguments",{{"path","/a"}}}}}}, "llm"); bb.pump();
   bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"content","DATA"}}}}, "tool_runner"); bb.pump();
   ASSERT_GE(reqs.size(), 2u);
@@ -111,7 +112,7 @@ TEST(Arbiter, StopsAfterMaxToolSteps) {
   bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ last=e.value; });
   bb.post("USER_MESSAGE","loop","chat"); bb.pump();
   for(int i=0;i<30;i++){
-    bb.post("LLM_RESPONSE", {{"text",""},{"tool_call",{{"id","c"},{"name","fs_read"},{"arguments",{{"path","/a"}}}}}}, "llm"); bb.pump();
+    bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c"},{"name","fs_read"},{"arguments",{{"path","/a"}}}}}}, "llm"); bb.pump();
     bb.post("TOOL_RESULT", {{"id","c"},{"ok",true},{"content",nlohmann::json::object()}}, "tool_runner"); bb.pump();
   }
   EXPECT_NE(last.find("max tool steps"), std::string::npos);
@@ -152,7 +153,7 @@ TEST(Arbiter, MemoryBlockIsEphemeralNotInHistory) {
   bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
   bb.post("RETRIEVED_MEMORY","- ephemeral fact","memory");
   bb.post("USER_MESSAGE","first","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text","ok"}}, "llm"); bb.pump();   // turn 1 ends
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();   // turn 1 ends
   bb.post("RETRIEVED_MEMORY","","memory");                       // nothing relevant now
   bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
   bool leaked=false;
@@ -168,7 +169,7 @@ TEST(Arbiter, MemoryBlockReflectsOnlyCurrentTurnValue) {
   bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
   bb.post("RETRIEVED_MEMORY","- OLDFACT alpha","memory");
   bb.post("USER_MESSAGE","first","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text","ok"}}, "llm"); bb.pump();   // turn 1 ends
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();   // turn 1 ends
   bb.post("RETRIEVED_MEMORY","- NEWFACT beta","memory");        // different memory now
   bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
   std::string dump = reqs.back()["messages"].dump();
@@ -200,12 +201,33 @@ TEST(Arbiter, CoreMemoryIsLiveReloadedEachTurn) {
   std::vector<nlohmann::json> reqs;
   bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
   bb.post("USER_MESSAGE","first","chat"); bb.pump();
-  bb.post("LLM_RESPONSE", {{"text","ok"}}, "llm"); bb.pump();   // turn 1 ends
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();   // turn 1 ends
   { std::ofstream(f, std::ios::app) << "- fact two\n"; }        // agent pins something mid-session
   bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
   std::string dump = reqs.back()["messages"][0]["content"].get<std::string>();
   EXPECT_NE(dump.find("fact one"), std::string::npos);
   EXPECT_NE(dump.find("fact two"), std::string::npos);          // new pin visible same session
+}
+
+TEST(Arbiter, StaleEpochResponseIsDropped) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<std::string> answers;
+  std::vector<std::uint64_t> req_epochs;
+  bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ answers.push_back(e.value); });
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req_epochs.push_back(e.value.value("epoch", static_cast<std::uint64_t>(0))); });
+  bb.post("USER_MESSAGE","first","chat");  bb.pump();   // turn epoch 1
+  bb.post("USER_MESSAGE","second","chat"); bb.pump();   // turn epoch 2
+  // A stale response from the first (timed-out) turn must be dropped, never applied.
+  bb.post("LLM_RESPONSE", {{"text","late answer"},{"epoch",1}}, "llm"); bb.pump();
+  for (const auto& s : answers) EXPECT_NE(s, "late answer");   // dropped on epoch mismatch
+  // The fresh response for the current turn is applied.
+  bb.post("LLM_RESPONSE", {{"text","real"},{"epoch",2}}, "llm"); bb.pump();
+  ASSERT_FALSE(answers.empty());
+  EXPECT_EQ(answers.back(), "real");
+  // The emitted LLM_REQUESTs carried increasing per-turn epochs.
+  ASSERT_GE(req_epochs.size(), 2u);
+  EXPECT_EQ(req_epochs[0], static_cast<std::uint64_t>(1));
+  EXPECT_EQ(req_epochs[1], static_cast<std::uint64_t>(2));
 }
 
 TEST(Arbiter, NoCoreMemoryWhenPathUnsetAndNoPrompt) {

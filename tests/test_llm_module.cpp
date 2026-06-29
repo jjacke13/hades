@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
+#include <cstdint>
 #include <thread>
 #include "hades/module/llm_module.h"
 #include "hades/blackboard.h"
@@ -51,6 +52,17 @@ TEST(LLMModule, MalformedRequestDoesNotThrow) {
   bb.post("LLM_REQUEST", {{"tools", 42}}, "arb");   // no messages; tools wrong type
   EXPECT_NO_THROW(bb.pump());
   EXPECT_TRUE(got);   // still produced a response
+}
+TEST(LLMModule, EchoesRequestEpoch) {
+  Blackboard bb;
+  LLMModule m(std::make_unique<StubProvider>());
+  Block cfg; m.on_start(cfg, bb); m.on_attach(bb);
+  std::uint64_t echoed = 0;
+  bb.subscribe("LLM_RESPONSE", [&](const Entry& e){ echoed = e.value.value("epoch", static_cast<std::uint64_t>(0)); });
+  bb.post("LLM_REQUEST",
+          {{"messages",nlohmann::json::array()},{"tools",nlohmann::json::array()},{"epoch",7}}, "arb");
+  bb.pump();
+  EXPECT_EQ(echoed, static_cast<std::uint64_t>(7));   // request epoch echoed into the response
 }
 TEST(LLMModule, OffloadsToExecutorWithoutBlockingTheBus) {
   // A provider whose complete() blocks ~50ms; with an Executor the post(LLM_REQUEST) must

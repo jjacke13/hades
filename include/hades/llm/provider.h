@@ -5,6 +5,7 @@
 // events; OpenAICompatProvider is the concrete production implementation.
 
 #pragma once
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,6 +16,7 @@ struct LlmRequest {
   std::vector<nlohmann::json> messages;   // [{role, content}|{role:assistant,tool_calls}|{role:tool,...}]
   std::vector<ToolSpec>       tools;
   std::string                 model;
+  std::uint64_t               epoch = 0;  // bus-level turn stamp; echoed into LLM_RESPONSE (NOT sent to the API)
 };
 struct LlmResponse {
   std::string                   text;       // "" if pure tool call
