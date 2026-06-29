@@ -29,4 +29,9 @@ Memory
 Arbiter { policy = v1 }
 Objective = stay_on_budget   { hard_cap_usd = 1.0 }
 Objective = avoid_destructive { veto = true }
-Serve { host = 127.0.0.1  port = 8080  webroot = web }
+Serve
+{
+  host    = 127.0.0.1
+  port    = 8080
+  webroot = web
+}

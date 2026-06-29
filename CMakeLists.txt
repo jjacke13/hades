@@ -105,6 +105,7 @@ target_sources(hades_tests PRIVATE tests/test_webui.cpp)
 target_compile_definitions(hades_tests PRIVATE
   WEB_INDEX="${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
   WEB_STYLE="${CMAKE_CURRENT_SOURCE_DIR}/web/style.css"
-  WEB_APP="${CMAKE_CURRENT_SOURCE_DIR}/web/app.js")
+  WEB_APP="${CMAKE_CURRENT_SOURCE_DIR}/web/app.js"
+  DEV_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/manifests/dev.hades")
 include(GoogleTest)
 gtest_discover_tests(hades_tests)

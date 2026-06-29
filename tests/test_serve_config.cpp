@@ -1,5 +1,7 @@
 // tests/test_serve_config.cpp — Serve block resolution + defaults + CLI override
 #include <gtest/gtest.h>
+#include <fstream>
+#include <sstream>
 #include "hades/serve_config.h"
 using namespace hades;
 
@@ -40,4 +42,12 @@ TEST(ServeConfig, EmptyHostAndWebrootKeepDefaults) {
 TEST(ServeConfig, CliPortOverridesDefaultsWithNoBlock) {
   auto c = resolve_serve_config(parse_manifest("Session\n{\n}\n"), 7000);
   EXPECT_EQ(c.port, 7000);
+}
+TEST(ServeConfig, ShippedDevManifestResolvesCleanly) {
+  std::ifstream f(DEV_MANIFEST);
+  std::stringstream s; s << f.rdbuf();
+  auto c = resolve_serve_config(parse_manifest(s.str()), 0);
+  EXPECT_EQ(c.host, "127.0.0.1");   // multi-line Serve block parses, not mis-parsed garbage
+  EXPECT_EQ(c.port, 8080);
+  EXPECT_EQ(c.webroot, "web");
 }
