@@ -28,6 +28,24 @@ void Launcher::build(const Manifest& m){
     }
   } catch(...) { p_->mods.clear(); throw; }
 }
+void Launcher::instantiate(const Manifest& m){
+  try {
+    for(const auto& blk : m.of("Module")){
+      auto it=p_->factories.find(blk.name);
+      if(it==p_->factories.end()) throw MalConfig("unknown module type: "+blk.name);
+      p_->mods.push_back(it->second());
+    }
+  } catch(...) { p_->mods.clear(); throw; }
+}
+bool Launcher::has(const std::string& type) const {
+  for(const auto& u : p_->mods) if(u && u->type()==type) return true;
+  return false;
+}
+std::unique_ptr<Module> Launcher::take(const std::string& type){
+  for(auto& u : p_->mods)
+    if(u && u->type()==type) return std::move(u);   // leaves a null hole; has()/take() skip it
+  return nullptr;
+}
 void Launcher::shutdown(){ p_->mods.clear(); }   // module dtors reap their subprocesses
 std::vector<Module*> Launcher::modules() const {
   std::vector<Module*> r; for(auto& u:p_->mods) r.push_back(u.get()); return r;

@@ -25,6 +25,12 @@ public:
   using Factory = std::function<std::unique_ptr<Module>()>;
   void register_factory(const std::string& type, Factory f);
   void build(const Manifest& m);   // instantiate Module blocks + on_start + on_attach
+  // pAntler roster: instantiate the manifest's `Module =` blocks (in order) via the
+  // registered factories; throws MalConfig on an unknown type. Does NOT call on_start/
+  // on_attach — the caller drives lifecycle + cross-wiring. Roster validation only.
+  void instantiate(const Manifest& m);
+  bool has(const std::string& type) const;                  // a module of this type was instantiated (and not yet taken)
+  std::unique_ptr<Module> take(const std::string& type);     // transfer the first module of `type` out; nullptr if absent
   void shutdown();                 // reap subprocess-owning modules
   std::vector<Module*> modules() const;
 private:

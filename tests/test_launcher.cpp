@@ -36,3 +36,27 @@ TEST(Launcher, ShutdownClearsModules) {
   L.shutdown();
   EXPECT_TRUE(L.modules().empty());
 }
+TEST(Launcher, InstantiateBuildsRosterAndHasByType) {
+  Blackboard bb; Launcher L(bb);
+  L.register_factory("a", []{ return std::make_unique<FakeMod>("a"); });
+  L.register_factory("b", []{ return std::make_unique<FakeMod>("b"); });
+  L.instantiate(parse_manifest("Module = a\nModule = b\n"));
+  EXPECT_TRUE(L.has("a"));
+  EXPECT_TRUE(L.has("b"));
+  EXPECT_FALSE(L.has("c"));
+}
+TEST(Launcher, TakeTransfersOwnershipOnceByType) {
+  Blackboard bb; Launcher L(bb);
+  L.register_factory("a", []{ return std::make_unique<FakeMod>("a"); });
+  L.instantiate(parse_manifest("Module = a\n"));
+  auto m1 = L.take("a");
+  ASSERT_NE(m1, nullptr);
+  EXPECT_EQ(m1->type(), "a");
+  EXPECT_EQ(L.take("a"), nullptr);   // already taken
+  EXPECT_FALSE(L.has("a"));
+}
+TEST(Launcher, InstantiateUnknownTypeThrowsMalConfig) {
+  Blackboard bb; Launcher L(bb);
+  L.register_factory("a", []{ return std::make_unique<FakeMod>("a"); });
+  EXPECT_THROW(L.instantiate(parse_manifest("Module = ghost\n")), MalConfig);
+}
