@@ -17,7 +17,7 @@ results back. Tools run as **isolated subprocesses**. See `docs/architecture.md`
 | MOOS app | Module (LLMModule, ToolRunner, ChatModule, HttpServerModule, MemoryModule, Arbiter) |
 | pHelmIvP (helm) | Arbiter (v1: LLM decides, objectives gate) |
 | behavior | Objective (stay_on_budget, avoid_destructive) — competing goals of ONE agent |
-| pAntler | Launcher |
+| pAntler | Launcher (reads `Module=` roster, instantiates the module set) |
 | .moos mission | Manifest (plain-text MOOS-style blocks, NOT TOML) |
 | .alog / alogview | Eventlog / `hades-scope` |
 | **a vehicle/community** | **one agent = Blackboard + Arbiter + modules** |
@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-29)
-`main` @ `3769c1e`, **111/111 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `3ea128a`, **119/119 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · safety gate
 (destructive shell + write_file → y/N; `save_memory`/`pin_fact` NOT gated — append-only to own files) ·
@@ -70,7 +70,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (111/111)
+nix develop --command ctest --test-dir build                 # test (119/119)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -96,14 +96,25 @@ emits + an SSE endpoint) · **settings UI** (`web/settings.html` + `GET/POST /ma
 manifest — the static-dir + JSON-API seam is ready) · **auth** (fill in the `authorize()` seam — token/
 password) · agent↔agent **Bridge** (pShare-style, needs design — parked).
 
+## Architecture-honesty pass (after expert critique, 2026-06-29)
+4 debts flagged; **(1) DONE** — manifest `Module=` roster now drives modules (pAntler, above). Remaining:
+**(2)** harden the one-kv-per-line manifest parser to fail LOUD (currently silent mis-parse — bit us 3×);
+**(3)** real tool **permission/capability** model (today: destructive-pattern blocklist; fs_read/http_fetch
+ungated); **(4) DECIDED = worker-offload** (keep single-threaded deterministic bus + offload blocking LLM/tool
+work to workers that post back; thread-safe `post()` + `Executor` + `run_until()` — groundwork to build, unblocks
+SSE/Bridge). See `docs/superpowers/specs/2026-06-29-launcher-pantler-design.md` + the project memory note.
+
 ## Other open work
 session resume (history is in-memory only) · MCP tool discovery (MCP servers can be called but aren't
-announced to the LLM) · make `Module =` manifest blocks actually drive the module set (currently ignored
-— binary hard-codes modules) · persona switch · prompt caching.
+announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · agent↔agent Bridge (parked).
 
 ## Gotchas
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
-- The manifest `Module =` lines are **decorative** today (binary hard-codes its modules).
+- The manifest `Module =` lines **drive the module set** (pAntler): `build_agent(Manifest)` →
+  `Launcher.instantiate` (MalConfig on unknown type) → `take_as` into the Agent → `wire_agent` (null-guarded,
+  dependency order). Omit a module → it's absent (`agent.X==nullptr`); binary errors if `llm`/`arbiter`/the
+  requested front-end is missing. Cross-wiring (Arbiter←tools/objectives/model/prompt) stays explicit in
+  `wire_agent`. dev.hades roster = llm/tool_runner/memory/chat/arbiter/serve.
 - API key: env var only, redacted in the Eventlog; never put it in the manifest.
 - Single-threaded bus — the HTTP server serializes all turns under one mutex.
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
