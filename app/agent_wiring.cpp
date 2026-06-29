@@ -191,6 +191,15 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model);
+
+  // Live path only: own a small worker pool and offload the blocking LLM call onto
+  // it so the bus stays responsive (front-ends drive turns via run_until). The TEST
+  // overload deliberately leaves a.executor null -> the LLM runs inline -> the whole
+  // existing suite is unchanged. `a.executor` is the Agent's last member, so it is
+  // joined before the modules/Blackboard tear down (see agent_wiring.h / hades_main).
+  constexpr unsigned kExecutorThreads = 2;
+  a.executor = std::make_unique<Executor>(kExecutorThreads);
+  if (a.llm) a.llm->set_executor(a.executor.get());
   return a;
 }
 

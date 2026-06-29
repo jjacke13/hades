@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "hades/config.h"
+#include "hades/executor.h"
 #include "hades/llm/provider.h"
 #include "hades/module/llm_module.h"
 #include "hades/module/tool_runner.h"
@@ -34,6 +35,19 @@ struct Agent {
   // Optional HTTP front-end; always built/attached, but only drives the agent when
   // the binary runs in `--serve` mode (otherwise the stdin REPL drives it).
   std::unique_ptr<HttpServerModule> serve;
+  // Worker pool that offloads the blocking LLM call off the single-threaded bus.
+  // Set on the LLMModule (set_executor) only on the Manifest path; the test
+  // overload leaves it null -> inline LLM -> existing tests unchanged.
+  //
+  // LOAD-BEARING: declared LAST so it is destroyed FIRST (members destruct in
+  // reverse declaration order). Its joining dtor runs while `llm` and every other
+  // module are still alive — a worker mutates the LLMModule's spent_ and posts
+  // BUDGET_SPENT_USD AFTER posting LLM_RESPONSE, so a front-end's run_until()
+  // returning on the final ASSISTANT_MESSAGE does NOT prove the worker has
+  // returned. Joining the Executor first closes that use-after-free window.
+  // (hades_main also declares the Blackboard BEFORE the Agent, so the workers
+  // join before the bus dies too — see the comment there.)
+  std::unique_ptr<Executor> executor;
 };
 
 // Build the full agent graph onto `bb`, injecting `llm` as the provider. Each

@@ -98,6 +98,7 @@ target_include_directories(hades_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(hades app/hades_main.cpp)
 target_link_libraries(hades PRIVATE hades_core)
 target_sources(hades_tests PRIVATE tests/test_e2e.cpp)
+target_sources(hades_tests PRIVATE tests/test_offload_e2e.cpp)  # live-path LLM offload
 add_dependencies(hades_tests hades-fs-read)
 target_sources(hades_core PRIVATE src/module/memory_module.cpp)
 target_sources(hades_tests PRIVATE tests/test_memory_module.cpp)

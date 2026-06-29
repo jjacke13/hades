@@ -25,11 +25,21 @@ constexpr const char* kBoldCyan   = "\033[1;36m";
 constexpr const char* kBoldGreen  = "\033[1;32m";
 constexpr const char* kBoldYellow = "\033[1;33m";
 constexpr const char* kReset      = "\033[0m";
+
+// Generous per-turn ceiling for run_until: a turn may offload a (possibly slow) LLM
+// call onto a worker, so the REPL waits on the bus instead of busy-pumping. A hung
+// worker trips this and the loop simply moves on to the next prompt. Inline turns
+// (no executor, e.g. the echo test) set turn_done_ during the first pump -> returns
+// immediately, well under this bound.
+constexpr double kTurnTimeoutS = 180.0;
 }  // namespace
 
 void ChatModule::on_attach(Blackboard& bb) {
   bb_ = &bb;
   bb.subscribe("ASSISTANT_MESSAGE", [this](const Entry& e) {
+    // The turn's final message (answer / [blocked] / [declined] / [stopped]) — latch
+    // turn completion so run_until() returns once the turn has resolved.
+    turn_done_ = true;
     if (!out_ || !e.value.is_string()) return;
     const std::string msg = e.value.get<std::string>();
     // Interactive: blank line before + bold-green label + blank line after, so each
@@ -80,8 +90,13 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
     if (!std::getline(in, line)) break;
     if (line == "/quit") break;
     if (line.empty()) continue;
+    turn_done_ = false;
     bb_->post("USER_MESSAGE", line, "chat");
-    bb_->pump();
+    // Drive the turn to its final ASSISTANT_MESSAGE; with an Executor the LLM runs on
+    // a worker and run_until sleeps on the bus until it posts back (inline turns
+    // complete during the first pump). The CONFIRM_REQUEST handler reads y/N inline
+    // during a run_until pump and posts CONFIRM_RESPONSE, then the turn continues.
+    bb_->run_until([this] { return turn_done_; }, kTurnTimeoutS);
   }
 }
 
@@ -103,8 +118,11 @@ void ChatModule::run_repl_readline() {
     std::free(raw);
     if (line == "/quit") break;
     if (line.empty()) continue;
+    turn_done_ = false;
     bb_->post("USER_MESSAGE", line, "chat");
-    bb_->pump();                       // assistant output prints in cooked mode, after readline returns
+    // run_until drives the turn (offloaded LLM on a worker, or inline) to its final
+    // ASSISTANT_MESSAGE; assistant output prints in cooked mode after readline returns.
+    bb_->run_until([this] { return turn_done_; }, kTurnTimeoutS);
   }
 }
 

@@ -27,5 +27,11 @@ private:
   std::ostream* out_ = nullptr;
   std::istream* in_  = nullptr;
   bool color_ = false;   // ANSI styling on; set in run_repl when stdout is a real TTY
+  // Turn-completion latch: set true in the ASSISTANT_MESSAGE handler (the final
+  // answer / [blocked] / [declined] / [stopped] all arrive as ASSISTANT_MESSAGE),
+  // reset false before each posted USER_MESSAGE. run_until(turn_done_) lets the LLM
+  // be offloaded to a worker without busy-pumping; inline turns set it during the
+  // first pump so run_until returns at once.
+  bool turn_done_ = false;
 };
 }  // namespace hades

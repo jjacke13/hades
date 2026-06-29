@@ -22,6 +22,13 @@ bool authorize(const httplib::Request& req) {
     return req.has_header("X-Hades");
   return true;
 }
+
+// Generous per-turn ceiling for run_until: a turn may offload a (possibly slow) LLM
+// call onto a worker, so collect_ waits on the bus rather than busy-pumping. A hung
+// worker trips this and returns "[timed out]" instead of blocking the HTTP thread
+// forever. Socket-free tests run inline (no executor) -> the predicate holds during
+// the first pump -> run_until returns at once, well under this bound.
+constexpr double kCollectTimeoutS = 180.0;
 }  // namespace
 
 namespace hades {
@@ -39,7 +46,12 @@ void HttpServerModule::on_attach(Blackboard& bb) {
 }
 
 nlohmann::json HttpServerModule::collect_() {
-  bb_->pump();  // run the turn to quiescence
+  // Drive the turn to a decision: either the final reply was captured or the turn is
+  // gated on a confirm. run_until pumps inline first (synchronous/test path completes
+  // immediately) and otherwise sleeps on the bus until a worker posts the result.
+  const bool done = bb_->run_until(
+      [this] { return got_reply_ || !pending_confirm_.is_null(); }, kCollectTimeoutS);
+  if (!done) return {{"reply", "[timed out]"}};  // hung worker -> don't block forever
   if (got_reply_) return {{"reply", last_reply_}};
   if (!pending_confirm_.is_null())
     return {{"needs_confirm", true},
