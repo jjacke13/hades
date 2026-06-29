@@ -47,6 +47,8 @@ add_executable(hades-shell tools/shell_main.cpp)
 target_link_libraries(hades-shell PRIVATE hades_core)               # reuses run_subprocess
 add_executable(hades-http-fetch tools/http_fetch_main.cpp)
 target_link_libraries(hades-http-fetch PRIVATE cpr::cpr nlohmann_json::nlohmann_json)
+add_executable(hades-save-memory tools/save_memory_main.cpp)
+target_link_libraries(hades-save-memory PRIVATE nlohmann_json::nlohmann_json)
 target_sources(hades_core PRIVATE src/tool/registry.cpp)
 target_sources(hades_core PRIVATE src/tool/mcp_adapter.cpp)
 target_sources(hades_core PRIVATE src/module/tool_runner.cpp)
@@ -60,6 +62,9 @@ target_compile_definitions(hades_tests PRIVATE
   LIST_DIR_BIN="$<TARGET_FILE:hades-list-dir>"
   HTTP_FETCH_BIN="$<TARGET_FILE:hades-http-fetch>")
 add_dependencies(hades_tests hades-shell hades-write-file hades-list-dir hades-http-fetch)
+target_sources(hades_tests PRIVATE tests/test_save_memory_tool.cpp)
+target_compile_definitions(hades_tests PRIVATE SAVE_MEMORY_BIN="$<TARGET_FILE:hades-save-memory>")
+add_dependencies(hades_tests hades-save-memory)
 target_sources(hades_core PRIVATE src/objective/stay_on_budget.cpp)
 target_sources(hades_core PRIVATE src/objective/avoid_destructive.cpp)
 target_sources(hades_tests PRIVATE tests/test_objectives.cpp)
