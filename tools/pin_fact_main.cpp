@@ -45,6 +45,8 @@ int main(int argc, char** argv) {
       out = {{"ok", false}, {"result", {{"error", "missing arg: text"}}}};
     } else {
       std::string text = args["text"].get<std::string>();
+      for (char& ch : text)
+        if (ch == '\n' || ch == '\r') ch = ' ';  // one pin = one bullet; no injected multi-line structure
       std::filesystem::path p(file);
       if (p.has_parent_path()) {
         std::error_code ec;

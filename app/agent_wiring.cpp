@@ -64,6 +64,15 @@ Agent build_agent_impl(Blackboard& bb,
   const std::string core_path = session.kv.count("memory_file") ? session.kv.at("memory_file") : "";
   reject_ws(store_path, "memory store");
   if (!core_path.empty()) reject_ws(core_path, "memory_file");
+
+  // pin_fact writes the core-memory file the Arbiter folds in each turn; without a
+  // configured memory_file the two would target different files (silent drift), so
+  // require it explicitly when the pin_fact tool is present.
+  bool has_pin_fact = false;
+  for (const auto& t : tools) if (t.name == "pin_fact") has_pin_fact = true;
+  if (has_pin_fact && core_path.empty())
+    throw MalConfig("pin_fact tool requires a memory_file in the Session block");
+
   std::vector<Block> tools_resolved;
   tools_resolved.reserve(tools.size());
   for (Block t : tools) {

@@ -66,3 +66,17 @@ TEST(PinFactTool, NonStringCallIsNotOk) {
   ASSERT_FALSE(j.is_discarded());     // produced clean JSON, did not abort
   EXPECT_FALSE(j.value("ok", true));
 }
+
+TEST(PinFactTool, StripsEmbeddedNewlinesFromText) {
+  const std::string file = ::testing::TempDir() + "/pf_nl.md";
+  std::remove(file.c_str());
+  nlohmann::json call{{"call", "pin_fact"}, {"args", {{"text", "real fact\n## Injected heading"}}}};
+  run_subprocess({PIN_FACT_BIN, file}, call.dump(), 30.0);
+  std::ifstream f(file);
+  std::string l1, l2;
+  std::getline(f, l1);
+  std::getline(f, l2);
+  EXPECT_NE(l1.find("real fact"), std::string::npos);
+  EXPECT_NE(l1.find("Injected"), std::string::npos);   // folded onto the SAME line
+  EXPECT_TRUE(l2.empty());                               // no second line -> no injected structure
+}

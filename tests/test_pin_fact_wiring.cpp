@@ -7,6 +7,7 @@
 #include <vector>
 #include "app/agent_wiring.h"
 #include "hades/blackboard.h"
+#include "hades/launcher.h"
 #include "hades/llm/provider.h"
 using namespace hades;
 
@@ -26,6 +27,15 @@ struct PinThenAnswer : Provider {
   }
 };
 }  // namespace
+
+TEST(PinFactWiring, PinFactToolWithoutMemoryFileThrows) {
+  Blackboard bb;
+  std::vector<Block> tools;
+  Block t; t.section = "Tool"; t.name = "pin_fact"; t.kv["native"] = PIN_FACT_BIN; tools.push_back(t);
+  // Session block has NO memory_file -> misconfiguration -> must fail fast.
+  EXPECT_THROW(build_agent(bb, std::make_unique<PinThenAnswer>(), tools, {}, "m", Block{}, Block{}),
+               MalConfig);
+}
 
 TEST(PinFactWiring, PinnedFactAppearsInNextTurnSystemPrompt) {
   const std::string core = ::testing::TempDir() + "/wire_core_" + std::to_string(::getpid()) + ".md";
