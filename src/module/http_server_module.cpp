@@ -73,7 +73,10 @@ void HttpServerModule::listen(const std::string& host, int port, const std::stri
       });
 
   // Static web UI: serve `webroot` as the site root (GET / -> index.html, plus style.css/app.js).
-  srv.set_mount_point("/", webroot);
+  if (!srv.set_mount_point("/", webroot)) {
+    std::cerr << "hades: warning: webroot directory not found: " << webroot
+              << " — static web UI will not be served (JSON API still works)\n";
+  }
 
   srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
     res.set_content(R"({"ok":true})", "application/json");
