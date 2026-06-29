@@ -29,13 +29,28 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-29)
-`main` @ `3abf1b7`, **98/98 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `3769c1e`, **111/111 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · safety gate
 (destructive shell + write_file → y/N; `save_memory`/`pin_fact` NOT gated — append-only to own files) ·
 **two memory layers** (core + archival, see below) · layered **system prompt** (SOUL/USER static +
-live core MEMORY) · two front-ends: **stdin REPL** (GNU readline line editing — arrows/history/Ctrl-A/E)
-and **HTTP** (`--serve`, loopback; POST /chat, POST /confirm, GET /health).
+live core MEMORY) · two front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
+labels) and **HTTP `--serve`** (browser web UI + JSON API, see below).
+
+### Web UI (shipped 2026-06-29) — `--serve` browser front-end
+`hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
+`/`) + the JSON API (`POST /chat`, `POST /confirm`, `GET /health`). Page (`web/{index.html,style.css,app.js}`,
+dark terminal theme, plain JS no framework) hits `/chat`, renders user/assistant bubbles, Approve/Deny
+for confirm-gated actions. Config: `Serve { host, port, webroot }` block (host default `127.0.0.1`; set
+`0.0.0.0` for LAN). `resolve_serve_config()` (`src/config/serve_config.cpp`) resolves it; `--serve` port
+optional (overrides block). **Security:** loopback default; **CSRF guard** — `authorize()` pre-routing
+seam requires an `X-Hades` header on `POST /chat`+`/confirm` (a cross-origin "simple" request can't add
+it without a preflight we never grant), blocking a visited website from driving the loopback agent;
+static GET exempt. **No password auth by design** (user's private networking) — the `authorize()` seam
+is the one-place add for it later. Seam also set for a future settings UI (`web/settings.html` +
+`GET/POST /manifest` — deferred). SSE/WS streaming still deferred (replies arrive whole).
+
+### Two memory layers (MemGPT-style, both agent-writable)
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 - **Archival / searchable** — `save_memory` tool → `.hades/memory.jsonl` (append-only). MemoryModule
@@ -55,7 +70,8 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (98/98)
+nix develop --command ctest --test-dir build                 # test (111/111)
+nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
@@ -74,10 +90,16 @@ inside `nix develop` before commit. Reviews via the `cpp-reviewer` agent.
 auto-extract per turn (LLM-summarized, vs explicit `save_memory`) · dedup/decay/importance · sqlite.
 **Core:** `core_memory_replace`/edit/forget tools (only append today) · size cap / eviction · provenance/audit.
 
+## NEXT possible web work
+**SSE/WebSocket streaming** (token-by-token in the web UI — needs provider streaming + Arbiter partial
+emits + an SSE endpoint) · **settings UI** (`web/settings.html` + `GET/POST /manifest` to view/edit the
+manifest — the static-dir + JSON-API seam is ready) · **auth** (fill in the `authorize()` seam — token/
+password) · agent↔agent **Bridge** (pShare-style, needs design — parked).
+
 ## Other open work
-SSE/WebSocket streaming · session resume (history is in-memory only) · MCP tool discovery (MCP servers
-can be called but aren't announced to the LLM) · make `Module =` manifest blocks actually drive the
-module set (currently ignored — binary hard-codes modules) · persona switch · prompt caching.
+session resume (history is in-memory only) · MCP tool discovery (MCP servers can be called but aren't
+announced to the LLM) · make `Module =` manifest blocks actually drive the module set (currently ignored
+— binary hard-codes modules) · persona switch · prompt caching.
 
 ## Gotchas
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
@@ -85,12 +107,16 @@ module set (currently ignored — binary hard-codes modules) · persona switch �
 - API key: env var only, redacted in the Eventlog; never put it in the manifest.
 - Single-threaded bus — the HTTP server serializes all turns under one mutex.
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
-  `=` wins, rest swallowed into the value). Multi-line blocks only (like `Session`/`Memory`). This bit us:
-  `Memory { store=… top_n=… }` on one line silently broke retrieval; caught by the final whole-branch review.
+  `=` wins, rest swallowed into the value). Multi-line blocks only (like `Session`/`Memory`/`Serve`). Bit
+  us **twice** (final whole-branch review each time): `Memory { store=… top_n=… }` and `Serve { host=… port=… webroot=… }`
+  single-line → silent mis-parse. Lock tests parse the shipped `dev.hades` to catch regressions.
 - `save_memory`/`pin_fact` store paths must contain **no whitespace** (tool argv is whitespace-split) —
   wiring throws `MalConfig` if they do.
 - `pin_fact` tool **requires** `memory_file` in the Session block (wiring throws `MalConfig` otherwise) —
   else pins would write a file the Arbiter never reads (silent drift; caught by the final review).
+- Web UI: `webroot` is **cwd-relative** (default `web/`) → run `--serve` from the repo root (warns if the
+  dir is missing). The page sends an `X-Hades` header; the `authorize()` CSRF seam requires it on
+  `POST /chat`+`/confirm` (don't strip it client-side). `/.hades/` and runtime stores are gitignored.
 - Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - Interactive REPL uses readline only when stdin is a **real TTY**; piped/test input falls back to
