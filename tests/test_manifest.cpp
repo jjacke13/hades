@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 #include "hades/config.h"
+#include <fstream>
+#include <sstream>
 using namespace hades;
 const char* SRC = R"(
 # demo
@@ -66,4 +68,45 @@ TEST(Manifest, MultiLineMemoryBlockParsesBothKeys) {
   ASSERT_EQ(blocks.size(), 1u);
   EXPECT_EQ(blocks[0].kv.at("store"), ".hades/memory.jsonl");
   EXPECT_EQ(blocks[0].kv.at("top_n"), "5");
+}
+TEST(Manifest, InlineMultiKvMemoryProducesFatalWarning) {
+  Manifest m = parse_manifest("Memory { store=x top_n=3 }\n");
+  EXPECT_FALSE(m.warnings.empty());
+  auto fatal = fatal_warnings(m);
+  ASSERT_FALSE(fatal.empty());
+  EXPECT_TRUE(fatal.front().starts_with(kMultiKvWarning));   // stable prefix
+}
+TEST(Manifest, InlineMultiKvServeProducesFatalWarning) {
+  Manifest m = parse_manifest("Serve { host=1 port=2 webroot=w }\n");
+  EXPECT_FALSE(fatal_warnings(m).empty());
+}
+TEST(Manifest, MultiLineBodyLinePackingTwoPairsIsCaught) {
+  // The corruption also happens inside a multi-line block if a body line packs two pairs.
+  Manifest m = parse_manifest("Memory {\n  store = x top_n = 3\n}\n");
+  EXPECT_FALSE(fatal_warnings(m).empty());
+}
+TEST(Manifest, LegitSingleKvInlineHasNoWarning) {
+  Manifest m = parse_manifest("Tool = fs { native = ./tools/hades-fs-read }\n");
+  EXPECT_TRUE(m.warnings.empty());
+  EXPECT_TRUE(fatal_warnings(m).empty());
+  auto tools = m.of("Tool");
+  ASSERT_EQ(tools.size(), 1u);
+  EXPECT_EQ(tools[0].kv.at("native"), "./tools/hades-fs-read");
+}
+TEST(Manifest, UrlValueWithQueryStringNotFlagged) {
+  Manifest m = parse_manifest(
+      "Session {\n  endpoint = https://api.ppq.ai/v1?model=x&k=y\n}\n");
+  EXPECT_TRUE(fatal_warnings(m).empty());   // '=' inside one token, no ws+ident
+  EXPECT_EQ(m.session()->kv.at("endpoint"), "https://api.ppq.ai/v1?model=x&k=y");
+}
+TEST(Manifest, Base64ValueWithPaddingNotFlagged) {
+  Manifest m = parse_manifest("Session {\n  token = aGVsbG8=\n}\n");
+  EXPECT_TRUE(fatal_warnings(m).empty());   // trailing '=' padding, no ws+ident
+}
+TEST(Manifest, ShippedDevManifestHasNoWarningsOrFatals) {
+  std::ifstream f(DEV_MANIFEST);
+  std::stringstream s; s << f.rdbuf();
+  Manifest m = parse_manifest(s.str());
+  EXPECT_TRUE(m.warnings.empty());          // dev.hades is fully multi-line / single-kv inline
+  EXPECT_TRUE(fatal_warnings(m).empty());
 }

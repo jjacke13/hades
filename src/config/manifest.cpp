@@ -23,13 +23,38 @@ static std::string lower(std::string s) {
   return s;
 }
 
+static bool is_ident_start(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
+static bool is_ident(char c)       { return std::isalnum((unsigned char)c) || c == '_'; }
+
+// True if `value` (the substring AFTER a line's first '=') packs a second
+// "<whitespace><ident><ws?>=" pair. The REQUIRED leading whitespace is the discriminator:
+// a '=' inside a single token (URL query "?a=b", base64 padding "x==") is never preceded
+// by whitespace+identifier, so those never match — only a genuine second key does.
+static bool packs_second_kv(const std::string& value) {
+  for (std::size_t i = 0; i + 1 < value.size(); ++i) {
+    if (!std::isspace((unsigned char)value[i])) continue;          // need whitespace first
+    std::size_t j = i;
+    while (j < value.size() && std::isspace((unsigned char)value[j])) ++j;   // skip ws
+    if (j >= value.size() || !is_ident_start(value[j])) continue;  // need an identifier
+    std::size_t k = j + 1;
+    while (k < value.size() && is_ident(value[k])) ++k;            // consume identifier
+    while (k < value.size() && std::isspace((unsigned char)value[k])) ++k;   // optional ws
+    if (k < value.size() && value[k] == '=') return true;          // identifier then '='
+  }
+  return false;
+}
+
 static void split_kv(const std::string& line, Block& b, Manifest& m) {
   auto eq = line.find('=');
   if (eq == std::string::npos) {
     m.warnings.push_back("bad config line: " + line);
     return;
   }
-  b.kv[lower(trim(line.substr(0, eq)))] = trim(line.substr(eq + 1));
+  std::string value = trim(line.substr(eq + 1));
+  if (packs_second_kv(value))
+    m.warnings.push_back(std::string(kMultiKvWarning) +
+                         " (only one per line; use a multi-line { } block): " + line);
+  b.kv[lower(trim(line.substr(0, eq)))] = value;
 }
 
 static void parse_header(const std::string& h, Block& b) {
@@ -94,6 +119,13 @@ Manifest parse_manifest(const std::string& text) {
   }
   if (open) m.warnings.push_back("unclosed '{' block: " + open->section);
   return m;
+}
+
+std::vector<std::string> fatal_warnings(const Manifest& m) {
+  std::vector<std::string> out;
+  for (const auto& w : m.warnings)
+    if (w.starts_with(kMultiKvWarning)) out.push_back(w);
+  return out;
 }
 
 std::optional<Block> Manifest::session() const {
