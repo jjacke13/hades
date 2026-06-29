@@ -33,6 +33,7 @@ header #clear:hover{color:var(--fg);}
 }
 .confirm .label{color:var(--confirm); font-weight:700;}
 .confirm .actions{margin-top:.5rem; display:flex; gap:.5rem;}
+.confirm .result{color:var(--muted); font-weight:700;}
 .confirm button{
   border:1px solid var(--border); border-radius:6px; padding:.3rem .8rem;
   cursor:pointer; font-family:inherit;

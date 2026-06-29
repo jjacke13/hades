@@ -16,7 +16,7 @@ function scrollDown() { log.scrollTop = log.scrollHeight; }
 function addMessage(role, text) {
   const d = document.createElement('div');
   d.className = 'msg ' + role;
-  d.innerHTML = '<span class="label">' + role + '&gt; </span>' + escapeText(text);
+  d.innerHTML = '<span class="label">' + escapeText(role) + '&gt; </span>' + escapeText(text);
   log.appendChild(d);
   scrollDown();
 }
@@ -42,7 +42,14 @@ function addConfirm(id, prompt) {
   box.appendChild(actions);
   log.appendChild(box);
   scrollDown();
-  const resolve = (approved) => { actions.remove(); sendConfirm(id, approved); };
+  const resolve = (approved) => {
+    actions.remove();
+    const note = document.createElement('span');
+    note.className = 'result';
+    note.textContent = approved ? ' → approved' : ' → denied';
+    box.appendChild(note);
+    sendConfirm(id, approved);
+  };
   approve.addEventListener('click', () => resolve(true));
   deny.addEventListener('click', () => resolve(false));
 }
@@ -75,5 +82,7 @@ form.addEventListener('submit', (e) => {
   const t = input.value.trim();
   if (!t) return;
   input.value = '';
-  send(t);
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  send(t).finally(() => { btn.disabled = false; });
 });
