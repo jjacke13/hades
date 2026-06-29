@@ -14,7 +14,8 @@ std::vector<MemoryRecord> load_memories(const std::string& path) {
     auto j = nlohmann::json::parse(line, nullptr, false);
     if (j.is_discarded() || !j.is_object() || !j.contains("text") || !j["text"].is_string())
       continue;  // skip malformed / text-less records
-    out.push_back({j["text"].get<std::string>(), j.value("ts", 0.0)});
+    double ts = (j.contains("ts") && j["ts"].is_number()) ? j["ts"].get<double>() : 0.0;
+    out.push_back({j["text"].get<std::string>(), ts});
   }
   return out;
 }
