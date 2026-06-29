@@ -34,6 +34,16 @@ constexpr const char* kReset      = "\033[0m";
 // NOT killed. Only true silence trips it, and the loop moves on to the next prompt.
 // Inline turns (no executor, e.g. the echo test) set turn_done_ during the first
 // pump -> returns immediately.
+//
+// LOAD-BEARING INVARIANT: this idle timeout MUST stay greater than the maximum single
+// in-flight poster duration (cpr LLM cap ~120s in include/hades/llm/http.h + tool cap
+// ~30s in include/hades/module/tool_runner.h). That guarantee is what ensures no worker
+// is still running when run_until abandons a turn, so no stale LLM_RESPONSE is produced
+// after abandonment — the turn-epoch (Arbiter::on_llm_response freshness gate) is only
+// defense-in-depth. If you add tool-offload / SSE / configurable timeouts that can keep a
+// worker alive past this idle window, you MUST harden the epoch (bump it on turn
+// abandonment / drop responses for abandoned turns) — see the run_until follow-up spec
+// and the DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted regression test.
 constexpr double kTurnTimeoutS = 180.0;
 }  // namespace
 

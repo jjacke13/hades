@@ -31,6 +31,16 @@ bool authorize(const httplib::Request& req) {
 // legitimately long but bus-active multi-step turn can exceed this wall-clock and is
 // NOT killed — only true silence trips it. Socket-free tests run inline (no
 // executor) -> the predicate holds during the first pump -> run_until returns at once.
+//
+// LOAD-BEARING INVARIANT: this idle timeout MUST stay greater than the maximum single
+// in-flight poster duration (cpr LLM cap ~120s in include/hades/llm/http.h + tool cap
+// ~30s in include/hades/module/tool_runner.h). That guarantee is what ensures no worker
+// is still running when run_until abandons a turn, so no stale LLM_RESPONSE is produced
+// after abandonment — the turn-epoch (Arbiter::on_llm_response freshness gate) is only
+// defense-in-depth. If you add tool-offload / SSE / configurable timeouts that can keep a
+// worker alive past this idle window, you MUST harden the epoch (bump it on turn
+// abandonment / drop responses for abandoned turns) — see the run_until follow-up spec
+// and the DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted regression test.
 constexpr double kCollectTimeoutS = 180.0;
 }  // namespace
 

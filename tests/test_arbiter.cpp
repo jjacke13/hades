@@ -230,6 +230,43 @@ TEST(Arbiter, StaleEpochResponseIsDropped) {
   EXPECT_EQ(req_epochs[1], static_cast<std::uint64_t>(2));
 }
 
+// Documents the turn-epoch DISPATCH-ORDERING hole that the test above does NOT cover.
+//
+// The Arbiter bumps turn_epoch_ only when a USER_MESSAGE is DISPATCHED (in its handler),
+// not when it is posted. Front-ends post USER_MESSAGE then run_until{pump}. If a stale
+// LLM_RESPONSE{epoch:E} is enqueued AHEAD of the next USER_MESSAGE{->E+1}, a single pump()
+// dispatches the stale response FIRST — while turn_epoch_ is still E — so the freshness
+// gate (ep == turn_epoch_) PASSES and the Arbiter would act on the stale response for the
+// new prompt. (StaleEpochResponseIsDropped pumps the second USER_MESSAGE first, bumping the
+// epoch to 2 BEFORE the stale epoch-1 response is dispatched, so it never exercises this.)
+//
+// DISABLED because it is UNREACHABLE in the shipped binary: the idle timeout
+// (kTurnTimeoutS / kCollectTimeoutS = 180s) is greater than the maximum single in-flight
+// poster duration (cpr LLM cap ~120s + tool cap ~30s) and resets on ANY bus activity, so a
+// still-running worker always posts within the window — when run_until finally abandons a
+// turn (180s of NO activity) NO worker is in flight, hence no post-abandonment stale
+// LLM_RESPONSE is ever produced (see src/module/chat_module.cpp). The epoch is
+// defense-in-depth; that timing invariant is the real guarantee.
+//
+// The body asserts the DESIRED (hardened) behavior — the stale response is NOT acted upon —
+// so ENABLING this test later validates the fix (bump the epoch on turn abandonment / drop
+// responses for abandoned turns, planned alongside SSE / tool-offload). It would currently
+// FAIL (the stale response IS accepted), which is exactly WHY it is DISABLED.
+TEST(Arbiter, DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<std::string> answers;
+  bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ answers.push_back(e.value); });
+  bb.post("USER_MESSAGE","first","chat"); bb.pump();   // turn epoch 1
+  // Front-end-realistic order: the (abandoned) first turn's stale response is enqueued
+  // AHEAD of the next user message, so a single pump dispatches it while turn_epoch_ is
+  // STILL 1 — the epoch check passes and (today) the Arbiter acts on it.
+  bb.post("LLM_RESPONSE", {{"text","late answer"},{"epoch",1}}, "llm");
+  bb.post("USER_MESSAGE","second","chat");
+  bb.pump();
+  // Hardened expectation: the stale response must NOT surface as an answer for the new turn.
+  for (const auto& s : answers) EXPECT_NE(s, "late answer");
+}
+
 TEST(Arbiter, NoCoreMemoryWhenPathUnsetAndNoPrompt) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   nlohmann::json req;

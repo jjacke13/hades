@@ -112,6 +112,10 @@ void LLMModule::on_attach(Blackboard& bb) {
   // the cumulative spend, and posts BUDGET_SPENT_USD. Because LLM_RESPONSE is
   // posted first and this handler reacts to it, the observable order
   // (LLM_RESPONSE then BUDGET_SPENT_USD) is preserved — StayOnBudget still works.
+  // ATTACH-ORDER DEPENDENCY: StayOnBudget's correctness relies on THIS LLM_RESPONSE
+  // handler running before the Arbiter's within one dispatch — i.e. on the LLMModule
+  // being attached BEFORE the Arbiter (as wired in app/agent_wiring.cpp). A future
+  // reorder (Arbiter attached first) would lag the budget by one LLM call.
   bb.subscribe("LLM_RESPONSE", [this](const Entry& e) {
     const int p = e.value.value("prompt_tokens", 0);
     const int c = e.value.value("completion_tokens", 0);

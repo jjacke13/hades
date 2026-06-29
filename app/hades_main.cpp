@@ -71,10 +71,11 @@ int main(int argc, char** argv) {
     // LOAD-BEARING declaration order: `bb` BEFORE `agent`, so at scope exit `agent`
     // (and the Executor it owns, its last member) is destroyed FIRST and `bb` LAST.
     // The Executor's dtor joins its workers while the modules AND the Blackboard are
-    // still alive — a worker posts BUDGET_SPENT_USD onto the bus AFTER LLM_RESPONSE,
-    // so a turn's run_until can return before the worker has finished touching
-    // llm/bb. Net teardown: Executor joins workers -> modules -> Blackboard. Do NOT
-    // reorder these two lines.
+    // still alive — a worker reads the LLMModule's `provider_` and calls `bb->post`
+    // (LLM_RESPONSE), so a turn's run_until can return before the worker has finished
+    // touching llm/bb. (Budget is NOT touched by the worker — spent_ accrues on the
+    // pump thread.) Net teardown: Executor joins workers -> modules -> Blackboard. Do
+    // NOT reorder these two lines.
     Blackboard bb(&eventlog);
     Agent agent = build_agent(bb, manifest);  // owns every module for the session
 

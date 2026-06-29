@@ -41,10 +41,11 @@ struct Agent {
   //
   // LOAD-BEARING: declared LAST so it is destroyed FIRST (members destruct in
   // reverse declaration order). Its joining dtor runs while `llm` and every other
-  // module are still alive — a worker mutates the LLMModule's spent_ and posts
-  // BUDGET_SPENT_USD AFTER posting LLM_RESPONSE, so a front-end's run_until()
-  // returning on the final ASSISTANT_MESSAGE does NOT prove the worker has
-  // returned. Joining the Executor first closes that use-after-free window.
+  // module are still alive — a worker reads the LLMModule's `provider_` and calls
+  // `bb->post` (LLM_RESPONSE), so a front-end's run_until() returning on the final
+  // ASSISTANT_MESSAGE does NOT prove the worker has returned. Joining the Executor
+  // first closes that use-after-free window. (Budget is NOT touched by the worker —
+  // spent_ accrues on the pump thread in the LLM_RESPONSE handler.)
   // (hades_main also declares the Blackboard BEFORE the Agent, so the workers
   // join before the bus dies too — see the comment there.)
   std::unique_ptr<Executor> executor;
