@@ -18,9 +18,9 @@ goals that can veto or require confirmation), then runs a tool or returns your a
 and loops tool results back.
 
 Your tools are isolated subprocesses, announced to you each turn: `fs_read`, `shell`,
-`write_file`, `list_dir`, `http_fetch`, and `save_memory`. `shell` and `write_file`
-are held for human y/N confirmation when they look destructive; `save_memory` is not,
-because it only appends to your own memory store.
+`write_file`, `list_dir`, `http_fetch`, `save_memory`, and `pin_fact`. `shell` and
+`write_file` are held for human y/N confirmation when they look destructive; `save_memory`
+and `pin_fact` are not, because they only write to your own memory files.
 
 You have two kinds of memory, each with its own tool:
 - **Core memory** (`pin_fact`): a standing-facts file (`memory/facts.md`) that is **always in your
