@@ -101,6 +101,7 @@ target_sources(hades_core PRIVATE src/module/memory_module.cpp)
 target_sources(hades_tests PRIVATE tests/test_memory_module.cpp)
 target_sources(hades_tests PRIVATE tests/test_memory_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_pin_fact_wiring.cpp)
+target_sources(hades_tests PRIVATE tests/test_pantler_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_webui.cpp)
 target_compile_definitions(hades_tests PRIVATE
   WEB_INDEX="${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"

@@ -1,0 +1,67 @@
+// tests/test_pantler_wiring.cpp — the Module= roster drives which modules the agent builds
+#include <gtest/gtest.h>
+#include <memory>
+#include "app/agent_wiring.h"
+#include "hades/blackboard.h"
+#include "hades/config.h"
+#include "hades/launcher.h"   // MalConfig
+#include "hades/llm/provider.h"
+using namespace hades;
+
+namespace {
+// Minimal manifest with the LLM env var satisfied is awkward (build_agent(Manifest) resolves a real
+// provider). These tests use the Manifest overload, so set the api key env in the manifest to one we set.
+const char* kFullRoster = R"(
+Session
+{
+  provider       = openai_compat
+  endpoint       = https://example.invalid/v1
+  model          = test-model
+  api_key_env    = HADES_TEST_KEY
+  price_per_mtok = 1.0
+}
+Module = llm
+Module = tool_runner
+Module = memory
+Module = chat
+Module = arbiter
+Module = serve
+Memory
+{
+  store = .hades/test_mem.jsonl
+  top_n = 5
+}
+Arbiter { policy = v1 }
+)";
+}  // namespace
+
+TEST(PantlerWiring, FullRosterBuildsAllModules) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  Blackboard bb;
+  Agent a = build_agent(bb, parse_manifest(kFullRoster));
+  EXPECT_NE(a.llm, nullptr);
+  EXPECT_NE(a.tools, nullptr);
+  EXPECT_NE(a.memory, nullptr);
+  EXPECT_NE(a.arbiter, nullptr);
+  EXPECT_NE(a.chat, nullptr);
+  EXPECT_NE(a.serve, nullptr);
+}
+TEST(PantlerWiring, RosterOmittingServeYieldsNullServe) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  std::string m = kFullRoster;
+  // drop the serve line
+  auto pos = m.find("Module = serve\n");
+  ASSERT_NE(pos, std::string::npos);
+  m.erase(pos, std::string("Module = serve\n").size());
+  Blackboard bb;
+  Agent a = build_agent(bb, parse_manifest(m));
+  EXPECT_EQ(a.serve, nullptr);    // roster drives presence
+  EXPECT_NE(a.arbiter, nullptr);  // the rest still built
+}
+TEST(PantlerWiring, UnknownModuleTypeThrows) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  std::string m = kFullRoster;
+  m += "\nModule = bogus\n";
+  Blackboard bb;
+  EXPECT_THROW(build_agent(bb, parse_manifest(m)), MalConfig);
+}

@@ -72,9 +72,11 @@ int main(int argc, char** argv) {
     Agent agent = build_agent(bb, manifest);  // owns every module for the session
 
     if (serve) {
+      if (!agent.serve) { std::cerr << "hades: no `serve` module in the manifest Module roster\n"; return 1; }
       const ServeConfig cfg = resolve_serve_config(manifest, cli_port);
       agent.serve->listen(cfg.host, cfg.port, cfg.webroot);  // blocks until killed
     } else {
+      if (!agent.chat) { std::cerr << "hades: no `chat` module in the manifest Module roster\n"; return 1; }
       agent.chat->run_repl(std::cin, std::cout);
     }
     // Agent's RAII teardown (reverse-declared) releases the modules; tool

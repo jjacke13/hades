@@ -1,15 +1,19 @@
 // app/agent_wiring.cpp — build_agent implementation: wire modules onto the Blackboard
 //
-// Instantiates LLMModule, ToolRunner, Arbiter, and ChatModule in dependency order:
-// ToolRunner is started first so ToolRegistry::ensure_warm() runs native describe
-// probes exactly once; Arbiter then receives the resulting ToolSpecs and any Objective
-// instances (StayOnBudget, AvoidDestructive) before attaching to the Blackboard.
-// The Manifest overload resolves the api key and builds an OpenAICompatProvider via cpr_http().
+// The Manifest overload routes through the Launcher (pAntler): the `Module =` roster
+// decides which modules exist; factories just construct, and wire_agent() drives the
+// per-module config/attach guarding each step on the module's presence (members may be
+// null when the roster omits them). The LLM self-builds its provider from the Session
+// block in on_start. wire_agent preserves the exact wiring order: ToolRunner is warmed
+// first so ToolRegistry::ensure_warm() runs native describe probes once; the Arbiter
+// then receives the resulting ToolSpecs and any Objective instances; the MemoryModule
+// attaches before the Arbiter so RETRIEVED_MEMORY is posted before start_turn() reads it.
+// The test overload constructs all six modules directly (injecting a scripted Provider).
 
 #include "app/agent_wiring.h"
 #include <cstdlib>
 #include "hades/blackboard.h"
-#include "hades/launcher.h"  // MalConfig
+#include "hades/launcher.h"  // Launcher + MalConfig
 #include "hades/llm/http.h"
 #include "hades/llm/openai_compat_provider.h"
 #include "hades/objective/avoid_destructive.h"
@@ -32,23 +36,30 @@ std::unique_ptr<Objective> make_objective(const Block& b) {
   return nullptr;
 }
 
-// Shared wiring for both public overloads. `session` feeds the LLM module its
-// price_per_mtok (empty Block => 0); `llm_provider` is the injected backend.
-Agent build_agent_impl(Blackboard& bb,
-                       const Block& session,
-                       std::unique_ptr<Provider> llm_provider,
-                       const std::vector<Block>& tools,
-                       const std::vector<Block>& objectives,
-                       const Block& memory,
-                       std::string model) {
-  Agent a;
-  a.llm     = std::make_unique<LLMModule>(std::move(llm_provider));
-  a.tools   = std::make_unique<ToolRunner>();
-  a.arbiter = std::make_unique<Arbiter>();
-  a.memory  = std::make_unique<MemoryModule>();
-  a.chat    = std::make_unique<ChatModule>();
-  a.serve   = std::make_unique<HttpServerModule>();
+// Transfer the first module of `type` out of the Launcher and downcast it to its
+// concrete type. The factory registered under `type` constructs exactly that type,
+// and take() matches on Module::type() == the factory key, so the static_cast is
+// sound. Returns nullptr when the roster omitted the module (take() yields nullptr).
+template <class T>
+std::unique_ptr<T> take_as(Launcher& L, const std::string& type) {
+  std::unique_ptr<Module> m = L.take(type);
+  return std::unique_ptr<T>(static_cast<T*>(m.release()));  // factory key == module type(); safe
+}
 
+// Shared wiring for both public overloads. Operates on an ALREADY-POPULATED Agent
+// whose members may be null (the Manifest path leaves out modules absent from the
+// `Module =` roster; the test path constructs all six). Each module's config/attach
+// is guarded on its presence; the wiring ORDER is enforced by this call sequence,
+// not by the roster order: tools (warm) -> llm -> memory (attach) -> arbiter -> chat
+// -> serve. `session` feeds the LLM module its config (price_per_mtok, and on the
+// Manifest path endpoint/model/api_key_env for the self-built provider).
+void wire_agent(Agent& a,
+                Blackboard& bb,
+                const Block& session,
+                const std::vector<Block>& tools,
+                const std::vector<Block>& objectives,
+                const Block& memory,
+                std::string model) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -86,39 +97,47 @@ Agent build_agent_impl(Blackboard& bb,
   // 1) ToolRunner first: load every Tool block, then on_start WARMS the registry
   //    (each native `describe` runs exactly once) so the schemas exist before the
   //    Arbiter pulls them.
-  for (const auto& t : tools_resolved) a.tools->add_tool(t);
-  a.tools->on_start(Block{}, bb);
-  a.tools->on_attach(bb);
+  if (a.tools) {
+    for (const auto& t : tools_resolved) a.tools->add_tool(t);
+    a.tools->on_start(Block{}, bb);
+    a.tools->on_attach(bb);
+  }
 
-  // 2) LLM: on_start reads price_per_mtok from the Session block and keeps the
-  //    injected provider.
-  a.llm->on_start(session, bb);
-  a.llm->on_attach(bb);
+  // 2) LLM: on_start reads price_per_mtok from the Session block and either keeps the
+  //    injected provider (test path) or self-builds an OpenAICompatProvider from the
+  //    Session block's endpoint/model/api_key_env (Manifest path).
+  if (a.llm) {
+    a.llm->on_start(session, bb);
+    a.llm->on_attach(bb);
+  }
 
   // 2b) MemoryModule BEFORE the Arbiter: on a USER_MESSAGE the pump dispatches in
   //     registration order, so the module posts RETRIEVED_MEMORY (latest-value updated
   //     synchronously) before the Arbiter's start_turn() reads it the same turn.
-  a.memory->on_start(memory, bb);
-  a.memory->on_attach(bb);
+  if (a.memory) {
+    a.memory->on_start(memory, bb);
+    a.memory->on_attach(bb);
+  }
 
-  // 3) Arbiter: now that the registry is warm, hand it the tool specs, model,
-  //    and objectives, then attach it to the event loop.
-  a.arbiter->set_tools(a.tools->registry().specs());
-  a.arbiter->set_model(std::move(model));
-  a.arbiter->set_system_prompt(assemble_system_prompt(session));  // SOUL/USER/MEMORY (empty Block -> "")
-  a.arbiter->set_memory_path(core_path);  // live core memory (memory_file), re-read each turn
-  for (const auto& ob : objectives)
-    if (auto o = make_objective(ob)) a.arbiter->add_objective(std::move(o));
-  a.arbiter->on_attach(bb);
+  // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
+  //    ToolRunner is absent), model, and objectives, then attach it to the event loop.
+  if (a.arbiter) {
+    a.arbiter->set_tools(a.tools ? a.tools->registry().specs() : std::vector<ToolSpec>{});
+    a.arbiter->set_model(std::move(model));
+    a.arbiter->set_system_prompt(assemble_system_prompt(session));  // SOUL/USER/MEMORY (empty Block -> "")
+    a.arbiter->set_memory_path(core_path);  // live core memory (memory_file), re-read each turn
+    for (const auto& ob : objectives)
+      if (auto o = make_objective(ob)) a.arbiter->add_objective(std::move(o));
+    a.arbiter->on_attach(bb);
+  }
 
   // 4) Chat last: it is the user-facing surface and only needs attach (its REPL
   //    is driven by the caller).
-  a.chat->on_attach(bb);
+  if (a.chat) a.chat->on_attach(bb);
 
   // 5) HTTP front-end: attach its capture subscriptions; only drives the agent if
   //    the binary calls serve->listen() (--serve mode). Inert otherwise.
-  a.serve->on_attach(bb);
-  return a;
+  if (a.serve) a.serve->on_attach(bb);
 }
 
 }  // namespace
@@ -130,25 +149,49 @@ Agent build_agent(Blackboard& bb,
                   std::string model,
                   const Block& memory,
                   const Block& session) {
-  return build_agent_impl(bb, session, std::move(llm), tools, objectives, memory, std::move(model));
+  // Test path: construct ALL six modules directly (inject the scripted Provider into
+  // the LLMModule), then run the shared wiring. Every member is present, so the null
+  // guards in wire_agent are no-ops and behavior matches the pre-Launcher graph.
+  Agent a;
+  a.llm     = std::make_unique<LLMModule>(std::move(llm));
+  a.tools   = std::make_unique<ToolRunner>();
+  a.arbiter = std::make_unique<Arbiter>();
+  a.memory  = std::make_unique<MemoryModule>();
+  a.chat    = std::make_unique<ChatModule>();
+  a.serve   = std::make_unique<HttpServerModule>();
+  wire_agent(a, bb, session, tools, objectives, memory, std::move(model));
+  return a;
 }
 
 Agent build_agent(Blackboard& bb, const Manifest& m) {
   auto session = m.session();
   if (!session) throw MalConfig("manifest has no Session block");
   const Block& s = *session;
+  const std::string model = s.kv.count("model") ? s.kv.at("model") : "";
 
-  const std::string endpoint = s.kv.count("endpoint") ? s.kv.at("endpoint") : "";
-  const std::string model    = s.kv.count("model")    ? s.kv.at("model")    : "";
-  const std::string env      = s.kv.count("api_key_env") ? s.kv.at("api_key_env") : "HADES_API_KEY";
-  const char* key = std::getenv(env.c_str());
-  if (!key) throw MalConfig("LLM api key env var not set: " + env);
+  // pAntler: the Module= roster decides which modules exist. Factories just construct;
+  // the LLM self-builds its provider from the Session block in on_start (existing path).
+  Launcher launcher(bb);
+  launcher.register_factory("llm",         []{ return std::make_unique<LLMModule>(); });
+  launcher.register_factory("tool_runner", []{ return std::make_unique<ToolRunner>(); });
+  launcher.register_factory("memory",      []{ return std::make_unique<MemoryModule>(); });
+  launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
+  launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
+  launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
+  launcher.instantiate(m);   // MalConfig on unknown Module type
+
+  Agent a;
+  a.llm     = take_as<LLMModule>(launcher, "llm");
+  a.tools   = take_as<ToolRunner>(launcher, "tool_runner");
+  a.memory  = take_as<MemoryModule>(launcher, "memory");
+  a.arbiter = take_as<Arbiter>(launcher, "arbiter");
+  a.chat    = take_as<ChatModule>(launcher, "chat");
+  a.serve   = take_as<HttpServerModule>(launcher, "serve");
 
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
-
-  auto provider = std::make_unique<OpenAICompatProvider>(endpoint, key, model, cpr_http());
-  return build_agent_impl(bb, s, std::move(provider), m.of("Tool"), m.of("Objective"), memory, model);
+  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model);
+  return a;
 }
 
 }  // namespace hades
