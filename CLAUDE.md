@@ -28,8 +28,8 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-06-29)
-`main` @ `7bf634c`, **127/127 tests** (ASan+UBSan + **TSan** clean), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+## Current state (2026-06-30)
+`main` @ `64f12ca`, **132/132 tests** (ASan+UBSan + **TSan** clean; +1 DISABLED regression test), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · safety gate
 (destructive shell + write_file → y/N; `save_memory`/`pin_fact` NOT gated — append-only to own files) ·
@@ -49,10 +49,24 @@ teardown:** the `Agent`'s `executor` is the **last** struct member (destroyed fi
 `llm`/`bb` still alive); `hades_main` declares `Blackboard bb` before `Agent agent`. Front-ends drive a
 turn via `run_until` (REPL: `turn_done_` flag; HTTP `collect_`: `got_reply_||pending_confirm_`, 180s).
 Pieces: `src/core/{blackboard,executor}.cpp`, `src/module/llm_module.cpp`, `app/agent_wiring.*`,
-`tests/test_{blackboard,executor,llm_module,offload_e2e}.cpp`. **KNOWN follow-up (build NEXT, before
-SSE/Bridge):** `run_until`'s 180s deadline is fixed-at-entry → a legit long multi-step turn can time out,
-leaking a stale worker's `LLM_RESPONSE` into the next turn + racing `spent_` (budget UB). Fix = turn-epoch
-on `LLM_REQUEST`/`LLM_RESPONSE` + in-flight guard (or reset deadline on progress).
+`tests/test_{blackboard,executor,llm_module,offload_e2e}.cpp`.
+
+#### run_until follow-up (shipped 2026-06-30, `main` @ `64f12ca`, 132/132 + TSan clean)
+Closed the worker-offload review's Important: **(1) turn-epoch** — Arbiter `++turn_epoch_` per `USER_MESSAGE`
+(NOT on tool-loop continuations), stamps `LLM_REQUEST`, LLMModule echoes into `LLM_RESPONSE`, Arbiter drops
+stale-epoch responses; **(2) race-free budget** — the offload worker captures only `provider_`/`bb_` (not
+`this`) and posts ONLY `LLM_RESPONSE`; `spent_` accrues in a pump-thread `LLM_RESPONSE` handler (single
+writer → no race even if calls overlap); **(3) idle timeout** — `pump()` returns a dispatch count and
+`run_until` resets its deadline on progress, so a long-but-progressing turn no longer false-times-out (a
+stalled turn still fires). **LOAD-BEARING INVARIANT (documented at `kTurnTimeoutS`/`kCollectTimeoutS` +
+`http.h`):** the idle timeout (180s) MUST stay > max single in-flight poster (cpr 120s + tool 30s) — that
+is what guarantees no worker is alive when `run_until` abandons a turn, so no stale `LLM_RESPONSE` is
+produced. The epoch is **defense-in-depth**; it has a known dispatch-ordering hole (epoch bumps on
+`USER_MESSAGE` *dispatch*, so a stale response enqueued AHEAD of the next `USER_MESSAGE` would pass) that
+is **unreachable in the shipped binary** under that invariant — captured as a **DISABLED** regression test
+(`Arbiter.DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted`). **REMAINING follow-up (couple
+to SSE / tool-offload — the work that breaks the invariant):** abandonment-epoch-bump (front-end signals
+turn abandonment / Arbiter invalidates) so the epoch is robust independent of timing; then enable that test.
 
 ### Web UI (shipped 2026-06-29) — `--serve` browser front-end
 `hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
@@ -87,7 +101,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (127/127)
+nix develop --command ctest --test-dir build                 # test (132/132)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -122,9 +136,10 @@ TSan-clean — see the Worker-offload section above). **(2) + (3) SPEC'd + PLANN
 at `docs/superpowers/{specs,plans}/2026-06-29-manifest-parser-fail-loud*`; **(3)** real tool
 **permission/capability** model (today: destructive-pattern blocklist; fs_read/http_fetch ungated) —
 spec/plan at `docs/superpowers/{specs,plans}/2026-06-29-tool-capability-model*` (both have OPEN QUESTIONS
-flagged in the spec header for the user). **NEXT (decided): build the worker-offload run_until follow-up
-first** (turn-epoch + in-flight guard — see the Worker-offload section), it precedes SSE/Bridge; then
-(2)/(3) are ready to build from their committed plans.
+flagged in the spec header for the user). The worker-offload **run_until follow-up is DONE** (turn-epoch +
+race-free budget + idle timeout — see the Worker-offload section, `64f12ca`). **NEXT options:** build (2)
+or (3) from their committed plans (answer their spec OPEN QUESTIONS first), or the epoch-hardening +
+SSE/tool-offload bundle.
 
 ## Other open work
 session resume (history is in-memory only) · MCP tool discovery (MCP servers can be called but aren't
