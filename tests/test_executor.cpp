@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include <atomic>
-#include <chrono>
 #include <thread>
 #include "hades/executor.h"
 using namespace hades;

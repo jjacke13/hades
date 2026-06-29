@@ -22,8 +22,9 @@ public:
   Executor(Executor&&) = delete;
   Executor& operator=(Executor&&) = delete;
   // Enqueue a task for a worker thread. After the dtor has begun (stop set) the
-  // task is dropped rather than enqueued. Tasks must not throw past their own
-  // body that matters — any throw is caught and swallowed on the worker.
+  // task is dropped rather than enqueued. Any exception thrown by a submitted
+  // task is caught and swallowed on the worker thread (it will not propagate or
+  // kill the worker).
   void submit(std::function<void()> task);
 
 private:
