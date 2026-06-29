@@ -68,10 +68,11 @@ void LLMModule::on_attach(Blackboard& bb) {
     // The blocking provider call + result posting. Runs inline on the pump thread
     // by default, or on an Executor worker when one is set. bb_->post() is
     // thread-safe, so the worker can post results straight back onto the bus.
-    // CONCURRENCY: spent_ is mutated here (on the worker when offloaded). v1 has
-    // at most ONE in-flight LLM call per agent (turns are serial), so there is no
-    // data race. If overlapping LLM calls are ever introduced, spent_ must become
-    // an atomic or switch to a post-a-delta scheme.
+    // CONCURRENCY: this closure touches NO module state — it only reads provider_
+    // and calls bb_->post(). Budget is NOT accrued here; it is accrued by the
+    // LLM_RESPONSE handler below, which runs only on the pump thread. So even if
+    // two LLM workers ever overlap, spent_ has a single writer (the pump thread)
+    // and there is no data race (post-a-delta: the worker just posts LLM_RESPONSE).
     auto run = [this](const LlmRequest& req) {
       LlmResponse r = provider_->complete(req);
       nlohmann::json out{
@@ -82,21 +83,35 @@ void LLMModule::on_attach(Blackboard& bb) {
           {"epoch",             req.epoch}   // echo the request's turn stamp on BOTH inline + worker paths
       };
       if (r.tool_call) out["tool_call"] = *r.tool_call;
-      bb_->post("LLM_RESPONSE", out, "llm");
-      spent_ += (static_cast<double>(r.prompt_tokens) + r.completion_tokens) / 1e6 * price_per_mtok_;
-      bb_->post("BUDGET_SPENT_USD", spent_, "llm");
+      bb_->post("LLM_RESPONSE", out, "llm");   // worker posts ONLY this — touches no module state
     };
     if (executor_) {
-      // SAFETY: the worker mutates spent_ and touches bb_ AFTER posting
-      // LLM_RESPONSE, so a front-end's run_until() observing LLM_RESPONSE does
-      // NOT prove this task has returned. The Executor MUST be destroyed (joined)
+      // SAFETY: the worker still reads provider_ (owned by this module) and calls
+      // bb_->post(), so a front-end's run_until() observing LLM_RESPONSE does NOT
+      // prove this task has returned. The Executor MUST be destroyed (joined)
       // BEFORE this module and the Blackboard — teardown order is load-bearing.
+      // (It no longer mutates spent_ — that moved to the pump-thread handler below.)
       // Move req into the task to avoid a redundant copy on submit (run takes
       // it by const&, so no further copy when invoked).
       executor_->submit([req = std::move(req), run]{ run(req); });
     } else {
       run(req);                                      // inline (default, unchanged)
     }
+  });
+
+  // Race-free budget accrual (post-a-delta). This handler runs ONLY on the pump
+  // thread (bus contract: handlers fire only inside pump()), so spent_ has a
+  // single writer regardless of how many LLM workers are in flight — no data
+  // race even under overlapping offloaded calls. It reacts to the LLM_RESPONSE
+  // the worker (or the inline path) just posted, reads the token counts, accrues
+  // the cumulative spend, and posts BUDGET_SPENT_USD. Because LLM_RESPONSE is
+  // posted first and this handler reacts to it, the observable order
+  // (LLM_RESPONSE then BUDGET_SPENT_USD) is preserved — StayOnBudget still works.
+  bb.subscribe("LLM_RESPONSE", [this](const Entry& e) {
+    const int p = e.value.value("prompt_tokens", 0);
+    const int c = e.value.value("completion_tokens", 0);
+    spent_ += (static_cast<double>(p) + c) / 1e6 * price_per_mtok_;
+    bb_->post("BUDGET_SPENT_USD", spent_, "llm");
   });
 }
 

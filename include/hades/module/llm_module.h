@@ -24,17 +24,21 @@ public:
   // behaviour).
   //
   // LIFETIME: Non-owning. The Executor MUST be joined/drained (destroyed) BEFORE
-  // this module and the Blackboard are destroyed — the worker mutates spent_ and
-  // posts BUDGET_SPENT_USD AFTER posting LLM_RESPONSE, so a front-end's
-  // run_until() observing LLM_RESPONSE does NOT prove the worker has returned
-  // from the task. Teardown order is load-bearing.
+  // this module and the Blackboard are destroyed — the worker reads provider_
+  // (owned here) and calls bb_->post(), so a front-end's run_until() observing
+  // LLM_RESPONSE does NOT prove the worker has returned from the task. Teardown
+  // order is load-bearing. (The worker no longer mutates spent_ — budget is
+  // accrued on the pump thread by the LLM_RESPONSE handler.)
   void set_executor(Executor* e) { executor_ = e; }
 private:
   std::unique_ptr<Provider> provider_;
+  // spent_ is written ONLY on the pump thread (the LLM_RESPONSE handler accrues
+  // it post-a-delta) → race-free regardless of overlapping offloaded LLM calls;
+  // the worker mutates no module state.
   double price_per_mtok_ = 0.0, spent_ = 0.0;
   Blackboard* bb_ = nullptr;
   // Non-owning. MUST be destroyed (joins its workers) BEFORE this module/bb_ —
-  // see set_executor(): the worker touches spent_/bb_ after posting LLM_RESPONSE.
+  // see set_executor(): the worker reads provider_/bb_ after posting LLM_RESPONSE.
   Executor* executor_ = nullptr;
 };
 }  // namespace hades

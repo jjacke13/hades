@@ -95,3 +95,33 @@ TEST(LLMModule, OffloadsToExecutorWithoutBlockingTheBus) {
   EXPECT_TRUE(ok);
   EXPECT_EQ(text, "slow ok");
 }
+TEST(LLMModule, BudgetAccruesOnPumpThreadUnderOffload) {
+  // Race-free budget: under an Executor the worker posts ONLY LLM_RESPONSE; the
+  // LLMModule accrues spent_ and posts BUDGET_SPENT_USD from a pump-thread
+  // handler reacting to LLM_RESPONSE, so spent_ is written only on the pump
+  // thread (no data race even if two workers overlap). Provider returns known
+  // tokens (1e6 prompt) at $2/Mtok -> $2.00.
+  struct TokenProvider : Provider {
+    LlmResponse complete(const LlmRequest&) override {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));   // genuinely offloaded
+      LlmResponse r; r.text = "ok"; r.prompt_tokens = 1000000; r.completion_tokens = 0;
+      return r;
+    }
+  };
+  // Declaration order is load-bearing: Executor declared LAST so it is destroyed
+  // FIRST (ex -> m -> bb). Its dtor joins the worker while module + Blackboard
+  // are still alive — the worker calls provider_->complete() and bb_->post(),
+  // both of which dangle if the module/bb were torn down before the join.
+  Blackboard bb;
+  LLMModule m(std::make_unique<TokenProvider>());
+  Executor ex(2);
+  m.set_executor(&ex);
+  Block cfg; cfg.kv["price_per_mtok"] = "2.0";
+  m.on_start(cfg, bb); m.on_attach(bb);
+  double spent = -1; bool budget_seen = false;
+  bb.subscribe("BUDGET_SPENT_USD", [&](const Entry& e){ spent = e.value.get<double>(); budget_seen = true; });
+  bb.post("LLM_REQUEST", {{"messages", nlohmann::json::array()}, {"tools", nlohmann::json::array()}}, "arb");
+  // Offloaded: budget is not available synchronously after the first pump.
+  EXPECT_TRUE(bb.run_until([&]{ return budget_seen; }, 5.0));
+  EXPECT_DOUBLE_EQ(spent, 2.0);   // accrued on the pump thread from LLM_RESPONSE
+}
