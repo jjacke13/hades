@@ -26,5 +26,6 @@ private:
   Blackboard* bb_  = nullptr;
   std::ostream* out_ = nullptr;
   std::istream* in_  = nullptr;
+  bool color_ = false;   // ANSI styling on; set in run_repl when stdout is a real TTY
 };
 }  // namespace hades
