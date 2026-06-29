@@ -15,6 +15,7 @@
 #include "hades/module/tool_runner.h"
 #include "hades/module/chat_module.h"
 #include "hades/module/http_server_module.h"
+#include "hades/module/memory_module.h"
 #include "hades/arbiter.h"
 namespace hades {
 class Blackboard;
@@ -24,10 +25,11 @@ class Blackboard;
 // the blackboard's pump() activity. Modules are declared in reverse teardown
 // order (last-declared is destroyed first); the holder is move-only.
 struct Agent {
-  std::unique_ptr<LLMModule>  llm;
-  std::unique_ptr<ToolRunner> tools;
-  std::unique_ptr<Arbiter>    arbiter;
-  std::unique_ptr<ChatModule> chat;
+  std::unique_ptr<LLMModule>    llm;
+  std::unique_ptr<ToolRunner>   tools;
+  std::unique_ptr<Arbiter>      arbiter;
+  std::unique_ptr<MemoryModule> memory;
+  std::unique_ptr<ChatModule>   chat;
   // Optional HTTP front-end; always built/attached, but only drives the agent when
   // the binary runs in `--serve` mode (otherwise the stdin REPL drives it).
   std::unique_ptr<HttpServerModule> serve;
@@ -43,7 +45,8 @@ Agent build_agent(Blackboard& bb,
                   std::unique_ptr<Provider> llm,
                   const std::vector<Block>& tools,
                   const std::vector<Block>& objectives,
-                  std::string model);
+                  std::string model,
+                  const Block& memory = Block{});
 
 // Convenience overload for the real binary: builds the live OpenAI-compatible
 // provider from the manifest's Session block (endpoint/model/api_key_env via

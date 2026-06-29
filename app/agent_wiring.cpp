@@ -15,6 +15,7 @@
 #include "hades/objective/avoid_destructive.h"
 #include "hades/objective/stay_on_budget.h"
 #include "hades/prompt.h"  // assemble_system_prompt
+#include "hades/module/memory_module.h"
 namespace hades {
 namespace {
 
@@ -38,18 +39,33 @@ Agent build_agent_impl(Blackboard& bb,
                        std::unique_ptr<Provider> llm_provider,
                        const std::vector<Block>& tools,
                        const std::vector<Block>& objectives,
+                       const Block& memory,
                        std::string model) {
   Agent a;
   a.llm     = std::make_unique<LLMModule>(std::move(llm_provider));
   a.tools   = std::make_unique<ToolRunner>();
   a.arbiter = std::make_unique<Arbiter>();
+  a.memory  = std::make_unique<MemoryModule>();
   a.chat    = std::make_unique<ChatModule>();
   a.serve   = std::make_unique<HttpServerModule>();
+
+  // Single source of truth: the save_memory tool writes to the same store the
+  // MemoryModule reads. Append the configured store path to the save_memory tool's
+  // command so the two cannot drift. Copy-then-modify; never touch the caller's blocks.
+  const std::string store_path =
+      memory.kv.count("store") ? memory.kv.at("store") : ".hades/memory.jsonl";
+  std::vector<Block> tools_resolved;
+  tools_resolved.reserve(tools.size());
+  for (Block t : tools) {
+    if (t.name == "save_memory" && t.kv.count("native"))
+      t.kv["native"] = t.kv["native"] + " " + store_path;
+    tools_resolved.push_back(std::move(t));
+  }
 
   // 1) ToolRunner first: load every Tool block, then on_start WARMS the registry
   //    (each native `describe` runs exactly once) so the schemas exist before the
   //    Arbiter pulls them.
-  for (const auto& t : tools) a.tools->add_tool(t);
+  for (const auto& t : tools_resolved) a.tools->add_tool(t);
   a.tools->on_start(Block{}, bb);
   a.tools->on_attach(bb);
 
@@ -57,6 +73,12 @@ Agent build_agent_impl(Blackboard& bb,
   //    injected provider.
   a.llm->on_start(session, bb);
   a.llm->on_attach(bb);
+
+  // 2b) MemoryModule BEFORE the Arbiter: on a USER_MESSAGE the pump dispatches in
+  //     registration order, so the module posts RETRIEVED_MEMORY (latest-value updated
+  //     synchronously) before the Arbiter's start_turn() reads it the same turn.
+  a.memory->on_start(memory, bb);
+  a.memory->on_attach(bb);
 
   // 3) Arbiter: now that the registry is warm, hand it the tool specs, model,
   //    and objectives, then attach it to the event loop.
@@ -83,8 +105,9 @@ Agent build_agent(Blackboard& bb,
                   std::unique_ptr<Provider> llm,
                   const std::vector<Block>& tools,
                   const std::vector<Block>& objectives,
-                  std::string model) {
-  return build_agent_impl(bb, Block{}, std::move(llm), tools, objectives, std::move(model));
+                  std::string model,
+                  const Block& memory) {
+  return build_agent_impl(bb, Block{}, std::move(llm), tools, objectives, memory, std::move(model));
 }
 
 Agent build_agent(Blackboard& bb, const Manifest& m) {
@@ -98,8 +121,11 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   const char* key = std::getenv(env.c_str());
   if (!key) throw MalConfig("LLM api key env var not set: " + env);
 
+  const auto mem_blocks = m.of("Memory");
+  const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
+
   auto provider = std::make_unique<OpenAICompatProvider>(endpoint, key, model, cpr_http());
-  return build_agent_impl(bb, s, std::move(provider), m.of("Tool"), m.of("Objective"), model);
+  return build_agent_impl(bb, s, std::move(provider), m.of("Tool"), m.of("Objective"), memory, model);
 }
 
 }  // namespace hades
