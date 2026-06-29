@@ -1,9 +1,8 @@
-// src/config/prompt.cpp — implementation of assemble_system_prompt (layered SOUL/USER/MEMORY)
+// src/config/prompt.cpp — assemble_system_prompt (SOUL+USER) + read_memory_layer (live core memory)
 //
-// Iterates the fixed file-key order, reads each configured file (MalConfig on an
-// unreadable path — fail visibly, never silently run without a configured persona),
-// and joins non-empty parts with a blank line. See hades/prompt.h.
-
+// assemble_system_prompt iterates the static persona keys (system_prompt_file, user_file), reads each
+// configured file (MalConfig on an unreadable path — fail visibly), joins non-empty parts with a blank
+// line. The MEMORY layer is NOT assembled here; it is read live per-turn via read_memory_layer.
 #include "hades/prompt.h"
 #include <array>
 #include <fstream>
@@ -21,8 +20,7 @@ std::string read_or_throw(const std::string& path) {
 }  // namespace
 
 std::string assemble_system_prompt(const Block& session) {
-  static constexpr std::array<const char*, 3> kKeys = {
-      "system_prompt_file", "user_file", "memory_file"};
+  static constexpr std::array<const char*, 2> kKeys = {"system_prompt_file", "user_file"};
   std::string out;
   for (const char* key : kKeys) {
     auto it = session.kv.find(key);
@@ -33,5 +31,14 @@ std::string assemble_system_prompt(const Block& session) {
     out += content;
   }
   return out;
+}
+
+std::string read_memory_layer(const std::string& path) {
+  if (path.empty()) return "";
+  std::ifstream f(path);
+  if (!f) return "";  // core file may not exist until the first pin_fact — not an error
+  std::stringstream s;
+  s << f.rdbuf();
+  return s.str();
 }
 }  // namespace hades
