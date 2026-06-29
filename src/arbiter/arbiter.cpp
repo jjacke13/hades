@@ -8,6 +8,8 @@
 
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
+#include "hades/prompt.h"   // read_memory_layer
+#include <string>
 namespace hades {
 
 static constexpr int kMaxSteps = 25;
@@ -32,12 +34,20 @@ void Arbiter::start_turn() {
   nlohmann::json tools = nlohmann::json::array();
   for (auto& t : tools_)
     tools.push_back({{"name", t.name}, {"description", t.description}, {"schema", t.schema}});
-  // Prepend the assembled system prompt (if any) as messages[0]; the conversation
-  // history follows. system_prompt_ is NOT stored in history_ so it stays exactly one
-  // leading message and never duplicates across turns.
+  // Leading system message = static SOUL/USER prompt + the live core-memory layer, re-read
+  // from disk every turn (so the agent's pin_fact edits show up the same session). Built fresh
+  // each turn; never stored in history_.
   nlohmann::json messages = nlohmann::json::array();
-  if (!system_prompt_.empty())
-    messages.push_back({{"role", "system"}, {"content", system_prompt_}});
+  std::string sys = system_prompt_;
+  if (!memory_path_.empty()) {
+    std::string core = read_memory_layer(memory_path_);
+    if (!core.empty()) {
+      if (!sys.empty()) sys += "\n\n";
+      sys += core;
+    }
+  }
+  if (!sys.empty())
+    messages.push_back({{"role", "system"}, {"content", sys}});
   for (const auto& m : history_) messages.push_back(m);
 
   // Inject dynamically retrieved memory as an ephemeral {role:system} block immediately

@@ -26,6 +26,8 @@ public:
   void set_model(std::string m) { model_ = std::move(m); }
   // Assembled system prompt (SOUL/USER/MEMORY); prepended as messages[0] each turn.
   void set_system_prompt(std::string s) { system_prompt_ = std::move(s); }
+  // Path to the always-on core-memory file (memory_file). Re-read every turn so pins are live.
+  void set_memory_path(std::string p) { memory_path_ = std::move(p); }
 
 private:
   void start_turn();
@@ -40,6 +42,7 @@ private:
   std::vector<ToolSpec> tools_;
   std::string model_;
   std::string system_prompt_;   // prepended as a {role:system} message each turn (may be empty)
+  std::string memory_path_;     // live core-memory file; re-read each turn into the system message
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm

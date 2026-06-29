@@ -6,6 +6,7 @@
 // (assistant tool_calls + matching tool role entries) for the next LLM call; and
 // the max-steps guard that terminates runaway tool loops.
 
+#include <fstream>
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
@@ -173,4 +174,44 @@ TEST(Arbiter, MemoryBlockReflectsOnlyCurrentTurnValue) {
   std::string dump = reqs.back()["messages"].dump();
   EXPECT_NE(dump.find("NEWFACT"), std::string::npos);   // current turn's memory present
   EXPECT_EQ(dump.find("OLDFACT"), std::string::npos);   // prior turn's memory did NOT persist
+}
+
+TEST(Arbiter, FoldsLiveCoreMemoryIntoSystemMessage) {
+  const std::string f = ::testing::TempDir() + "/core_arb.md";
+  { std::ofstream(f) << "- user prefers metric units\n"; }
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_system_prompt("you are hades");
+  a.set_memory_path(f);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  ASSERT_FALSE(req.is_null());
+  const auto& sys = req["messages"][0];
+  EXPECT_EQ(sys["role"], "system");
+  EXPECT_NE(sys["content"].get<std::string>().find("you are hades"), std::string::npos);
+  EXPECT_NE(sys["content"].get<std::string>().find("metric units"), std::string::npos);
+}
+
+TEST(Arbiter, CoreMemoryIsLiveReloadedEachTurn) {
+  const std::string f = ::testing::TempDir() + "/core_live.md";
+  { std::ofstream(f) << "- fact one\n"; }
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_memory_path(f);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  bb.post("USER_MESSAGE","first","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","ok"}}, "llm"); bb.pump();   // turn 1 ends
+  { std::ofstream(f, std::ios::app) << "- fact two\n"; }        // agent pins something mid-session
+  bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
+  std::string dump = reqs.back()["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(dump.find("fact one"), std::string::npos);
+  EXPECT_NE(dump.find("fact two"), std::string::npos);          // new pin visible same session
+}
+
+TEST(Arbiter, NoCoreMemoryWhenPathUnsetAndNoPrompt) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  EXPECT_EQ(req["messages"][0]["role"], "user");   // no leading system message at all
 }
