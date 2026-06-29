@@ -10,6 +10,6 @@
 #include <vector>
 #include "hades/memory/record.h"
 namespace hades {
-std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
-                                        const std::string& query, std::size_t top_n);
+[[nodiscard]] std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
+                                                    const std::string& query, std::size_t top_n);
 }  // namespace hades

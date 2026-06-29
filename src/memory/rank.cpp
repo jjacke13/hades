@@ -20,20 +20,20 @@ static std::set<std::string> tokenize(const std::string& s) {
 std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
                                         const std::string& query, std::size_t top_n) {
   const auto q = tokenize(query);
-  struct Scored { const MemoryRecord* rec; int score; };
+  struct Scored { std::size_t idx; int score; };
   std::vector<Scored> scored;
-  for (const auto& rec : all) {
-    const auto t = tokenize(rec.text);
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    const auto t = tokenize(all[i].text);
     int score = 0;
     for (const auto& w : q) if (t.count(w)) ++score;
-    if (score > 0) scored.push_back({&rec, score});
+    if (score > 0) scored.push_back({i, score});
   }
-  std::stable_sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
+  std::sort(scored.begin(), scored.end(), [&all](const Scored& a, const Scored& b) {
     if (a.score != b.score) return a.score > b.score;
-    return a.rec->ts > b.rec->ts;
+    return all[a.idx].ts > all[b.idx].ts;
   });
   std::vector<MemoryRecord> out;
-  for (std::size_t i = 0; i < scored.size() && i < top_n; ++i) out.push_back(*scored[i].rec);
+  for (std::size_t i = 0; i < scored.size() && i < top_n; ++i) out.push_back(all[scored[i].idx]);
   return out;
 }
 
