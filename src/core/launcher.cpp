@@ -7,6 +7,7 @@
 
 #include "hades/launcher.h"
 #include "hades/blackboard.h"
+#include <cstddef>
 namespace hades {
 struct Launcher::Impl {
   Blackboard& bb; std::map<std::string,Factory> factories;
@@ -29,13 +30,14 @@ void Launcher::build(const Manifest& m){
   } catch(...) { p_->mods.clear(); throw; }
 }
 void Launcher::instantiate(const Manifest& m){
+  const std::size_t prior = p_->mods.size();
   try {
     for(const auto& blk : m.of("Module")){
       auto it=p_->factories.find(blk.name);
       if(it==p_->factories.end()) throw MalConfig("unknown module type: "+blk.name);
       p_->mods.push_back(it->second());
     }
-  } catch(...) { p_->mods.clear(); throw; }
+  } catch(...) { p_->mods.resize(prior); throw; }
 }
 bool Launcher::has(const std::string& type) const {
   for(const auto& u : p_->mods) if(u && u->type()==type) return true;
@@ -48,6 +50,8 @@ std::unique_ptr<Module> Launcher::take(const std::string& type){
 }
 void Launcher::shutdown(){ p_->mods.clear(); }   // module dtors reap their subprocesses
 std::vector<Module*> Launcher::modules() const {
-  std::vector<Module*> r; for(auto& u:p_->mods) r.push_back(u.get()); return r;
+  std::vector<Module*> r;
+  for(const auto& u : p_->mods) if(u) r.push_back(u.get());
+  return r;
 }
 }  // namespace hades

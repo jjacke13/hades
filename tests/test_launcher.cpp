@@ -60,3 +60,14 @@ TEST(Launcher, InstantiateUnknownTypeThrowsMalConfig) {
   L.register_factory("a", []{ return std::make_unique<FakeMod>("a"); });
   EXPECT_THROW(L.instantiate(parse_manifest("Module = ghost\n")), MalConfig);
 }
+TEST(Launcher, ModulesSkipsTakenSlots) {
+  Blackboard bb; Launcher L(bb);
+  L.register_factory("a", []{ return std::make_unique<FakeMod>("a"); });
+  L.register_factory("b", []{ return std::make_unique<FakeMod>("b"); });
+  L.instantiate(parse_manifest("Module = a\nModule = b\n"));
+  auto taken = L.take("a");
+  ASSERT_NE(taken, nullptr);
+  auto mods = L.modules();
+  EXPECT_EQ(mods.size(), 1u);          // the taken slot is filtered out
+  for (auto* m : mods) { ASSERT_NE(m, nullptr); EXPECT_EQ(m->type(), "b"); }
+}
