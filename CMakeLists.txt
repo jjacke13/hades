@@ -101,5 +101,10 @@ target_sources(hades_core PRIVATE src/module/memory_module.cpp)
 target_sources(hades_tests PRIVATE tests/test_memory_module.cpp)
 target_sources(hades_tests PRIVATE tests/test_memory_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_pin_fact_wiring.cpp)
+target_sources(hades_tests PRIVATE tests/test_webui.cpp)
+target_compile_definitions(hades_tests PRIVATE
+  WEB_INDEX="${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
+  WEB_STYLE="${CMAKE_CURRENT_SOURCE_DIR}/web/style.css"
+  WEB_APP="${CMAKE_CURRENT_SOURCE_DIR}/web/app.js")
 include(GoogleTest)
 gtest_discover_tests(hades_tests)
