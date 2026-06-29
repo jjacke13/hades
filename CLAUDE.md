@@ -29,13 +29,30 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-29)
-`main` @ `3ea128a`, **119/119 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `7bf634c`, **127/127 tests** (ASan+UBSan + **TSan** clean), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · safety gate
 (destructive shell + write_file → y/N; `save_memory`/`pin_fact` NOT gated — append-only to own files) ·
 **two memory layers** (core + archival, see below) · layered **system prompt** (SOUL/USER static +
 live core MEMORY) · two front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
-labels) and **HTTP `--serve`** (browser web UI + JSON API, see below).
+labels) and **HTTP `--serve`** (browser web UI + JSON API, see below) · **worker-offload concurrency**
+(see below).
+
+### Worker-offload (shipped 2026-06-29) — bus stays single-threaded, blocking LLM call offloaded
+The bus is **still single-threaded deterministic** (subscriber handlers run ONLY on the pump thread), but
+`Blackboard::post()` is now **thread-safe** and there is a `run_until(pred, timeout_s)` event loop, an
+`Executor` worker pool (`src/core/executor.cpp`), and **opt-in** `LLMModule::set_executor()`. When set
+(the live Manifest path), the blocking `provider_->complete()` HTTP runs on a worker that `post()`s
+`LLM_RESPONSE`/`BUDGET_SPENT_USD` back; `run_until` on the pump thread wakes and pumps it. With no
+executor (the test `build_agent` overload) the LLM runs inline → all tests byte-identical. **Load-bearing
+teardown:** the `Agent`'s `executor` is the **last** struct member (destroyed first → joins workers while
+`llm`/`bb` still alive); `hades_main` declares `Blackboard bb` before `Agent agent`. Front-ends drive a
+turn via `run_until` (REPL: `turn_done_` flag; HTTP `collect_`: `got_reply_||pending_confirm_`, 180s).
+Pieces: `src/core/{blackboard,executor}.cpp`, `src/module/llm_module.cpp`, `app/agent_wiring.*`,
+`tests/test_{blackboard,executor,llm_module,offload_e2e}.cpp`. **KNOWN follow-up (build NEXT, before
+SSE/Bridge):** `run_until`'s 180s deadline is fixed-at-entry → a legit long multi-step turn can time out,
+leaking a stale worker's `LLM_RESPONSE` into the next turn + racing `spent_` (budget UB). Fix = turn-epoch
+on `LLM_REQUEST`/`LLM_RESPONSE` + in-flight guard (or reset deadline on progress).
 
 ### Web UI (shipped 2026-06-29) — `--serve` browser front-end
 `hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
@@ -70,7 +87,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (119/119)
+nix develop --command ctest --test-dir build                 # test (127/127)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -97,12 +114,17 @@ manifest — the static-dir + JSON-API seam is ready) · **auth** (fill in the `
 password) · agent↔agent **Bridge** (pShare-style, needs design — parked).
 
 ## Architecture-honesty pass (after expert critique, 2026-06-29)
-4 debts flagged; **(1) DONE** — manifest `Module=` roster now drives modules (pAntler, above). Remaining:
-**(2)** harden the one-kv-per-line manifest parser to fail LOUD (currently silent mis-parse — bit us 3×);
-**(3)** real tool **permission/capability** model (today: destructive-pattern blocklist; fs_read/http_fetch
-ungated); **(4) DECIDED = worker-offload** (keep single-threaded deterministic bus + offload blocking LLM/tool
-work to workers that post back; thread-safe `post()` + `Executor` + `run_until()` — groundwork to build, unblocks
-SSE/Bridge). See `docs/superpowers/specs/2026-06-29-launcher-pantler-design.md` + the project memory note.
+4 debts flagged. **(1) DONE** — manifest `Module=` roster drives modules (pAntler, above).
+**(4) DONE** — worker-offload shipped (single-threaded deterministic bus + blocking LLM call offloaded to
+an `Executor` worker that `post()`s back; thread-safe `post()` + `run_until()`; opt-in, 127/127 +
+TSan-clean — see the Worker-offload section above). **(2) + (3) SPEC'd + PLANNED, build deferred:**
+**(2)** harden the one-kv-per-line manifest parser to fail LOUD (silent mis-parse — bit us 3×) — spec/plan
+at `docs/superpowers/{specs,plans}/2026-06-29-manifest-parser-fail-loud*`; **(3)** real tool
+**permission/capability** model (today: destructive-pattern blocklist; fs_read/http_fetch ungated) —
+spec/plan at `docs/superpowers/{specs,plans}/2026-06-29-tool-capability-model*` (both have OPEN QUESTIONS
+flagged in the spec header for the user). **NEXT (decided): build the worker-offload run_until follow-up
+first** (turn-epoch + in-flight guard — see the Worker-offload section), it precedes SSE/Bridge; then
+(2)/(3) are ready to build from their committed plans.
 
 ## Other open work
 session resume (history is in-memory only) · MCP tool discovery (MCP servers can be called but aren't
@@ -116,7 +138,11 @@ announced to the LLM) · persona switch · prompt caching · SSE streaming · se
   requested front-end is missing. Cross-wiring (Arbiter←tools/objectives/model/prompt) stays explicit in
   `wire_agent`. dev.hades roster = llm/tool_runner/memory/chat/arbiter/serve.
 - API key: env var only, redacted in the Eventlog; never put it in the manifest.
-- Single-threaded bus — the HTTP server serializes all turns under one mutex.
+- Single-threaded **dispatch** — subscriber handlers run ONLY on the pump thread (the determinism
+  invariant). `post()` is thread-safe (workers call it); the blocking LLM call is offloaded to an
+  `Executor` worker when set. HTTP server still serializes whole turns under one mutex. **Teardown order
+  is load-bearing:** `Executor` joined before modules+Blackboard (Agent's `executor` is the last member;
+  `bb` declared before `agent` in `hades_main`).
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
   `=` wins, rest swallowed into the value). Multi-line blocks only (like `Session`/`Memory`/`Serve`). Bit
   us **twice** (final whole-branch review each time): `Memory { store=… top_n=… }` and `Serve { host=… port=… webroot=… }`
