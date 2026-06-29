@@ -115,6 +115,7 @@ TEST(Arbiter, StopsAfterMaxToolSteps) {
   }
   EXPECT_NE(last.find("max tool steps"), std::string::npos);
 }
+
 TEST(Arbiter, InjectsRetrievedMemoryBeforeUserMessage) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   nlohmann::json req;
@@ -158,4 +159,18 @@ TEST(Arbiter, MemoryBlockIsEphemeralNotInHistory) {
     if (m.value("role","")=="system" && m.value("content","").rfind("Relevant memories:",0)==0)
       leaked=true;
   EXPECT_FALSE(leaked);   // prior turn's memory block did not persist into history_
+}
+
+TEST(Arbiter, MemoryBlockReflectsOnlyCurrentTurnValue) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY","- OLDFACT alpha","memory");
+  bb.post("USER_MESSAGE","first","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","ok"}}, "llm"); bb.pump();   // turn 1 ends
+  bb.post("RETRIEVED_MEMORY","- NEWFACT beta","memory");        // different memory now
+  bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
+  std::string dump = reqs.back()["messages"].dump();
+  EXPECT_NE(dump.find("NEWFACT"), std::string::npos);   // current turn's memory present
+  EXPECT_EQ(dump.find("OLDFACT"), std::string::npos);   // prior turn's memory did NOT persist
 }
