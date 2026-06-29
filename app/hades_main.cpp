@@ -63,7 +63,10 @@ int main(int argc, char** argv) {
     const Manifest manifest = parse_manifest(read_file(argv[1]));
     for (const auto& w : manifest.warnings)
       std::cerr << "hades: manifest warning: " << w << "\n";
-    enforce_manifest(manifest);   // throws MalConfig on packed multi-kv lines (caught below)
+    // Enforce HERE (before resolve_api_key) is load-bearing, not redundant: build_agent()
+    // also enforces, but only AFTER the key is resolved — so without this early call a
+    // missing-key error would mask a corrupt-manifest error. Throws MalConfig (caught below).
+    enforce_manifest(manifest);
 
     // Resolve + redact the key BEFORE constructing the blackboard, so the secret
     // can never appear unredacted in session.log.
