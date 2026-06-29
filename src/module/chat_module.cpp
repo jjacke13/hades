@@ -7,9 +7,15 @@
 
 #include "hades/module/chat_module.h"
 #include "hades/blackboard.h"
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <istream>
 #include <ostream>
 #include <string>
+#include <unistd.h>
+#include <readline/history.h>
+#include <readline/readline.h>
 namespace hades {
 
 void ChatModule::on_attach(Blackboard& bb) {
@@ -33,6 +39,15 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
   in_  = &in;
   out_ = &out;
   struct Guard { ChatModule* self; ~Guard(){ self->in_=nullptr; self->out_=nullptr; } } guard{this};
+
+  // Interactive terminal -> readline (arrows/history/editing). Anything else
+  // (piped stdin, a test stringstream, a redirected file) -> plain getline so
+  // the injected-stream seam keeps working and tests stay deterministic.
+  if (&in == &std::cin && isatty(fileno(stdin))) {
+    run_repl_readline();
+    return;
+  }
+
   std::string line;
   while (true) {
     out << "user> " << std::flush;
@@ -41,6 +56,23 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
     if (line.empty()) continue;
     bb_->post("USER_MESSAGE", line, "chat");
     bb_->pump();
+  }
+}
+
+void ChatModule::run_repl_readline() {
+  while (true) {
+    char* raw = readline("user> ");
+    if (!raw) {                       // Ctrl-D / EOF
+      if (out_) (*out_) << "\n";
+      break;
+    }
+    std::string line(raw);
+    if (*raw) add_history(raw);       // non-empty lines recallable via up-arrow
+    std::free(raw);
+    if (line == "/quit") break;
+    if (line.empty()) continue;
+    bb_->post("USER_MESSAGE", line, "chat");
+    bb_->pump();                       // assistant output prints in cooked mode, after readline returns
   }
 }
 

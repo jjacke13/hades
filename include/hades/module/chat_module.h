@@ -18,6 +18,11 @@ public:
   void on_attach(Blackboard& bb) override;
   void run_repl(std::istream& in, std::ostream& out);  // blocks until EOF or /quit
 private:
+  // Interactive REPL backed by GNU readline (line editing: arrows, history,
+  // Ctrl-A/E, reverse i-search). Used only when stdin is a real TTY; otherwise
+  // run_repl falls back to std::getline so piped/test input still works.
+  void run_repl_readline();
+
   Blackboard* bb_  = nullptr;
   std::ostream* out_ = nullptr;
   std::istream* in_  = nullptr;
