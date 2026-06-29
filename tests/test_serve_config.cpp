@@ -24,3 +24,20 @@ TEST(ServeConfig, InvalidPortFallsBackToDefault) {
   auto c = resolve_serve_config(parse_manifest("Serve {\n  port = not-a-port\n}\n"), 0);
   EXPECT_EQ(c.port, 8080);
 }
+TEST(ServeConfig, OutOfRangePortFallsBackToDefault) {
+  auto c = resolve_serve_config(parse_manifest("Serve {\n  port = 65536\n}\n"), 0);
+  EXPECT_EQ(c.port, 8080);
+}
+TEST(ServeConfig, NegativePortFallsBackToDefault) {
+  auto c = resolve_serve_config(parse_manifest("Serve {\n  port = -1\n}\n"), 0);
+  EXPECT_EQ(c.port, 8080);
+}
+TEST(ServeConfig, EmptyHostAndWebrootKeepDefaults) {
+  auto c = resolve_serve_config(parse_manifest("Serve {\n  host = \n  webroot = \n}\n"), 0);
+  EXPECT_EQ(c.host, "127.0.0.1");
+  EXPECT_EQ(c.webroot, "web");
+}
+TEST(ServeConfig, CliPortOverridesDefaultsWithNoBlock) {
+  auto c = resolve_serve_config(parse_manifest("Session\n{\n}\n"), 7000);
+  EXPECT_EQ(c.port, 7000);
+}
