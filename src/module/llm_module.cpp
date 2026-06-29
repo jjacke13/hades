@@ -34,9 +34,14 @@ void LLMModule::on_start(const Block& cfg, Blackboard&) {
 
 void LLMModule::on_attach(Blackboard& bb) {
   bb_ = &bb;
-  // SAFETY: `this`/bb_ are non-owning. LLMModule lifetime is managed by Launcher
-  // and outlives the Blackboard's subscription (modules are cleared before the
-  // Blackboard is destroyed).
+  // SAFETY: `this`/bb_ are non-owning. Teardown order (see app/hades_main.cpp):
+  // `Blackboard bb` is declared BEFORE `Agent agent`, so the Agent — and every
+  // module it owns — destructs FIRST and the Blackboard LAST. This subscription
+  // lambda (which captures `this`) therefore OUTLIVES the LLMModule it points at;
+  // the captured `this` dangles for the brief window before `bb` is destroyed.
+  // That is safe only because nothing pumps the bus during teardown: the
+  // Blackboard's dtor destroys the subscription lambdas, it never invokes them,
+  // so the dangling `this` is never dereferenced.
   bb.subscribe("LLM_REQUEST", [this](const Entry& e) {
     // Build the LlmRequest synchronously on the pump thread (the only place that
     // reads the Entry / the Blackboard) BEFORE any offload, then capture it by
