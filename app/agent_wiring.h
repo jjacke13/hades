@@ -2,8 +2,9 @@
 //
 // Declares the Agent holder struct (unique_ptrs to LLMModule, ToolRunner, Arbiter,
 // ChatModule — alive for the full session) and two build_agent() overloads: one for
-// tests (injected Provider + explicit Block lists) and one for the real binary (reads
-// the Manifest's Session block and constructs an OpenAICompatProvider).
+// tests (injected Provider + explicit Block lists) and one for the real binary (builds
+// the module graph via the Launcher from the Manifest's `Module =` roster; the
+// LLMModule then self-builds its provider from the Session block in on_start).
 
 #pragma once
 #include <memory>
@@ -49,10 +50,11 @@ Agent build_agent(Blackboard& bb,
                   const Block& memory = Block{},
                   const Block& session = Block{});
 
-// Convenience overload for the real binary: builds the live OpenAI-compatible
-// provider from the manifest's Session block (endpoint/model/api_key_env via
-// the named env var) and wires the Tool/Objective blocks it carries. Throws
-// MalConfig on a missing Session or unset api key env var.
+// Convenience overload for the real binary: builds the module graph via the
+// Launcher from the manifest's `Module =` roster (throwing MalConfig on an unknown
+// module type) and wires the Tool/Objective blocks it carries. The LLMModule
+// self-builds its OpenAI-compatible provider from the Session block (endpoint/
+// model/api_key_env via the named env var) in its on_start.
 Agent build_agent(Blackboard& bb, const Manifest& m);
 
 }  // namespace hades

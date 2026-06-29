@@ -71,6 +71,12 @@ int main(int argc, char** argv) {
     Blackboard bb(&eventlog);
     Agent agent = build_agent(bb, manifest);  // owns every module for the session
 
+    if (!agent.arbiter || !agent.llm) {
+      std::cerr << "hades: manifest Module roster is missing `llm` and/or `arbiter` "
+                   "— the agent cannot take a turn\n";
+      return 1;
+    }
+
     if (serve) {
       if (!agent.serve) { std::cerr << "hades: no `serve` module in the manifest Module roster\n"; return 1; }
       const ServeConfig cfg = resolve_serve_config(manifest, cli_port);

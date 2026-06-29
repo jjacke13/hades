@@ -65,3 +65,30 @@ TEST(PantlerWiring, UnknownModuleTypeThrows) {
   Blackboard bb;
   EXPECT_THROW(build_agent(bb, parse_manifest(m)), MalConfig);
 }
+TEST(PantlerWiring, MisorderedRosterStillBuilds) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  const char* misordered = R"(
+Session
+{
+  provider       = openai_compat
+  endpoint       = https://example.invalid/v1
+  model          = test-model
+  api_key_env    = HADES_TEST_KEY
+  price_per_mtok = 1.0
+}
+Module = arbiter
+Module = llm
+Module = memory
+Module = tool_runner
+Module = chat
+Memory
+{
+  store = .hades/test_mem.jsonl
+  top_n = 5
+}
+)";
+  Blackboard bb;
+  Agent a = build_agent(bb, parse_manifest(misordered));
+  EXPECT_NE(a.arbiter, nullptr);
+  EXPECT_NE(a.memory, nullptr);   // built regardless of roster order; wire_agent enforces attach order
+}
