@@ -10,6 +10,7 @@
 #include "hades/llm/provider.h"
 namespace hades {
 class Blackboard;
+class Executor;
 class LLMModule : public Module {
 public:
   LLMModule() = default;
@@ -17,9 +18,15 @@ public:
   std::string type() const override { return "llm"; }
   void on_start(const Block& cfg, Blackboard& bb) override;
   void on_attach(Blackboard& bb) override;
+  // Opt-in: when set, the blocking provider_->complete() call is offloaded to a
+  // worker thread that posts LLM_RESPONSE/BUDGET_SPENT_USD back onto the bus.
+  // Non-owning; the Executor must outlive this module. When unset, complete()
+  // runs inline on the pump thread (default, unchanged behaviour).
+  void set_executor(Executor* e) { executor_ = e; }
 private:
   std::unique_ptr<Provider> provider_;
   double price_per_mtok_ = 0.0, spent_ = 0.0;
   Blackboard* bb_ = nullptr;
+  Executor* executor_ = nullptr;   // non-owning, outlives this module
 };
 }  // namespace hades

@@ -9,6 +9,7 @@
 
 #include "hades/module/llm_module.h"
 #include "hades/blackboard.h"
+#include "hades/executor.h"
 #include "hades/launcher.h"   // MalConfig
 #include "hades/config.h"
 #include "hades/llm/openai_compat_provider.h"
@@ -37,6 +38,9 @@ void LLMModule::on_attach(Blackboard& bb) {
   // and outlives the Blackboard's subscription (modules are cleared before the
   // Blackboard is destroyed).
   bb.subscribe("LLM_REQUEST", [this](const Entry& e) {
+    // Build the LlmRequest synchronously on the pump thread (the only place that
+    // reads the Entry / the Blackboard) BEFORE any offload, then capture it by
+    // value so it outlives the async task — `e` does not.
     LlmRequest req;
     try {
       req.messages = e.value.value("messages", nlohmann::json::array())
@@ -55,17 +59,31 @@ void LLMModule::on_attach(Blackboard& bb) {
     } catch (const nlohmann::json::exception&) {
       // Malformed request: proceed with whatever was parsed so far
     }
-    LlmResponse r = provider_->complete(req);
-    nlohmann::json out{
-        {"text",              r.text},
-        {"prompt_tokens",     r.prompt_tokens},
-        {"completion_tokens", r.completion_tokens},
-        {"stop_reason",       r.stop_reason}
+    // The blocking provider call + result posting. Runs inline on the pump thread
+    // by default, or on an Executor worker when one is set. bb_->post() is
+    // thread-safe, so the worker can post results straight back onto the bus.
+    // CONCURRENCY: spent_ is mutated here (on the worker when offloaded). v1 has
+    // at most ONE in-flight LLM call per agent (turns are serial), so there is no
+    // data race. If overlapping LLM calls are ever introduced, spent_ must become
+    // an atomic or switch to a post-a-delta scheme.
+    auto run = [this](LlmRequest req) {
+      LlmResponse r = provider_->complete(req);
+      nlohmann::json out{
+          {"text",              r.text},
+          {"prompt_tokens",     r.prompt_tokens},
+          {"completion_tokens", r.completion_tokens},
+          {"stop_reason",       r.stop_reason}
+      };
+      if (r.tool_call) out["tool_call"] = *r.tool_call;
+      bb_->post("LLM_RESPONSE", out, "llm");
+      spent_ += (static_cast<double>(r.prompt_tokens) + r.completion_tokens) / 1e6 * price_per_mtok_;
+      bb_->post("BUDGET_SPENT_USD", spent_, "llm");
     };
-    if (r.tool_call) out["tool_call"] = *r.tool_call;
-    bb_->post("LLM_RESPONSE", out, "llm");
-    spent_ += (static_cast<double>(r.prompt_tokens) + r.completion_tokens) / 1e6 * price_per_mtok_;
-    bb_->post("BUDGET_SPENT_USD", spent_, "llm");
+    if (executor_) {
+      executor_->submit([req, run]{ run(req); });   // req captured by value
+    } else {
+      run(req);                                      // inline (default, unchanged)
+    }
   });
 }
 

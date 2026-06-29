@@ -6,8 +6,11 @@
 // without throwing — all interactions are through the Blackboard pump().
 
 #include <gtest/gtest.h>
+#include <chrono>
+#include <thread>
 #include "hades/module/llm_module.h"
 #include "hades/blackboard.h"
+#include "hades/executor.h"
 using namespace hades;
 struct StubProvider : Provider {
   LlmResponse complete(const LlmRequest&) override {
@@ -48,4 +51,29 @@ TEST(LLMModule, MalformedRequestDoesNotThrow) {
   bb.post("LLM_REQUEST", {{"tools", 42}}, "arb");   // no messages; tools wrong type
   EXPECT_NO_THROW(bb.pump());
   EXPECT_TRUE(got);   // still produced a response
+}
+TEST(LLMModule, OffloadsToExecutorWithoutBlockingTheBus) {
+  // A provider whose complete() blocks ~50ms; with an Executor the post(LLM_REQUEST) must
+  // return before the response exists, and run_until collects it.
+  struct SlowProvider : Provider {
+    LlmResponse complete(const LlmRequest&) override {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      LlmResponse r; r.text = "slow ok"; return r;
+    }
+  };
+  Blackboard bb;
+  Executor ex(2);
+  LLMModule m(std::make_unique<SlowProvider>());
+  m.set_executor(&ex);
+  Block cfg; cfg.kv["price_per_mtok"] = "0";
+  m.on_start(cfg, bb); m.on_attach(bb);
+  std::string text;
+  bb.subscribe("LLM_RESPONSE", [&](const Entry& e){ text = e.value.value("text", std::string{}); });
+  bb.post("LLM_REQUEST", {{"messages", nlohmann::json::array()}, {"tools", nlohmann::json::array()}}, "arb");
+  // Right after pump returns, the worker is still sleeping -> no response yet (bus not blocked).
+  bb.pump();
+  EXPECT_TRUE(text.empty());                          // offloaded: not done synchronously
+  bool ok = bb.run_until([&]{ return !text.empty(); }, 5.0);
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(text, "slow ok");
 }
