@@ -8,6 +8,7 @@
 
 #pragma once
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
@@ -28,7 +29,7 @@ public:
   void post(const std::string& key, nlohmann::json value,
             const std::string& source, const std::string& aux = "");
   std::optional<Entry> get(const std::string& key) const;
-  void pump();                 // drain queue until empty (handlers may post more)
+  std::size_t pump();          // drain queue until empty (handlers may post more); returns entries dequeued
   // Pump, then wait (on the pump thread) for done() to hold or timeout_s to
   // elapse. post() may be called from worker threads to wake the wait; handlers
   // still run only here. Returns true if done() held, false on timeout.

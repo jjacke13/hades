@@ -62,15 +62,19 @@ std::size_t Blackboard::queued() const {
   std::lock_guard<std::mutex> lk(p_->mu);
   return p_->queue.size();
 }
-void Blackboard::pump(){
+std::size_t Blackboard::pump(){
   // Handlers run ONLY here (the pump thread). Pop each Entry under the lock,
   // then UNLOCK before dispatch — a handler's own post() re-locks mu, so holding
   // it across s.h(e) would self-deadlock. subs are touched only on this thread.
+  // Returns the number of entries DEQUEUED (= bus activity / progress this pump),
+  // counted even if no subscriber matched — a delivered event is still progress.
+  std::size_t dispatched = 0;
   for(;;){
     std::unique_lock<std::mutex> lk(p_->mu);
     if(p_->queue.empty()) break;
     Entry e = p_->queue.front(); p_->queue.pop_front();
     lk.unlock();
+    ++dispatched;
     for(auto& s : p_->subs){
       if(!match(s.pattern, e.key)) continue;
       double last = s.last.count(e.key) ? s.last[e.key] : -1e18;
@@ -79,12 +83,18 @@ void Blackboard::pump(){
       s.h(e);
     }
   }
+  return dispatched;
 }
 bool Blackboard::run_until(const std::function<bool()>& done, double timeout_s) {
-  const double deadline = now() + timeout_s;
+  // IDLE timeout: the deadline measures time since the last bus activity, not
+  // since entry. Each pump() that delivered >=1 entry resets the window, so a
+  // steadily-progressing (multi-step) turn never trips; only a genuinely stalled
+  // turn (no activity for timeout_s) times out.
+  double deadline = now() + timeout_s;
   while (!done()) {
-    pump();
-    if (done()) return true;
+    const std::size_t dispatched = pump();
+    if (done()) return true;                       // inline-completion fast path
+    if (dispatched > 0) deadline = now() + timeout_s;  // progress -> reset idle window
     std::unique_lock<std::mutex> lk(p_->mu);
     if (p_->queue.empty())
       p_->cv.wait_for(lk, std::chrono::milliseconds(20), [&]{ return !p_->queue.empty(); });
