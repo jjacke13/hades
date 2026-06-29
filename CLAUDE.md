@@ -46,7 +46,8 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `tools/sa
 Config: `Memory { store=… top_n=… }` block (MUST be multi-line — parser is one-kv-per-line). Wiring
 registers MemoryModule **before** the Arbiter (single-thread pump order → `RETRIEVED_MEMORY` fresh same
 turn) and appends the store path to the `save_memory` tool argv (single source of truth).
-**Not yet live-smoke-tested against PPQ** (needs key) — unit/integration green (85/85).
+**LIVE-VALIDATED 2026-06-29** against PPQ: saved a fact, restarted, `hades-scope … RETRIEVED_MEMORY` showed it
+surfaced cross-restart on the matching turn and `""` on non-matching turns. Unit/integration green (85/85).
 
 ## Build / run
 ```bash
