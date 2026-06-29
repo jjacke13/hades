@@ -72,4 +72,9 @@ Agent build_agent(Blackboard& bb,
 // model/api_key_env via the named env var) in its on_start.
 Agent build_agent(Blackboard& bb, const Manifest& m);
 
+// Promote the fatal multi-kv parser warnings (see kMultiKvWarning) to a hard MalConfig so
+// no agent is ever built from a corrupt manifest. No-op when there are none. Called at the
+// top of build_agent(bb, Manifest) as a library invariant, and early by the binary.
+void enforce_manifest(const Manifest& m);
+
 }  // namespace hades

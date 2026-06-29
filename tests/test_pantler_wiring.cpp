@@ -92,3 +92,34 @@ Memory
   EXPECT_NE(a.arbiter, nullptr);
   EXPECT_NE(a.memory, nullptr);   // built regardless of roster order; wire_agent enforces attach order
 }
+TEST(PantlerWiring, CorruptInlineMultiKvManifestThrowsMalConfig) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  // A full roster, but the Memory block packs two kv pairs on ONE line (the silent-corruption
+  // footgun). enforce_manifest() must promote the parser's fatal warning to MalConfig.
+  const char* corrupt = R"(
+Session
+{
+  endpoint    = https://example.invalid/v1
+  model       = test-model
+  api_key_env = HADES_TEST_KEY
+}
+Module = llm
+Module = arbiter
+Memory { store=x top_n=5 }
+)";
+  Blackboard bb;
+  EXPECT_THROW(build_agent(bb, parse_manifest(corrupt)), MalConfig);
+}
+// Discriminating tests for enforce_manifest itself: a packed kv that is NOT a memory
+// store path (so the downstream reject_ws guard would NOT catch it) must still throw —
+// proving enforce_manifest, not some other wiring guard, does the promotion.
+TEST(PantlerWiring, EnforceManifestThrowsOnPackedKv) {
+  Manifest m = parse_manifest("Session { endpoint=a model=b }\n");
+  ASSERT_FALSE(fatal_warnings(m).empty());   // T1 detector flagged the packed line
+  EXPECT_THROW(enforce_manifest(m), MalConfig);
+}
+TEST(PantlerWiring, EnforceManifestNoOpOnCleanManifest) {
+  Manifest m = parse_manifest(kFullRoster);  // all multi-line / single-kv inline
+  ASSERT_TRUE(fatal_warnings(m).empty());
+  EXPECT_NO_THROW(enforce_manifest(m));
+}

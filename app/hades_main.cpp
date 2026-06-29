@@ -61,6 +61,9 @@ int main(int argc, char** argv) {
   }
   try {
     const Manifest manifest = parse_manifest(read_file(argv[1]));
+    for (const auto& w : manifest.warnings)
+      std::cerr << "hades: manifest warning: " << w << "\n";
+    enforce_manifest(manifest);   // throws MalConfig on packed multi-kv lines (caught below)
 
     // Resolve + redact the key BEFORE constructing the blackboard, so the secret
     // can never appear unredacted in session.log.

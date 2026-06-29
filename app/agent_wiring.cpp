@@ -142,6 +142,15 @@ void wire_agent(Agent& a,
 
 }  // namespace
 
+void enforce_manifest(const Manifest& m) {
+  auto fatal = fatal_warnings(m);
+  if (fatal.empty()) return;
+  std::string msg = "corrupt manifest — multiple key=value pairs packed on one physical line "
+                    "(split each onto its own line in a { } block):";
+  for (const auto& w : fatal) msg += "\n  - " + w;
+  throw MalConfig(msg);
+}
+
 Agent build_agent(Blackboard& bb,
                   std::unique_ptr<Provider> llm,
                   const std::vector<Block>& tools,
@@ -164,6 +173,7 @@ Agent build_agent(Blackboard& bb,
 }
 
 Agent build_agent(Blackboard& bb, const Manifest& m) {
+  enforce_manifest(m);   // refuse to build from a manifest with packed multi-kv lines
   auto session = m.session();
   if (!session) throw MalConfig("manifest has no Session block");
   const Block& s = *session;
