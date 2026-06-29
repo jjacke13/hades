@@ -41,6 +41,14 @@ TEST(SaveMemoryTool, MissingTextIsNotOk) {
   EXPECT_FALSE(j.value("ok", true));
 }
 
+TEST(SaveMemoryTool, NonStringTextIsNotOkAndDoesNotCrash) {
+  ProcResult r = run_subprocess({SAVE_MEMORY_BIN, ::testing::TempDir() + "/ns.jsonl"},
+                                R"({"call":"save_memory","args":{"text":123}})", 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_FALSE(j.is_discarded());          // tool produced clean JSON, did not abort
+  EXPECT_FALSE(j.value("ok", true));
+}
+
 TEST(SaveMemoryTool, AppendDoesNotTruncate) {
   const std::string store = ::testing::TempDir() + "/append_check.jsonl";
   std::remove(store.c_str());

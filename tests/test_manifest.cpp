@@ -59,3 +59,11 @@ TEST(Manifest, BoolVariants) {
 TEST(Manifest, PosDoubleSuccess) {
   double d=0; EXPECT_TRUE(set_pos_double_on_string("2.5", d)); EXPECT_DOUBLE_EQ(d, 2.5);
 }
+TEST(Manifest, MultiLineMemoryBlockParsesBothKeys) {
+  const char* src = "Memory {\n  store = .hades/memory.jsonl\n  top_n = 5\n}\n";
+  Manifest m = parse_manifest(src);
+  auto blocks = m.of("Memory");
+  ASSERT_EQ(blocks.size(), 1u);
+  EXPECT_EQ(blocks[0].kv.at("store"), ".hades/memory.jsonl");
+  EXPECT_EQ(blocks[0].kv.at("top_n"), "5");
+}

@@ -132,7 +132,10 @@ may still be injected; harmless (same context), keeps v1 simple.
 ## Manifest additions — `manifests/dev.hades`
 
 ```
-Memory { store = .hades/memory.jsonl  top_n = 5 }
+Memory {
+  store = .hades/memory.jsonl
+  top_n = 5
+}
 Tool = save_memory { native = ./build/hades-save-memory .hades/memory.jsonl }
 ```
 

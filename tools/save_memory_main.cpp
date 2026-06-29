@@ -18,7 +18,9 @@ int main(int argc, char** argv) {
   auto in = nlohmann::json::parse(line, nullptr, false);
 
   nlohmann::json out;
-  std::string call = in.is_object() ? in.value("call", "") : "";
+  std::string call;
+  if (in.is_object() && in.contains("call") && in["call"].is_string())
+    call = in["call"].get<std::string>();
 
   if (call == "describe") {
     out = {{"ok", true},
@@ -33,8 +35,9 @@ int main(int argc, char** argv) {
     nlohmann::json args = (in.is_object() && in.contains("args") && in["args"].is_object())
                               ? in["args"]
                               : nlohmann::json::object();
-    std::string text = args.value("text", "");
-    if (text.empty()) {
+    bool has_text = args.contains("text") && args["text"].is_string();
+    std::string text = has_text ? args["text"].get<std::string>() : "";
+    if (!has_text || text.empty()) {
       out = {{"ok", false}, {"result", {{"error", "missing arg: text"}}}};
     } else {
       double ts = std::chrono::duration<double>(

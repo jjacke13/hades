@@ -54,6 +54,9 @@ Agent build_agent_impl(Blackboard& bb,
   // command so the two cannot drift. Copy-then-modify; never touch the caller's blocks.
   const std::string store_path =
       memory.kv.count("store") ? memory.kv.at("store") : ".hades/memory.jsonl";
+  for (char c : store_path)
+    if (std::isspace(static_cast<unsigned char>(c)))
+      throw MalConfig("memory store path must not contain whitespace: " + store_path);
   std::vector<Block> tools_resolved;
   tools_resolved.reserve(tools.size());
   for (Block t : tools) {

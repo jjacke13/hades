@@ -6,6 +6,7 @@
 #include <vector>
 #include "app/agent_wiring.h"
 #include "hades/blackboard.h"
+#include "hades/launcher.h"
 #include "hades/llm/provider.h"
 using namespace hades;
 
@@ -14,6 +15,13 @@ struct AnswerProvider : Provider {  // minimal: always a plain answer, no tool c
   LlmResponse complete(const LlmRequest&) override { LlmResponse r; r.text = "ok"; return r; }
 };
 }  // namespace
+
+TEST(MemoryWiring, WhitespaceStorePathThrows) {
+  Blackboard bb;
+  std::vector<Block> tools;
+  Block mem; mem.section = "Memory"; mem.kv["store"] = "/tmp/has space/memory.jsonl";
+  EXPECT_THROW(build_agent(bb, std::make_unique<AnswerProvider>(), tools, {}, "m", mem), MalConfig);
+}
 
 TEST(MemoryWiring, MemoryAttachedAndSeededStoreSurfaces) {
   const std::string store = ::testing::TempDir() + "/wire.jsonl";

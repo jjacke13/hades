@@ -877,7 +877,10 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
 
 `manifests/dev.hades` — add a Memory block and the save_memory tool (bare binary; wiring appends the path). Add near the other Tool lines:
 ```
-Memory { store = .hades/memory.jsonl  top_n = 5 }
+Memory {
+  store = .hades/memory.jsonl
+  top_n = 5
+}
 Tool = save_memory { native = ./build/hades-save-memory }
 ```
 
