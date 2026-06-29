@@ -29,49 +29,50 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-29)
-`main` @ `00f38cc`, **85/85 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
-Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **6 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory`, self-describing) · safety gate (destructive
-shell + write_file → y/N; `save_memory` NOT gated — append-only to own store) · layered **system prompt**
-(SOUL/USER static layers) · **dynamic MemoryModule** (see below) · two front-ends: **stdin REPL** and
-**HTTP** (`--serve`, loopback; POST /chat, POST /confirm, GET /health).
+`main` @ `3abf1b7`, **98/98 tests**, ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
+(`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · safety gate
+(destructive shell + write_file → y/N; `save_memory`/`pin_fact` NOT gated — append-only to own files) ·
+**two memory layers** (core + archival, see below) · layered **system prompt** (SOUL/USER static +
+live core MEMORY) · two front-ends: **stdin REPL** (GNU readline line editing — arrows/history/Ctrl-A/E)
+and **HTTP** (`--serve`, loopback; POST /chat, POST /confirm, GET /health).
 
-### MemoryModule (shipped 2026-06-29) — dynamic memory
-Tool writes, app reads, one shared JSONL file store. **`save_memory`** native tool (append-only to
-`.hades/memory.jsonl`) the LLM calls to persist a fact. **MemoryModule** (`type()=="memory"`) subscribes
-`USER_MESSAGE` → `load_memories()` → `rank_memories()` (pure keyword top-N; **v2 seam = embeddings**) →
-posts `RETRIEVED_MEMORY`. Arbiter `start_turn()` splices it as an **ephemeral** `{role:system}` "Relevant
-memories:" block immediately before the last user msg — never stored in `history_` (refreshes each turn).
-Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `tools/save_memory_main.cpp`.
-Config: `Memory { store=… top_n=… }` block (MUST be multi-line — parser is one-kv-per-line). Wiring
-registers MemoryModule **before** the Arbiter (single-thread pump order → `RETRIEVED_MEMORY` fresh same
-turn) and appends the store path to the `save_memory` tool argv (single source of truth).
-**LIVE-VALIDATED 2026-06-29** against PPQ: saved a fact, restarted, `hades-scope … RETRIEVED_MEMORY` showed it
-surfaced cross-restart on the matching turn and `""` on non-matching turns. Unit/integration green (85/85).
+### Two memory layers (MemGPT-style, both agent-writable)
+- **Archival / searchable** — `save_memory` tool → `.hades/memory.jsonl` (append-only). MemoryModule
+  (`type()=="memory"`) keyword-ranks it each turn (`rank_memories`, pure; **v2 seam = embeddings**) and
+  posts `RETRIEVED_MEMORY`; Arbiter injects it as an **ephemeral** `{role:system}` "Relevant memories:"
+  block before the last user msg. Config: `Memory { store=… top_n=… }`. **LIVE-VALIDATED** (save→restart→recall).
+- **Core / always-on** — `pin_fact` tool → `memory/facts.md` (append-only, newlines stripped, parent dir
+  created). The Arbiter **re-reads this file every turn** (`read_memory_layer`) and folds it into the
+  **leading** `{role:system}` message (after static SOUL/USER) — live same-session. Config: Session
+  `memory_file = memory/facts.md`; wiring **requires memory_file when pin_fact is present** (MalConfig
+  fail-fast) and appends the path to the tool argv (single source of truth).
+Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/config/prompt.cpp`
+(`assemble_system_prompt`=SOUL+USER, `read_memory_layer`=live core), `tools/{save_memory,pin_fact}_main.cpp`.
 
 ## Build / run
 ```bash
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (85/85)
+nix develop --command ctest --test-dir build                 # test (98/98)
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
 ```
-Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory}` (tools),
+Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
-gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
+**readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
 ## How it's built (process)
 Spec → plan → TDD, on feature branches merged ff to `main`. Specs/plans in `docs/superpowers/`;
 SDD ledger + per-task reports in `.superpowers/sdd/` (gitignored). Every change: build + `ctest` green
 inside `nix develop` before commit. Reviews via the `cpp-reviewer` agent.
 
-## NEXT possible work for MemoryModule (v2)
-embeddings/vector retrieval (drop in behind `rank_memories` — the seam is built) · auto-extract memories
-per turn (LLM-summarized, vs today's explicit `save_memory`) · dedup / decay / importance · tags ·
-sqlite backend · edit/delete/forget · live-smoke against PPQ (save → restart → retrieve).
+## NEXT possible memory work (v2)
+**Archival:** embeddings/vector retrieval (drop in behind `rank_memories` — the seam is built) ·
+auto-extract per turn (LLM-summarized, vs explicit `save_memory`) · dedup/decay/importance · sqlite.
+**Core:** `core_memory_replace`/edit/forget tools (only append today) · size cap / eviction · provenance/audit.
 
 ## Other open work
 SSE/WebSocket streaming · session resume (history is in-memory only) · MCP tool discovery (MCP servers
@@ -86,5 +87,11 @@ module set (currently ignored — binary hard-codes modules) · persona switch �
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
   `=` wins, rest swallowed into the value). Multi-line blocks only (like `Session`/`Memory`). This bit us:
   `Memory { store=… top_n=… }` on one line silently broke retrieval; caught by the final whole-branch review.
-- `save_memory` store path must contain **no whitespace** (tool argv is whitespace-split) — wiring
-  throws `MalConfig` if it does.
+- `save_memory`/`pin_fact` store paths must contain **no whitespace** (tool argv is whitespace-split) —
+  wiring throws `MalConfig` if they do.
+- `pin_fact` tool **requires** `memory_file` in the Session block (wiring throws `MalConfig` otherwise) —
+  else pins would write a file the Arbiter never reads (silent drift; caught by the final review).
+- Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
+  working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
+- Interactive REPL uses readline only when stdin is a **real TTY**; piped/test input falls back to
+  `std::getline` (keeps the injected-stream test seam). Arrow-key editing verified live 2026-06-29.
