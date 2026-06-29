@@ -66,15 +66,19 @@ void LLMModule::on_attach(Blackboard& bb) {
       // Malformed request: proceed with whatever was parsed so far
     }
     // The blocking provider call + result posting. Runs inline on the pump thread
-    // by default, or on an Executor worker when one is set. bb_->post() is
+    // by default, or on an Executor worker when one is set. bb->post() is
     // thread-safe, so the worker can post results straight back onto the bus.
-    // CONCURRENCY: this closure touches NO module state — it only reads provider_
-    // and calls bb_->post(). Budget is NOT accrued here; it is accrued by the
-    // LLM_RESPONSE handler below, which runs only on the pump thread. So even if
-    // two LLM workers ever overlap, spent_ has a single writer (the pump thread)
-    // and there is no data race (post-a-delta: the worker just posts LLM_RESPONSE).
-    auto run = [this](const LlmRequest& req) {
-      LlmResponse r = provider_->complete(req);
+    // CONCURRENCY: the closure captures EXACTLY two non-owning pointers by value —
+    // `prov` (the Provider) and `bb` (the Blackboard) — and `this` is NOT captured,
+    // so the capture list itself proves the worker can reach NO mutable module field
+    // (no spent_, no price_per_mtok_). Budget is NOT accrued here; it is accrued by
+    // the LLM_RESPONSE handler below, which runs only on the pump thread. So even if
+    // two LLM workers ever overlap, spent_ has a single writer (the pump thread) and
+    // there is no data race (post-a-delta: the worker just posts LLM_RESPONSE).
+    Provider*   prov = provider_.get();   // non-owning; module/Executor teardown order keeps it alive
+    Blackboard* bb   = bb_;               // non-owning; Blackboard outlives the joined Executor
+    auto run = [prov, bb](const LlmRequest& req) {
+      LlmResponse r = prov->complete(req);
       nlohmann::json out{
           {"text",              r.text},
           {"prompt_tokens",     r.prompt_tokens},
@@ -83,13 +87,14 @@ void LLMModule::on_attach(Blackboard& bb) {
           {"epoch",             req.epoch}   // echo the request's turn stamp on BOTH inline + worker paths
       };
       if (r.tool_call) out["tool_call"] = *r.tool_call;
-      bb_->post("LLM_RESPONSE", out, "llm");   // worker posts ONLY this — touches no module state
+      bb->post("LLM_RESPONSE", out, "llm");   // worker posts ONLY this — touches no module state
     };
     if (executor_) {
-      // SAFETY: the worker still reads provider_ (owned by this module) and calls
-      // bb_->post(), so a front-end's run_until() observing LLM_RESPONSE does NOT
-      // prove this task has returned. The Executor MUST be destroyed (joined)
-      // BEFORE this module and the Blackboard — teardown order is load-bearing.
+      // SAFETY: the worker still reads `prov` (= provider_.get(), owned by this
+      // module) and calls `bb`->post(), so a front-end's run_until() observing
+      // LLM_RESPONSE does NOT prove this task has returned. The Executor MUST be
+      // destroyed (joined) BEFORE this module and the Blackboard — teardown order
+      // is load-bearing.
       // (It no longer mutates spent_ — that moved to the pump-thread handler below.)
       // Move req into the task to avoid a redundant copy on submit (run takes
       // it by const&, so no further copy when invoked).
