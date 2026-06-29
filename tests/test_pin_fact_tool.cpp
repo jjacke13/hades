@@ -1,6 +1,7 @@
 // tests/test_pin_fact_tool.cpp — drive the hades-pin-fact binary over the native protocol
 #include <gtest/gtest.h>
 #include <cstdio>
+#include <unistd.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -56,5 +57,12 @@ TEST(PinFactTool, NonStringTextIsNotOkAndDoesNotCrash) {
                                 R"({"call":"pin_fact","args":{"text":123}})", 30.0);
   auto j = nlohmann::json::parse(r.out, nullptr, false);
   ASSERT_FALSE(j.is_discarded());        // produced clean JSON, did not abort
+  EXPECT_FALSE(j.value("ok", true));
+}
+
+TEST(PinFactTool, NonStringCallIsNotOk) {
+  ProcResult r = run_subprocess({PIN_FACT_BIN}, R"({"call":42})", 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_FALSE(j.is_discarded());     // produced clean JSON, did not abort
   EXPECT_FALSE(j.value("ok", true));
 }
