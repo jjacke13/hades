@@ -26,9 +26,10 @@ public:
   // Resolve a pending confirm; returns the resulting reply (or another needs_confirm).
   nlohmann::json handle_confirm(const std::string& id, bool approved);
 
-  // Blocking: serve HTTP (POST /chat, POST /confirm, GET /health) until the process
-  // exits. host defaults to loopback so the agent is not network-exposed by default.
-  void listen(const std::string& host, int port);
+  // Blocking: serve the static web UI (webroot mounted at /) + the JSON API
+  // (POST /chat, POST /confirm, GET /health) until the process exits. host defaults
+  // to loopback at the call site so the agent is not network-exposed by default.
+  void listen(const std::string& host, int port, const std::string& webroot);
 
 private:
   nlohmann::json collect_();  // after a post, pump the turn and read the captured result

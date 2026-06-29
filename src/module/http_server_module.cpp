@@ -9,6 +9,13 @@
 #include <httplib.h>
 #include <iostream>
 #include "hades/blackboard.h"
+
+namespace {
+// Auth seam — the single chokepoint for adding authentication later. Today it
+// allows every request; implementing auth = check a token/header here.
+bool authorize(const httplib::Request& /*req*/) { return true; }
+}  // namespace
+
 namespace hades {
 
 void HttpServerModule::on_attach(Blackboard& bb) {
@@ -51,8 +58,23 @@ nlohmann::json HttpServerModule::handle_confirm(const std::string& id, bool appr
   return collect_();
 }
 
-void HttpServerModule::listen(const std::string& host, int port) {
+void HttpServerModule::listen(const std::string& host, int port, const std::string& webroot) {
   httplib::Server srv;
+
+  // Auth chokepoint: runs before routing; a future token check goes in authorize().
+  srv.set_pre_routing_handler(
+      [](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req)) {
+          res.status = 401;
+          res.set_content("unauthorized", "text/plain");
+          return httplib::Server::HandlerResponse::Handled;
+        }
+        return httplib::Server::HandlerResponse::Unhandled;  // continue to routes
+      });
+
+  // Static web UI: serve `webroot` as the site root (GET / -> index.html, plus style.css/app.js).
+  srv.set_mount_point("/", webroot);
+
   srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
     res.set_content(R"({"ok":true})", "application/json");
   });
@@ -67,8 +89,8 @@ void HttpServerModule::listen(const std::string& host, int port) {
     bool approved = body.is_object() && body.value("approved", false);
     res.set_content(handle_confirm(id, approved).dump(), "application/json");
   });
-  std::cout << "hades serving on http://" << host << ":" << port
-            << "  (POST /chat {\"message\":...}, POST /confirm, GET /health)" << std::endl;
+  std::cout << "hades serving on http://" << host << ":" << port << "/  (web UI + POST /chat)"
+            << std::endl;
   srv.listen(host, port);
 }
 }  // namespace hades

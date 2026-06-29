@@ -15,6 +15,7 @@
 #include "hades/config.h"
 #include "hades/eventlog.h"
 #include "hades/launcher.h"  // MalConfig
+#include "hades/serve_config.h"
 using namespace hades;
 
 namespace {
@@ -44,13 +45,19 @@ std::string resolve_api_key(const Manifest& m) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::cerr << "usage: hades <manifest> [--serve <port>]\n";
+    std::cerr << "usage: hades <manifest> [--serve [port]]\n";
     return 2;
   }
-  // Optional `--serve <port>`: run the HTTP front-end instead of the stdin REPL.
-  int serve_port = 0;
+  // Optional `--serve [port]`: run the HTTP front-end (web UI + JSON API) instead of the
+  // stdin REPL. The port is optional here (falls back to the Serve block / default 8080).
+  bool serve = false;
+  int cli_port = 0;
   for (int i = 2; i < argc; ++i) {
-    if (std::string(argv[i]) == "--serve" && i + 1 < argc) serve_port = std::atoi(argv[++i]);
+    std::string arg = argv[i];
+    if (arg == "--serve") {
+      serve = true;
+      if (i + 1 < argc && std::atoi(argv[i + 1]) > 0) cli_port = std::atoi(argv[++i]);
+    }
   }
   try {
     const Manifest manifest = parse_manifest(read_file(argv[1]));
@@ -64,10 +71,12 @@ int main(int argc, char** argv) {
     Blackboard bb(&eventlog);
     Agent agent = build_agent(bb, manifest);  // owns every module for the session
 
-    if (serve_port > 0)
-      agent.serve->listen("127.0.0.1", serve_port);  // blocks until killed
-    else
+    if (serve) {
+      const ServeConfig cfg = resolve_serve_config(manifest, cli_port);
+      agent.serve->listen(cfg.host, cfg.port, cfg.webroot);  // blocks until killed
+    } else {
       agent.chat->run_repl(std::cin, std::cout);
+    }
     // Agent's RAII teardown (reverse-declared) releases the modules; tool
     // subprocesses are short-lived and reaped synchronously per call.
     return 0;
