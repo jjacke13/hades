@@ -39,6 +39,20 @@ void Arbiter::start_turn() {
   if (!system_prompt_.empty())
     messages.push_back({{"role", "system"}, {"content", system_prompt_}});
   for (const auto& m : history_) messages.push_back(m);
+
+  // Inject dynamically retrieved memory as an ephemeral {role:system} block immediately
+  // before the last user message. Recomputed from the Blackboard each turn and never
+  // stored in history_, so it refreshes per turn and never accumulates stale memory.
+  if (auto mem = bb_->get("RETRIEVED_MEMORY");
+      mem && mem->value.is_string() && !mem->value.get<std::string>().empty()) {
+    nlohmann::json block = {{"role", "system"},
+                            {"content", "Relevant memories:\n" + mem->value.get<std::string>()}};
+    int last_user = -1;
+    for (int i = 0; i < static_cast<int>(messages.size()); ++i)
+      if (messages[i].value("role", "") == "user") last_user = i;
+    if (last_user >= 0) messages.insert(messages.begin() + last_user, block);
+  }
+
   bb_->post("LLM_REQUEST",
             {{"messages", messages}, {"tools", tools}, {"model", model_}}, "arbiter");
 }

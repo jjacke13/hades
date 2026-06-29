@@ -115,3 +115,47 @@ TEST(Arbiter, StopsAfterMaxToolSteps) {
   }
   EXPECT_NE(last.find("max tool steps"), std::string::npos);
 }
+TEST(Arbiter, InjectsRetrievedMemoryBeforeUserMessage) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("RETRIEVED_MEMORY","- user likes tea","memory");
+  bb.post("USER_MESSAGE","what do i like","chat"); bb.pump();
+  const auto& msgs = req["messages"];
+  int memIdx=-1, userIdx=-1;
+  for (int i=0;i<static_cast<int>(msgs.size());++i){
+    if (msgs[i].value("role","")=="system" &&
+        msgs[i].value("content","").rfind("Relevant memories:",0)==0) memIdx=i;
+    if (msgs[i].value("role","")=="user") userIdx=i;
+  }
+  ASSERT_GE(memIdx,0); ASSERT_GE(userIdx,0);
+  EXPECT_LT(memIdx,userIdx);                                  // memory block precedes the user turn
+  EXPECT_NE(msgs[memIdx]["content"].get<std::string>().find("tea"), std::string::npos);
+}
+
+TEST(Arbiter, NoMemoryBlockWhenRetrievedEmpty) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("RETRIEVED_MEMORY","","memory");
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  for (const auto& m : req["messages"])
+    EXPECT_FALSE(m.value("role","")=="system" &&
+                 m.value("content","").rfind("Relevant memories:",0)==0);
+}
+
+TEST(Arbiter, MemoryBlockIsEphemeralNotInHistory) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY","- ephemeral fact","memory");
+  bb.post("USER_MESSAGE","first","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","ok"}}, "llm"); bb.pump();   // turn 1 ends
+  bb.post("RETRIEVED_MEMORY","","memory");                       // nothing relevant now
+  bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
+  bool leaked=false;
+  for (const auto& m : reqs.back()["messages"])
+    if (m.value("role","")=="system" && m.value("content","").rfind("Relevant memories:",0)==0)
+      leaked=true;
+  EXPECT_FALSE(leaked);   // prior turn's memory block did not persist into history_
+}
