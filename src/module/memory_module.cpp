@@ -23,10 +23,10 @@ void MemoryModule::on_attach(Blackboard& bb) {
     if (!e.value.is_string()) return;  // ignore malformed input
     const auto all = load_memories(store_path_);
     const auto top = rank_memories(all, e.value.get<std::string>(), top_n_);
-    std::string block;
-    for (const auto& r : top) block += "- " + r.text + "\n";
-    if (!block.empty() && block.back() == '\n') block.pop_back();
-    bb_->post("RETRIEVED_MEMORY", block, "memory");  // "" when nothing matched
+    std::string rendered;
+    for (const auto& r : top) rendered += "- " + r.text + "\n";
+    if (!rendered.empty() && rendered.back() == '\n') rendered.pop_back();
+    bb_->post("RETRIEVED_MEMORY", rendered, "memory");  // "" when nothing matched
   });
 }
 

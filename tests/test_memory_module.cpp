@@ -40,3 +40,17 @@ TEST(MemoryModule, EmptyStringWhenNoMatchOrNoStore) {
   bb.pump();
   EXPECT_EQ(got, "");
 }
+
+TEST(MemoryModule, IgnoresNonStringUserMessage) {
+  Blackboard bb;
+  MemoryModule m;
+  Block cfg;
+  cfg.kv["store"] = ::testing::TempDir() + "/mm_nonstring.jsonl";
+  m.on_start(cfg, bb);
+  m.on_attach(bb);
+  std::string got = "UNSET";
+  bb.subscribe("RETRIEVED_MEMORY", [&](const Entry& e) { got = e.value.is_string() ? e.value.get<std::string>() : "NONSTRING"; });
+  bb.post("USER_MESSAGE", 42, "chat");   // integer payload, not a string
+  bb.pump();
+  EXPECT_EQ(got, "UNSET");   // module ignored it -> never posted RETRIEVED_MEMORY
+}
