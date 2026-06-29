@@ -57,7 +57,7 @@ function addConfirm(id, prompt) {
 async function postJson(url, body) {
   const r = await fetch(url, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-Hades': '1'},
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error('HTTP ' + r.status);

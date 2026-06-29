@@ -43,6 +43,10 @@ TEST(ServeConfig, CliPortOverridesDefaultsWithNoBlock) {
   auto c = resolve_serve_config(parse_manifest("Session\n{\n}\n"), 7000);
   EXPECT_EQ(c.port, 7000);
 }
+TEST(ServeConfig, OutOfRangeCliPortIgnored) {
+  auto c = resolve_serve_config(parse_manifest("Session\n{\n}\n"), 70000);
+  EXPECT_EQ(c.port, 8080);
+}
 TEST(ServeConfig, ShippedDevManifestResolvesCleanly) {
   std::ifstream f(DEV_MANIFEST);
   std::stringstream s; s << f.rdbuf();

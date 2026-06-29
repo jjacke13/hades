@@ -23,6 +23,7 @@ TEST(WebUI, AppJsWiresChatConfirmAndControls) {
   EXPECT_NE(js.find("needs_confirm"), std::string::npos);
   EXPECT_NE(js.find("Approve"), std::string::npos);
   EXPECT_NE(js.find("Deny"), std::string::npos);
+  EXPECT_NE(js.find("X-Hades"), std::string::npos);   // CSRF guard header sent by the page
 }
 TEST(WebUI, StyleNonEmpty) {
   EXPECT_FALSE(slurp(WEB_STYLE).empty());

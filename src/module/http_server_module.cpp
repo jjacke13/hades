@@ -11,9 +11,17 @@
 #include "hades/blackboard.h"
 
 namespace {
-// Auth seam — the single chokepoint for adding authentication later. Today it
-// allows every request; implementing auth = check a token/header here.
-bool authorize(const httplib::Request& /*req*/) { return true; }
+// Auth + CSRF seam — the single chokepoint. No password auth by design (the operator
+// secures reachability via their own private networking). But --serve is a loopback
+// BROWSER surface: any site the user visits can POST to 127.0.0.1 as a CORS "simple"
+// request (no preflight). So tool-invoking endpoints require a custom header the page
+// sends and a cross-origin simple request cannot add without a preflight we never grant.
+// Static GETs are exempt so the UI itself loads.
+bool authorize(const httplib::Request& req) {
+  if (req.method == "POST" && (req.path == "/chat" || req.path == "/confirm"))
+    return req.has_header("X-Hades");
+  return true;
+}
 }  // namespace
 
 namespace hades {
@@ -65,8 +73,9 @@ void HttpServerModule::listen(const std::string& host, int port, const std::stri
   srv.set_pre_routing_handler(
       [](const httplib::Request& req, httplib::Response& res) {
         if (!authorize(req)) {
-          res.status = 401;
-          res.set_content("unauthorized", "text/plain");
+          res.status = 403;
+          res.set_content("forbidden: cross-origin request blocked (missing X-Hades header)",
+                          "text/plain");
           return httplib::Server::HandlerResponse::Handled;
         }
         return httplib::Server::HandlerResponse::Unhandled;  // continue to routes

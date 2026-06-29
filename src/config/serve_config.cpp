@@ -25,7 +25,7 @@ ServeConfig resolve_serve_config(const Manifest& m, int cli_port) {
       if (p > 0) c.port = p;
     }
   }
-  if (cli_port > 0) c.port = cli_port;  // explicit --serve <port> overrides the block
+  if (cli_port > 0 && cli_port < 65536) c.port = cli_port;  // ignore out-of-range CLI port
   return c;
 }
 }  // namespace hades
