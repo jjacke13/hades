@@ -14,8 +14,10 @@
 #include "hades/blackboard.h"
 #include "hades/config.h"
 #include "hades/eventlog.h"
+#include "hades/history_budget.h"  // kDefaultHistoryBudgetChars
 #include "hades/launcher.h"  // MalConfig
 #include "hades/serve_config.h"
+#include "hades/session_id.h"  // make_session_id, resolve_session_path
 using namespace hades;
 
 namespace {
@@ -45,18 +47,26 @@ std::string resolve_api_key(const Manifest& m) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::cerr << "usage: hades <manifest> [--serve [port]]\n";
+    std::cerr << "usage: hades <manifest> [--serve [port]] [--resume [id]]\n";
     return 2;
   }
   // Optional `--serve [port]`: run the HTTP front-end (web UI + JSON API) instead of the
   // stdin REPL. The port is optional here (falls back to the Serve block / default 8080).
+  // Optional `--resume [id]`: reload a prior session's conversation. With an id, resume that
+  // named session (error if missing); without one, resume the newest. Composes with --serve.
   bool serve = false;
   int cli_port = 0;
+  bool resume = false;
+  std::string resume_id;
   for (int i = 2; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--serve") {
       serve = true;
       if (i + 1 < argc && std::atoi(argv[i + 1]) > 0) cli_port = std::atoi(argv[++i]);
+    } else if (arg == "--resume") {
+      resume = true;
+      // Optional following non-flag token is the session id (mirror --serve [port]).
+      if (i + 1 < argc && argv[i + 1][0] != '-') resume_id = argv[++i];
     }
   }
   try {
@@ -71,6 +81,25 @@ int main(int argc, char** argv) {
     // Resolve + redact the key BEFORE constructing the blackboard, so the secret
     // can never appear unredacted in session.log.
     const std::string key = resolve_api_key(manifest);
+
+    // Resolve the per-session conversation jsonl + the per-turn history budget from the Session
+    // block, then pick the file path from the --resume flag. Done BEFORE building the agent so a
+    // `--resume <missing-id>` fails fast (MalConfig -> caught below) before any heavy setup. The
+    // resolved path + budget are wired into the Arbiter after build_agent (REPL and --serve both).
+    auto session = manifest.session();  // resolve_api_key already verified it exists
+    std::string sessions_dir = ".hades/sessions";
+    double history_budget = kDefaultHistoryBudgetChars;
+    if (session) {
+      if (session->kv.count("sessions_dir")) sessions_dir = session->kv.at("sessions_dir");
+      if (session->kv.count("history_budget_chars"))
+        set_pos_double_on_string(session->kv.at("history_budget_chars"), history_budget);
+    }
+    const std::string new_id = make_session_id();
+    const std::string session_path = resolve_session_path(sessions_dir, resume, resume_id, new_id);
+    // resolve_session_path returns the fresh new_id path when a resume found nothing to resume.
+    if (resume && session_path == sessions_dir + "/" + new_id + ".jsonl")
+      std::cerr << "hades: no prior session in " << sessions_dir << "; starting fresh\n";
+
     Eventlog eventlog("session.log");
     eventlog.add_redaction(key);
 
@@ -90,6 +119,12 @@ int main(int argc, char** argv) {
                    "— the agent cannot take a turn\n";
       return 1;
     }
+
+    // Wire session persistence into the Arbiter (both front-ends; resume composes with --serve).
+    // Order: budget first, then the path, then load — load_history reads the path just set.
+    agent.arbiter->set_history_budget_chars(history_budget);
+    agent.arbiter->set_session_path(session_path);
+    if (resume) agent.arbiter->load_history();
 
     if (serve) {
       if (!agent.serve) { std::cerr << "hades: no `serve` module in the manifest Module roster\n"; return 1; }

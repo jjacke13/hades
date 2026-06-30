@@ -37,6 +37,9 @@ void Arbiter::append_history(const nlohmann::json& msg) {
 
 // Reload a session jsonl into history_ on resume. Tolerant like load_memories: a blank or
 // corrupt line (e.g. a truncated trailing line from a mid-append crash) is skipped, never thrown.
+// windowed_history_() assumes well-formed history; load_history therefore sanitizes a LEADING
+// orphan {role:tool} (a tool result whose owning assistant tool_calls was lost to a mid-pair
+// crash — invalid to providers) so history_ always opens on a user/assistant boundary.
 void Arbiter::load_history() {
   if (session_path_.empty()) return;
   std::ifstream f(session_path_);
@@ -47,6 +50,9 @@ void Arbiter::load_history() {
     auto j = nlohmann::json::parse(line, nullptr, false);
     if (!j.is_discarded() && j.is_object()) history_.push_back(j);
   }
+  // Drop leading orphan tool message(s); the window must begin on user/assistant (or be empty).
+  while (!history_.empty() && history_.front().value("role", "") == "tool")
+    history_.erase(history_.begin());
 }
 
 void Arbiter::on_attach(Blackboard& bb) {

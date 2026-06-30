@@ -11,6 +11,8 @@ Session
   memory_file        = memory/facts.md   # MEMORY — always-on core memory (pin_fact writes it)
   llm_timeout_s       = 600   # per-call LLM HTTP timeout (cpr). Default 600.
   turn_idle_timeout_s = 900   # run_until idle ceiling (front-ends). Default 900. MUST be > llm_timeout_s.
+  sessions_dir         = .hades/sessions   # per-session conversation jsonl dir (--resume reloads it)
+  history_budget_chars = 120000   # max chars of history sent per LLM request (full history kept on disk)
 }
 Module = llm
 Module = tool_runner

@@ -543,3 +543,30 @@ TEST(Arbiter, LoadHistoryRoundTripsAndToleratesCorruptTail) {
   EXPECT_NO_THROW(b.load_history());
   EXPECT_EQ(b.history_size(), 3u);                 // 3 valid; corrupt trailing line skipped
 }
+
+// load_history sanitizes a LEADING orphan {role:tool}: a resumed jsonl whose first message is a
+// tool result (its owning assistant tool_calls lost to a mid-pair crash) is invalid to providers.
+// The leading tool line is dropped on load so history_ opens on a user/assistant boundary — and
+// the first message of the next LLM request is therefore never a tool.
+TEST(Arbiter, LoadHistoryDropsLeadingOrphanTool) {
+  const std::string path = ::testing::TempDir() + "/sess_orphan.jsonl";
+  {
+    std::ofstream f(path, std::ios::trunc);
+    f << nlohmann::json({{"role","tool"},{"tool_call_id","x"},{"content","orphan"}}).dump() << "\n";
+    f << nlohmann::json({{"role","user"},{"content","hello"}}).dump() << "\n";
+    f << nlohmann::json({{"role","assistant"},{"content","hi"}}).dump() << "\n";
+  }
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_path(path);
+  EXPECT_NO_THROW(a.load_history());
+  EXPECT_EQ(a.history_size(), 2u);                 // leading orphan tool dropped; user+assistant kept
+  // The next LLM request's window must NOT begin on a tool message.
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","next","chat"); bb.pump();
+  ASSERT_FALSE(req.is_null());
+  const auto& msgs = req["messages"];
+  ASSERT_FALSE(msgs.empty());
+  EXPECT_NE(msgs[0].value("role",""), "tool");
+  EXPECT_EQ(msgs[0].value("role",""), "user");     // opens on the loaded user message
+}
