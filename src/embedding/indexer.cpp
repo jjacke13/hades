@@ -37,7 +37,7 @@ IndexStats index_archival(EmbeddingProvider& provider, VectorCache& cache,
     batch.emplace_back(id, records[i].text);
     if (batch.size() >= batch_size && !flush_batch(provider, cache, batch, st)) return st;
   }
-  flush_batch(provider, cache, batch, st);
+  (void)flush_batch(provider, cache, batch, st);   // st.ok set through the ref; discard is intentional
   return st;
 }
 }  // namespace hades

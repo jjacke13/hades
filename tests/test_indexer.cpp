@@ -33,8 +33,25 @@ TEST(Indexer, EmbedsAllNewRecords) {
   auto st = index_archival(prov, vc, store, 32);
   EXPECT_TRUE(st.ok);
   EXPECT_EQ(st.embedded, 3u);
+  EXPECT_EQ(st.skipped, 0u);                     // fresh cache: nothing skipped
   EXPECT_EQ(vc.size(), 3u);
   EXPECT_TRUE(vc.has("memory#0"));
+}
+TEST(Indexer, FailSoftOnProviderError) {
+  // A provider that always errors must stop early: ok=false, nothing embedded, no throw.
+  struct ErrorProvider : EmbeddingProvider {
+    EmbedResult embed(const std::vector<std::string>&) override { return {{}, "fake", 0, "network timeout"}; }
+    std::string model() const override { return "fake"; }
+  };
+  std::string store = tmp("ix_err.jsonl"), cache = tmp("ix_err_cache.jsonl");
+  std::remove(cache.c_str());
+  write_store(store, 3);
+  ErrorProvider ep;
+  VectorCache vc(cache, "fake", 2); ASSERT_TRUE(vc.load());
+  auto st = index_archival(ep, vc, store, 32);
+  EXPECT_FALSE(st.ok);
+  EXPECT_EQ(st.embedded, 0u);
+  EXPECT_EQ(vc.size(), 0u);
 }
 TEST(Indexer, IncrementalSkipsAlreadyCached) {
   std::string store = tmp("ix_store2.jsonl"), cache = tmp("ix_cache2.jsonl");
