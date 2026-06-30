@@ -27,6 +27,10 @@ header #clear:hover{color:var(--fg);}
 .msg.user .label{color:var(--user);}
 .msg.assistant .label{color:var(--assistant);}
 .msg.error{color:var(--error);}
+.msg.tool-call{color:var(--muted); font-size:13px;}
+.msg.tool-call .label{color:var(--confirm); font-weight:700;}
+.msg.tool-result{color:var(--muted); font-size:13px; opacity:.85;}
+.msg.tool-result .label{color:var(--muted); font-weight:700;}
 .confirm{
   border:1px solid var(--confirm); border-radius:8px; padding:.6rem .8rem;
   background:rgba(227,179,65,.08); white-space:pre-wrap; word-break:break-word;

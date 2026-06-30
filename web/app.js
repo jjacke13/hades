@@ -2,6 +2,7 @@
 const log = document.getElementById('log');
 const form = document.getElementById('composer');
 const input = document.getElementById('input');
+const TOOL_RESULT_MAX = 500;  // dim tool-result entries are truncated for display
 
 document.getElementById('clear').addEventListener('click', () => {
   log.innerHTML = '';
@@ -54,6 +55,51 @@ function addConfirm(id, prompt) {
   deny.addEventListener('click', () => resolve(false));
 }
 
+function addToolCall(name, args) {
+  const d = document.createElement('div');
+  d.className = 'msg tool-call';
+  const a = (typeof args === 'string') ? args : JSON.stringify(args);
+  d.innerHTML = '<span class="label">\u{1F527} ' + escapeText(name) + ' </span>' + escapeText(a);
+  log.appendChild(d);
+  scrollDown();
+}
+function addToolResult(content) {
+  const d = document.createElement('div');
+  d.className = 'msg tool-result';
+  let s = (typeof content === 'string') ? content : JSON.stringify(content);
+  if (s.length > TOOL_RESULT_MAX) s = s.slice(0, TOOL_RESULT_MAX) + '…';
+  d.innerHTML = '<span class="label">→ </span>' + escapeText(s);
+  log.appendChild(d);
+  scrollDown();
+}
+function renderHistory(msgs) {
+  for (const m of msgs) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'user' && typeof m.content === 'string') {
+      addMessage('user', m.content);
+    } else if (m.role === 'assistant' && typeof m.content === 'string' && m.content.length) {
+      addMessage('assistant', m.content);
+    } else if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        const fn = (tc && tc.function) ? tc.function : {};
+        addToolCall(fn.name || '?', fn.arguments != null ? fn.arguments : '');
+      }
+    } else if (m.role === 'tool') {
+      addToolResult(m.content != null ? m.content : '');
+    }
+    // any other shape: skip (tolerant; never throw)
+  }
+}
+async function loadHistory() {
+  try {
+    const r = await fetch('/history', {headers: {'X-Hades': '1'}});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (data && Array.isArray(data.history)) renderHistory(data.history);
+  } catch (e) {
+    addError('history load failed: ' + e.message);
+  }
+}
 async function postJson(url, body) {
   const r = await fetch(url, {
     method: 'POST',
@@ -86,3 +132,5 @@ form.addEventListener('submit', (e) => {
   btn.disabled = true;
   send(t).finally(() => { btn.disabled = false; });
 });
+
+loadHistory();
