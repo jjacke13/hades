@@ -544,9 +544,9 @@ EmbedResult SubprocessEmbeddingProvider::embed(const std::vector<std::string>& t
   out.model = j.value("model", std::string{});
   out.dim = j.value("dim", 0);
   for (const auto& row : j["embeddings"]) {
-    if (!row.is_array()) { out.error = "embedder row not array"; return EmbedResult{}; }
+    if (!row.is_array()) { return EmbedResult{{}, out.model, 0, "embedder row not array"}; }
     std::vector<float> v;
-    for (const auto& x : row) { if (!x.is_number()) { out.error = "embedder value not number"; return EmbedResult{}; } v.push_back(x.get<float>()); }
+    for (const auto& x : row) { if (!x.is_number()) { return EmbedResult{{}, out.model, 0, "embedder value not number"}; } v.push_back(x.get<float>()); }
     out.vectors.push_back(std::move(v));
   }
   if (out.vectors.size() != texts.size()) { return EmbedResult{{}, out.model, 0, "embedder count mismatch"}; }
