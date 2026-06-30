@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `e80be5d`, **197/197 tests** (ASan+UBSan + **TSan** clean; suite ~2.5s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `e916084`, **204/204 tests** (ASan+UBSan + **TSan** clean; suite ~2.5s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -107,13 +107,29 @@ suffix of `history_` within `history_budget_chars` (Session block, default **120
 it alone exceeds budget). Full history stays in memory + on disk; only the request is bounded — this also
 fixed a pre-existing unbounded-`history_` latent bug. **`/new`** REPL command → `NEW_SESSION` bus msg →
 Arbiter clears history + `clear_pending()` + rotates to a fresh file + `++turn_epoch_` (drops a stale
-old-session response); intercepted in both REPL loops (not a USER_MESSAGE). **Web UI:** silent context on
-`--serve --resume` (agent regains history; browser blank — `GET /history` re-render deferred). Config:
+old-session response); intercepted in both REPL loops (not a USER_MESSAGE). **Web UI:** `--serve --resume` now
+**re-renders the resumed transcript** in the browser (see GET /history below — was "silent context, blank page"). Config:
 `Session { sessions_dir = .hades/sessions, history_budget_chars = 120000 }`. Pieces:
 `src/arbiter/arbiter.cpp` (append/load/window/NEW_SESSION), `include/hades/{session_id.h,history_budget.h}`,
 `src/core/session_id.cpp`, `app/hades_main.cpp` (`--resume`), `src/module/chat_module.cpp` (`/new`),
-`docs/superpowers/*2026-06-30-session-resume*`. **Deferred (v2):** `GET /history` web re-render · embeddings
+`docs/superpowers/*2026-06-30-session-resume*`. **Deferred (v2):** embeddings
 over the session-files corpus (the separate-files design enables it) · `/sessions` list+switch · retention/pruning.
+
+#### GET /history web re-render (shipped 2026-06-30, `main` @ `e916084`, 204/204) — closes session-resume's web gap
+`--serve --resume` no longer starts blank. **`GET /history`** (HttpServerModule) returns `{"history":[...raw stored
+msgs...]}` read straight off the per-session jsonl via a new pure tolerant reader **`read_session_jsonl(path)`**
+(`src/core/session_history.{h,cpp}`; skips blank/corrupt/partial lines; **no orphan-strip** — display, not an LLM
+request; empty/missing path → `[]`). `Arbiter::load_history` was **deduped** to reuse it (then still applies its
+boundary orphan-strips for provider validity). Endpoint is **disk-read only → no `mu_`** (concurrent pump-thread
+append → tolerant parse skips a half-written final line) and **CSRF-gated**: `authorize` promoted to
+`static HttpServerModule::authorize` + extended to require `X-Hades` on `GET /history` (static GET / stays exempt).
+`web/app.js` **fetches `/history` on load** (with `X-Hades`) and renders user/assistant bubbles + **dim tool-call
+(🔧) / tool-result (→, truncated 500c)** entries (all XSS-escaped); `web/style.css` dim `.tool-call`/`.tool-result`.
+Wiring: `hades_main` `agent.serve->set_session_path(session_path)` (same path as the Arbiter). **LIVE-VALIDATED**
+(Vaios smoked --serve --resume: transcript + dim tool turns render, CSRF 403/200, fresh stays blank). Pieces:
+`src/core/session_history.cpp`, `src/module/http_server_module.cpp`, `app/hades_main.cpp`, `web/{app.js,style.css}`,
+`tests/test_session_history.cpp` + `test_serve.cpp`, `docs/superpowers/*2026-06-30-get-history-web-render*`.
+**Deferred (v2):** web `/new` re-render · `/history` pagination · `/sessions` list+switch.
 
 ### Web UI (shipped 2026-06-29) — `--serve` browser front-end
 `hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
@@ -148,7 +164,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (197/197, ~2.5s)
+nix develop --command ctest --test-dir build                 # test (204/204, ~2.5s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -189,7 +205,7 @@ race-free budget, idle timeout) + **turn-abandonment hardening** (`TURN_ABANDONE
 dispatch-ordering hole independent of timing — see the Worker-offload section). **NEXT options:**
 SSE/tool-offload (when tool-offload lands, extend the epoch+abandonment pattern to `TOOL_RESULT`) ·
 capability-model v2 (positive net allowlist, realpath/symlink path resolution, DNS-rebind/connect-time
-enforcement) · settings UI · embeddings (over the session-files corpus too) · `GET /history` web re-render · Bridge (parked).
+enforcement) · settings UI · embeddings (over the session-files corpus too) · Bridge (parked).
 
 ## Tool-capability model (shipped 2026-06-30, `main` @ `1e5f4b6`) — `CapabilityPolicy` objective
 Replaces "blocklist-only" tool safety. A built-in **`capability_of(tool)` table** (the AUTHORITY — a tool
@@ -213,13 +229,9 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
 
-## NEXT (decided 2026-06-30, in order)
-**1. `GET /history` web re-render** — build NEXT (small, ~2 tasks): a `GET /history` JSON endpoint
-(HttpServerModule) + `web/app.js` fetches it on load and renders the resumed conversation (so `--serve --resume`
-no longer starts blank). Brainstorm the render shape (full vs windowed; how to show tool turns; whether to gate
-the endpoint with the `X-Hades` CSRF header since it returns conversation content). The Arbiter holds `history_`
-(full, in memory) — expose it to the HTTP module.
-**2. Memory embeddings** — DISCUSS first (brainstorm): semantic recall over archival `save_memory`
+## NEXT (decided 2026-06-30)
+**~~1. `GET /history` web re-render~~ — DONE** (`main` @ `e916084`, 204/204, live-validated; see the GET /history section above).
+**1. Memory embeddings** — DISCUSS first (brainstorm): semantic recall over archival `save_memory`
 (`.hades/memory.jsonl`, behind the built `rank_memories` keyword seam) AND the session-file corpus
 (`.hades/sessions/*.jsonl`). Needs an embedding provider + vector store + retrieval. Not yet specced.
 
