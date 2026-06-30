@@ -213,10 +213,20 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
 
+## NEXT (decided 2026-06-30, in order)
+**1. `GET /history` web re-render** — build NEXT (small, ~2 tasks): a `GET /history` JSON endpoint
+(HttpServerModule) + `web/app.js` fetches it on load and renders the resumed conversation (so `--serve --resume`
+no longer starts blank). Brainstorm the render shape (full vs windowed; how to show tool turns; whether to gate
+the endpoint with the `X-Hades` CSRF header since it returns conversation content). The Arbiter holds `history_`
+(full, in memory) — expose it to the HTTP module.
+**2. Memory embeddings** — DISCUSS first (brainstorm): semantic recall over archival `save_memory`
+(`.hades/memory.jsonl`, behind the built `rank_memories` keyword seam) AND the session-file corpus
+(`.hades/sessions/*.jsonl`). Needs an embedding provider + vector store + retrieval. Not yet specced.
+
 ## Other open work
 MCP tool discovery (MCP servers can be called but aren't announced to the LLM) · persona switch · prompt
-caching · SSE streaming · settings UI · `GET /history` web re-render · embeddings (archival + session corpus)
-· agent↔agent Bridge (parked).
+caching · SSE streaming · settings UI · capability-v2 (positive net allowlist / realpath / DNS-rebind) ·
+agent↔agent Bridge (parked).
 
 ## Gotchas
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
