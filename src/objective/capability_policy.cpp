@@ -3,35 +3,112 @@
 // Implements the capability taxonomy table + the veto mapping: fs_read/list_dir are path-scoped
 // (deny-prefix -> hard veto; allow-prefix -> allow; else -> confirm); write_file/shell escalate
 // (confirm); http_fetch hard-vetoes private/loopback hosts (SSRF guard) + configured deny hosts;
-// memory_append tools pass; an unknown tool confirm-gates. Best-effort, allowlist-oriented; the
-// path match is literal-prefix (no symlink/.. canonicalization in v1 — see the design doc).
+// memory_append tools pass; an unknown tool confirm-gates. Allowlist-oriented and fail-closed:
+// the path match is LEXICALLY normalized (canon_path collapses "./" and "." — NOT realpath, so
+// symlinks are a documented v2 gap), an empty/unparseable fetch host is hard-vetoed, and a packed
+// numeric host (decimal/hex/octal) is treated as private. See the header for the remaining v2 gaps.
 
 #include "hades/objective/capability_policy.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <vector>
 namespace hades {
 namespace {
 
-bool starts_with(const std::string& s, const std::string& p) {
-  return s.size() >= p.size() && std::equal(p.begin(), p.end(), s.begin());
-}
 bool any_prefix(const std::string& s, const std::vector<std::string>& ps) {
-  for (const auto& p : ps) if (!p.empty() && starts_with(s, p)) return true;
+  for (const auto& p : ps)
+    if (!p.empty() && s.starts_with(p)) return true;
   return false;
 }
 std::string lower(std::string s) {
-  for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return s;
 }
+
+// Lexical path canonicalization for scope matching. Collapses interior "." and "/./" components
+// and unifies the relative-path prefix so "./.env", ".env" and "././.env" all map to one key
+// ("./.env") — that closes the "./"-prefix deny bypass (fs_read ./.env must hit a ".env" deny).
+// Absolute paths keep their leading '/'. ".." components are KEPT (the caller treats a surviving
+// ".." as a base escape -> confirm). This is LEXICAL only: it does NOT resolve ".." against the
+// real filesystem and does NOT follow symlinks (documented v2 gap in the header).
+std::string canon_path(const std::string& in) {
+  if (in.empty()) return in;
+  const bool absolute = in.front() == '/';
+  const bool trailing_slash = in.back() == '/';
+  std::vector<std::string> parts;
+  std::size_t i = 0;
+  while (i < in.size()) {
+    std::size_t s = in.find('/', i);
+    std::string seg = (s == std::string::npos) ? in.substr(i) : in.substr(i, s - i);
+    if (!seg.empty() && seg != ".") parts.push_back(seg);  // drop "" and "." segments
+    if (s == std::string::npos) break;
+    i = s + 1;
+  }
+  std::string out = absolute ? "/" : "./";
+  for (std::size_t k = 0; k < parts.size(); ++k) {
+    out += parts[k];
+    if (k + 1 < parts.size()) out += '/';
+  }
+  if (trailing_slash && !parts.empty()) out += '/';
+  return out;
+}
+
+// A surviving ".." component means the lexical path may escape its base (cwd / an allow root).
+bool escapes_base(const std::string& canon) {
+  std::size_t i = 0;
+  while (i < canon.size()) {
+    std::size_t s = canon.find('/', i);
+    std::string seg = (s == std::string::npos) ? canon.substr(i) : canon.substr(i, s - i);
+    if (seg == "..") return true;
+    if (s == std::string::npos) break;
+    i = s + 1;
+  }
+  return false;
+}
+
 // Parse "172.16.0.0/12" membership without inet_pton: octet1==172 && 16<=octet2<=31.
 bool in_172_16_12(const std::string& h) {
-  if (!starts_with(h, "172.")) return false;
+  if (!h.starts_with("172.")) return false;
   std::size_t dot = h.find('.', 4);
   if (dot == std::string::npos) return false;
   int o2 = -1;
-  try { o2 = std::stoi(h.substr(4, dot - 4)); } catch (...) { return false; }
+  try { o2 = std::stoi(h.substr(4, dot - 4)); } catch (const std::exception&) { return false; }
   return o2 >= 16 && o2 <= 31;
+}
+
+// Private IPv4 (dotted-quad): loopback, RFC1918, link-local and the unspecified address.
+bool is_private_ipv4(const std::string& h) {
+  if (h == "0.0.0.0") return true;
+  static const std::array<const char*, 4> pre = {"127.", "10.", "192.168.", "169.254."};
+  for (const char* p : pre)
+    if (h.starts_with(p)) return true;
+  return in_172_16_12(h);
+}
+
+// Fail-closed heuristic for a packed/obfuscated numeric host that is NOT a clean dotted-decimal
+// IPv4: all-digits (2130706433), 0x/0X hex (0x7f000001), or any octet with a leading zero (octal,
+// 0177.0.0.1). Such forms are near-always SSRF obfuscation, so classify them as private. A clean
+// dotted-quad (93.184.216.34) and ordinary hostnames are deliberately left untouched (-> public).
+bool looks_numeric_obfuscated(const std::string& h) {
+  if (h.size() > 2 && h[0] == '0' && (h[1] == 'x' || h[1] == 'X')) return true;  // hex packed
+  bool has_dot = false, all_digit_or_dot = true;
+  for (char c : h) {
+    if (c == '.') has_dot = true;
+    else if (!std::isdigit(static_cast<unsigned char>(c))) all_digit_or_dot = false;
+  }
+  if (!all_digit_or_dot) return false;        // contains a non-digit, non-dot -> a real hostname
+  if (!has_dot) return true;                  // all digits, no dots -> packed decimal IP
+  // dotted + all-numeric octets: flag a leading-zero octet (octal obfuscation)
+  std::size_t start = 0;
+  while (true) {
+    std::size_t dot = h.find('.', start);
+    std::string oct = (dot == std::string::npos) ? h.substr(start) : h.substr(start, dot - start);
+    if (oct.size() > 1 && oct[0] == '0') return true;
+    if (dot == std::string::npos) break;
+    start = dot + 1;
+  }
+  return false;
 }
 
 VetoResult allow()                          { return {}; }
@@ -40,7 +117,12 @@ VetoResult confirm(const std::string& why)  { return {true, why, true}; }
 
 }  // namespace
 
-CapabilityPolicy::CapabilityPolicy(CapabilityScope scope) : scope_(std::move(scope)) {}
+CapabilityPolicy::CapabilityPolicy(CapabilityScope scope) : scope_(std::move(scope)) {
+  // Canonicalize the path scopes once so prefix matching is consistent with the canon'd
+  // request path (e.g. allow "./" and deny ".env" -> "./" / "./.env"). Hosts are untouched.
+  for (auto& p : scope_.fs_read_allow) p = canon_path(p);
+  for (auto& p : scope_.fs_deny)       p = canon_path(p);
+}
 
 Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "fs_read" || tool == "list_dir")          return Capability::FsRead;
@@ -73,10 +155,19 @@ std::string CapabilityPolicy::parse_host(const std::string& url) {
 
 bool CapabilityPolicy::is_private_host(const std::string& raw) {
   std::string h = lower(raw);
-  if (h == "localhost" || h == "::1" || h == "0.0.0.0") return true;
-  static const std::array<const char*, 4> pre = {"127.", "10.", "192.168.", "169.254."};
-  for (const char* p : pre) if (starts_with(h, p)) return true;
-  return in_172_16_12(h);
+  if (h.empty()) return false;                             // emptiness is fail-closed at veto()
+  if (h == "localhost" || h == "::1" || h == "::") return true;  // loopback + unspecified IPv6
+  if (h.find(':') != std::string::npos) {                  // IPv6 literal (hostnames have no colon)
+    if (h.starts_with("fe8") || h.starts_with("fe9") ||
+        h.starts_with("fea") || h.starts_with("feb")) return true;   // fe80::/10 link-local
+    if (h.starts_with("fc") || h.starts_with("fd")) return true;     // fc00::/7 unique-local
+    if (auto pos = h.rfind("::ffff:"); pos != std::string::npos) {   // IPv4-mapped ::ffff:a.b.c.d
+      std::string tail = h.substr(pos + 7);
+      if (tail.find('.') != std::string::npos && is_private_ipv4(tail)) return true;
+    }
+  }
+  if (is_private_ipv4(h)) return true;
+  return looks_numeric_obfuscated(h);                      // packed numeric host -> fail closed
 }
 
 VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
@@ -87,15 +178,17 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
     case Capability::Exec:
       return confirm("exec capability (" + a.tool + "): runs an arbitrary command");
     case Capability::FsWrite: {
-      std::string path = a.args.value("path", "");
-      if (any_prefix(path, scope_.fs_read_deny))
+      std::string path = canon_path(a.args.value("path", ""));
+      if (any_prefix(path, scope_.fs_deny))
         return deny("write to a denied path: " + path);
       return confirm("fs_write (" + a.tool + ") overwrites a file: " + path);
     }
     case Capability::FsRead: {
-      std::string path = a.args.value("path", "");
-      if (any_prefix(path, scope_.fs_read_deny))
+      std::string path = canon_path(a.args.value("path", ""));
+      if (any_prefix(path, scope_.fs_deny))
         return deny("read of a denied path: " + path);
+      if (escapes_base(path))                           // surviving ".." -> never silently allow
+        return confirm("fs_read escapes its base via '..': " + path);
       if (any_prefix(path, scope_.fs_read_allow))
         return allow();
       return scope_.confirm_unscoped
@@ -104,6 +197,8 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
     }
     case Capability::Net: {
       std::string host = parse_host(a.args.value("url", ""));
+      if (host.empty())                                 // a gate must not allow what it can't classify
+        return deny("net fetch with an unparseable/empty host");
       if (scope_.block_private_net && is_private_host(host))
         return deny("net fetch to a private/loopback host: " + host);
       for (const auto& d : scope_.net_deny_hosts)

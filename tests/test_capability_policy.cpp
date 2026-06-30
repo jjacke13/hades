@@ -15,7 +15,7 @@ namespace {
 CapabilityScope make_scope() {
   CapabilityScope s;
   s.fs_read_allow = {"./", "./workspace"};
-  s.fs_read_deny  = {"/etc", ".env", "secrets/"};
+  s.fs_deny       = {"/etc", ".env", "secrets/"};
   s.block_private_net = true;
   s.confirm_unscoped  = true;
   return s;
@@ -109,4 +109,50 @@ TEST(CapabilityPolicy, ParseHostResistsUserinfoPathSpoof) {
   Blackboard bb; CapabilityPolicy p(make_scope());
   auto v = p.veto(bb, fetch("http://127.0.0.1/@evil.com"));
   EXPECT_TRUE(v.vetoed); EXPECT_FALSE(v.needs_confirm);
+}
+
+// C2 — IPv6 link-local / unspecified / IPv4-mapped must all hard-veto (SSRF guard).
+TEST(CapabilityPolicy, HardVetoesIPv6LinkLocalUnspecifiedAndMapped) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  for (const char* u : {"http://[fe80::1]/x", "http://[::]/x",
+                        "http://[::ffff:127.0.0.1]/x", "http://[::ffff:10.0.0.1]/x"}) {
+    auto v = p.veto(bb, fetch(u));
+    EXPECT_TRUE(v.vetoed) << u; EXPECT_FALSE(v.needs_confirm) << u;
+  }
+  EXPECT_TRUE(CapabilityPolicy::is_private_host("fe80::1"));
+  EXPECT_TRUE(CapabilityPolicy::is_private_host("fd12:3456::1"));  // fc00::/7 ULA
+  EXPECT_TRUE(CapabilityPolicy::is_private_host("::"));
+  EXPECT_TRUE(CapabilityPolicy::is_private_host("::ffff:127.0.0.1"));
+}
+
+// C3 — empty/unparseable fetch host must FAIL CLOSED (hard-veto), never default-allow.
+TEST(CapabilityPolicy, FailsClosedOnEmptyOrUnparseableHost) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  for (const char* u : {"", "http://", "//127.0.0.1/"}) {
+    auto v = p.veto(bb, fetch(u));
+    EXPECT_TRUE(v.vetoed) << u; EXPECT_FALSE(v.needs_confirm) << u;
+  }
+}
+
+// I1 — "./"-prefix must not dodge a path deny; surviving ".." -> confirm (not silent allow).
+TEST(CapabilityPolicy, NormalizesPathBeforeDenyMatch) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  auto dotenv = p.veto(bb, read("./.env"));                 // normalizes to ".env" -> deny matches
+  EXPECT_TRUE(dotenv.vetoed); EXPECT_FALSE(dotenv.needs_confirm);
+  auto sec = p.veto(bb, read("./secrets/key"));             // normalizes to "secrets/key" -> deny
+  EXPECT_TRUE(sec.vetoed); EXPECT_FALSE(sec.needs_confirm);
+  auto up = p.veto(bb, read("../outside"));                 // escapes base via ".." -> confirm
+  EXPECT_TRUE(up.vetoed); EXPECT_TRUE(up.needs_confirm);
+}
+
+// I2 — packed/obfuscated numeric hosts fail closed; a clean public dotted-quad still allows.
+TEST(CapabilityPolicy, FailsClosedOnNumericObfuscatedHost) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  for (const char* u : {"http://2130706433/", "http://0x7f000001/", "http://0177.0.0.1/"}) {
+    auto v = p.veto(bb, fetch(u));
+    EXPECT_TRUE(v.vetoed) << u; EXPECT_FALSE(v.needs_confirm) << u;
+  }
+  EXPECT_FALSE(p.veto(bb, fetch("http://93.184.216.34/")).vetoed);   // public dotted-quad allowed
+  EXPECT_TRUE (CapabilityPolicy::is_private_host("2130706433"));
+  EXPECT_FALSE(CapabilityPolicy::is_private_host("93.184.216.34"));
 }

@@ -17,14 +17,27 @@ namespace hades {
 enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, Unknown };
 
 // Operator-supplied bounds (from the `Objective = capability_policy { … }` manifest block).
-// Path lists are literal prefixes; host checks are string/range based (no DNS resolution in v1).
+// Path lists are lexically-normalized prefixes (leading "./" and "." components collapsed before
+// matching — see canon_path); host checks are string/range based (no DNS resolution in v1).
 struct CapabilityScope {
   std::vector<std::string> fs_read_allow;     // prefixes fs_read/list_dir may read silently
-  std::vector<std::string> fs_read_deny;      // prefixes hard-vetoed (key file, /etc, secrets)
+  std::vector<std::string> fs_deny;           // prefixes hard-vetoed for BOTH fs_read AND fs_write
+                                              // (key file, /etc, secrets) — was fs_read_deny
   std::vector<std::string> net_deny_hosts;    // extra explicit host substrings hard-vetoed
   bool block_private_net = true;              // hard-veto loopback + RFC1918 + link-local
   bool confirm_unscoped  = true;              // out-of-allow-scope read -> confirm (else hard-veto)
 };
+
+// ── v1 security posture: what this gate does NOT close (deferred to v2, must stay visible) ──
+//  • DNS rebinding / TOCTOU: is_private_host() classifies the URL's host string, but cpr resolves
+//    and connects LATER — a name that resolves public at check-time and private at connect-time
+//    (or round-robins) bypasses the gate. Real fix needs connect-time enforcement (resolve+pin, or
+//    a SOCKS/HTTP egress proxy that re-checks the connected IP).
+//  • Symlink path-deny bypass: path matching is LEXICAL (canon_path), not realpath() — a symlink
+//    under an allowed root pointing at /etc/shadow still reads the secret. Needs realpath + an
+//    O_NOFOLLOW-style resolution in the fs tool.
+//  • No positive net egress allowlist: default-allow-public still permits exfiltration to ANY
+//    public host (only private + explicit deny-substrings are blocked). Needs an opt-in net_allow.
 
 class CapabilityPolicy : public Objective {
 public:

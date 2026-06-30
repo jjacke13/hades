@@ -35,7 +35,10 @@ int main() {
     if (url.empty()) {
       out = {{"ok", false}, {"result", {{"error", "missing arg: url"}}}};
     } else {
-      cpr::Response r = cpr::Get(cpr::Url{url}, cpr::Timeout{30000});
+      // Redirects are DISABLED so the CapabilityPolicy host-gate (which classifies only the
+      // initial URL's host) cannot be bypassed by a 3xx Location to a private/loopback host
+      // (redirect-SSRF). A 3xx now returns the redirect response unfollowed.
+      cpr::Response r = cpr::Get(cpr::Url{url}, cpr::Timeout{30000}, cpr::Redirect{false});
       std::string body = r.text;
       constexpr std::size_t kCap = 64 * 1024;
       bool truncated = body.size() > kCap;
