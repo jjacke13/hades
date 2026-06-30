@@ -72,7 +72,13 @@ Agent build_agent(Blackboard& bb,
 // module type) and wires the Tool/Objective blocks it carries. The LLMModule
 // self-builds its OpenAI-compatible provider from the Session block (endpoint/
 // model/api_key_env via the named env var) in its on_start.
-Agent build_agent(Blackboard& bb, const Manifest& m);
+//
+// `session_path` is the resolved live-session jsonl path (from hades_main, computed
+// BEFORE this call). It is wired into the optional EmbeddingMemoryModule via
+// set_live_session_path BEFORE its on_attach — so the write happens-before the index
+// worker is submitted (the Executor queue synchronizes), excluding the mid-write live
+// session race-free. Empty ("" — the test overload) leaves the setter a no-op.
+Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_path = "");
 
 // Promote the fatal multi-kv parser warnings (see kMultiKvWarning) to a hard MalConfig so
 // no agent is ever built from a corrupt manifest. No-op when there are none. Called at the

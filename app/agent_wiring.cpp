@@ -87,7 +87,8 @@ void wire_agent(Agent& a,
                 const std::vector<Block>& objectives,
                 const Block& memory,
                 std::string model,
-                const Block& embedding = Block{}) {
+                const Block& embedding = Block{},
+                const std::string& session_path = "") {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -149,14 +150,19 @@ void wire_agent(Agent& a,
 
   // 2c) EmbeddingMemoryModule (optional, opt-in via the `Module = embedding_memory` roster)
   //     ALSO before the Arbiter, for the same reason as MemoryModule: it must post
-  //     RETRIEVED_MEMORY_SEMANTIC on the same pump before start_turn() reads it. The
-  //     executor (live path; created before wire_agent) lets its corpus index run OFF the
-  //     bus — set BEFORE on_attach because on_attach is what submits the index worker.
-  //     On the test overload a.embedding is null and a.executor null -> this is inert.
+  //     RETRIEVED_MEMORY_SEMANTIC on the same pump before start_turn() reads it. BOTH the
+  //     live-session path AND the executor must be set BEFORE on_attach, because on_attach is
+  //     what submits the index worker: set_live_session_path writes the member the worker reads
+  //     (live_session_path_), and the Executor queue's synchronization makes that write
+  //     happen-before the worker dequeue — so the worker never races the main thread on that
+  //     string (the Task-10 data race) and never excludes nothing on a resume. The executor
+  //     (live path; created before wire_agent) lets the corpus index run OFF the bus. On the
+  //     test overload a.embedding is null, a.executor null, session_path "" -> this is inert.
   if (a.embedding) {
     a.embedding->on_start(embedding, bb);
+    a.embedding->set_live_session_path(session_path);  // BEFORE on_attach -> happens-before the worker
     if (a.executor) a.embedding->set_executor(a.executor.get());
-    a.embedding->on_attach(bb);  // subscribes USER_MESSAGE before the Arbiter does
+    a.embedding->on_attach(bb);  // subscribes USER_MESSAGE before the Arbiter does; submits the worker
   }
 
   // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
@@ -208,11 +214,12 @@ Agent build_agent(Blackboard& bb,
   a.memory  = std::make_unique<MemoryModule>();
   a.chat    = std::make_unique<ChatModule>();
   a.serve   = std::make_unique<HttpServerModule>();
-  wire_agent(a, bb, session, tools, objectives, memory, std::move(model));
+  // Test path never builds a.embedding -> session_path "" makes set_live_session_path a no-op.
+  wire_agent(a, bb, session, tools, objectives, memory, std::move(model), Block{}, "");
   return a;
 }
 
-Agent build_agent(Blackboard& bb, const Manifest& m) {
+Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_path) {
   enforce_manifest(m);   // refuse to build from a manifest with packed multi-kv lines
   auto session = m.session();
   if (!session) throw MalConfig("manifest has no Session block");
@@ -282,7 +289,9 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   a.executor = std::make_unique<Executor>(kExecutorThreads);
   if (a.llm) a.llm->set_executor(a.executor.get());
 
-  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding);
+  // Pass the resolved live-session path through so wire_agent sets it on the embedding module
+  // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
+  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:

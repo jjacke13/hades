@@ -24,9 +24,11 @@ public:
   void on_attach(Blackboard& bb) override;
   void set_executor(Executor* ex) { executor_ = ex; }
   // The live (current) session file to EXCLUDE from the past-session corpus pass — it is mid-write.
-  // Wired from hades_main to the SAME path the Arbiter persists to (set BEFORE the index worker can
-  // run for a resumed session would require pre-on_attach wiring; for a new session the file does
-  // not yet exist so it is harmless either way — see the note in run_index_).
+  // Wired (in wire_agent) to the SAME path the Arbiter persists to, and MUST be called BEFORE
+  // on_attach: on_attach is what submits the index worker (which reads live_session_path_), so the
+  // setter's write must happen-before that submit. The Executor queue's synchronization then makes
+  // the write visible to the worker race-free (no data race, and a resumed session is correctly
+  // excluded rather than embedded mid-write). Calling it after on_attach would re-introduce the race.
   void set_live_session_path(std::string p) { live_session_path_ = std::move(p); }
 private:
   void run_index_();                            // incremental index of the archival + session corpora

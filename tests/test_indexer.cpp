@@ -87,3 +87,19 @@ TEST(Indexer, IndexesSessionTurnsExcludingLive) {
   EXPECT_EQ(st.embedded, 1u);                   // only past.jsonl's single turn; live excluded
   EXPECT_EQ(vc.size(), 1u);
 }
+TEST(Indexer, ExcludesLiveSessionByCanonicalPathNotStringMatch) {
+  namespace fs = std::filesystem;
+  std::string dir = testing::TempDir() + "/ix_canon_sessions";
+  fs::remove_all(dir); fs::create_directories(dir);
+  { std::ofstream f(dir + "/past.jsonl", std::ios::trunc);
+    f << "{\"role\":\"user\",\"content\":\"q\"}\n{\"role\":\"assistant\",\"content\":\"a\"}\n"; }
+  std::string cache = testing::TempDir() + "/ix_canon_cache.jsonl";
+  std::remove(cache.c_str());
+  FakeProvider prov;
+  VectorCache vc(cache, "fake", 2); ASSERT_TRUE(vc.load());
+  // exclude_path is a non-identical alias of the ONLY file -> canonical compare must still exclude it.
+  auto st = index_sessions(prov, vc, dir, dir + "/./past.jsonl", 32);
+  EXPECT_TRUE(st.ok);
+  EXPECT_EQ(st.embedded, 0u);                   // the only file is the (aliased) live one -> excluded
+  EXPECT_EQ(vc.size(), 0u);
+}

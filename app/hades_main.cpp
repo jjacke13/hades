@@ -114,7 +114,11 @@ int main(int argc, char** argv) {
     // pump thread.) Net teardown: Executor joins workers -> modules -> Blackboard. Do
     // NOT reorder these two lines.
     Blackboard bb(&eventlog);
-    Agent agent = build_agent(bb, manifest);  // owns every module for the session
+    // Pass `session_path` (resolved above) INTO build_agent so the optional embedding module's
+    // live-session exclusion is set BEFORE its on_attach submits the index worker — the write
+    // then happens-before the worker reads it (Executor-queue synchronization), closing the
+    // Task-10 data race. Do NOT set it again after this call (the late write was the race).
+    Agent agent = build_agent(bb, manifest, session_path);  // owns every module for the session
 
     if (!agent.arbiter || !agent.llm) {
       std::cerr << "hades: manifest Module roster is missing `llm` and/or `arbiter` "
@@ -126,10 +130,9 @@ int main(int argc, char** argv) {
     // Order: budget first, then the path, then load — load_history reads the path just set.
     agent.arbiter->set_history_budget_chars(history_budget);
     agent.arbiter->set_session_path(session_path);
-    // The embedding module must EXCLUDE the same live session file the Arbiter is writing (else the
-    // mid-write current session gets indexed as a "past" memory). Null-guarded: REPL/serve rosters
-    // may omit the embedding module. Same resolved path as the Arbiter.
-    if (agent.embedding) agent.embedding->set_live_session_path(session_path);
+    // NOTE: the embedding module's live-session exclusion (set_live_session_path) is wired INSIDE
+    // build_agent, BEFORE the index worker is submitted (on_attach) — see the wire_agent 2c block.
+    // It must NOT be set here: this late write would race the running worker (the Task-10 bug).
     // Also give the Arbiter the sessions dir so a `/new` mid-run rotates to a fresh file in the
     // same dir (no id-gen injection in prod -> defaults to make_session_id()).
     agent.arbiter->set_session_dir(sessions_dir);
