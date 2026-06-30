@@ -39,6 +39,14 @@ TEST(HttpEmbeddingProvider, CountMismatchIsSoftError) {
   auto r = p.embed({"a", "b"});                // asked 2, got 1
   EXPECT_FALSE(r.error.empty());
 }
+TEST(HttpEmbeddingProvider, DimInconsistentIsSoftError) {
+  // Two vectors of different length (dim 2 then dim 1) -> the post-loop dim guard must soft-error.
+  HttpEmbeddingProvider p("https://x/v1", "k", "m",
+    [](auto, auto, auto) { return HttpResponse{200, R"({"data":[{"embedding":[1.0,0.0]},{"embedding":[1.0]}]})"}; });
+  auto r = p.embed({"a", "b"});
+  EXPECT_FALSE(r.error.empty());
+  EXPECT_TRUE(r.vectors.empty());
+}
 TEST(HttpEmbeddingProvider, MalformedItemIsSoftError) {
   // A data item missing/!array "embedding", or a non-number value, must set error (fail-soft) —
   // regression: an earlier `return {}` discarded the just-set error, looking like empty success.
