@@ -58,8 +58,9 @@ function addConfirm(id, prompt) {
 function addToolCall(name, args) {
   const d = document.createElement('div');
   d.className = 'msg tool-call';
+  const n = (typeof name === 'string') ? name : String(name);
   const a = (typeof args === 'string') ? args : JSON.stringify(args);
-  d.innerHTML = '<span class="label">\u{1F527} ' + escapeText(name) + ' </span>' + escapeText(a);
+  d.innerHTML = '<span class="label">\u{1F527} ' + escapeText(n) + ' </span>' + escapeText(a);
   log.appendChild(d);
   scrollDown();
 }
