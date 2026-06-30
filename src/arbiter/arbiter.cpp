@@ -10,6 +10,7 @@
 #include "hades/blackboard.h"
 #include "hades/prompt.h"   // read_memory_layer
 #include "hades/session_id.h"   // make_session_id + unique_fresh_path (NEW_SESSION rotation)
+#include "hades/session_history.h"   // read_session_jsonl (shared tolerant parse)
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -45,14 +46,9 @@ void Arbiter::append_history(const nlohmann::json& msg) {
 // user/assistant-answer boundary.
 void Arbiter::load_history() {
   if (session_path_.empty()) return;
-  std::ifstream f(session_path_);
-  if (!f) return;  // missing file: fresh session, not an error
-  std::string line;
-  while (std::getline(f, line)) {
-    if (line.empty()) continue;
-    auto j = nlohmann::json::parse(line, nullptr, false);
-    if (!j.is_discarded() && j.is_object()) history_.push_back(j);
-  }
+  // Tolerant parse shared with the GET /history display reader (skip blank/corrupt/partial lines).
+  auto loaded = read_session_jsonl(session_path_);
+  history_.insert(history_.end(), loaded.begin(), loaded.end());
   // Drop leading orphan tool message(s); the window must begin on user/assistant (or be empty).
   while (!history_.empty() && history_.front().value("role", "") == "tool")
     history_.erase(history_.begin());
