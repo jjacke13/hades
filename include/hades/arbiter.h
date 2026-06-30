@@ -7,6 +7,7 @@
 // Answer or the max-steps guard fires. Event-driven via the Blackboard; no threads.
 
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -29,6 +30,15 @@ public:
   void set_system_prompt(std::string s) { system_prompt_ = std::move(s); }
   // Path to the always-on core-memory file (memory_file). Re-read every turn so pins are live.
   void set_memory_path(std::string p) { memory_path_ = std::move(p); }
+  // Path to the per-session conversation jsonl (one history_ message per line). When set,
+  // append_history persists each message as it is added; load_history reloads it on resume.
+  void set_session_path(std::string p) { session_path_ = std::move(p); }
+  // Reload a session jsonl into history_ (tolerant: skip blank/corrupt lines). No-op if unset.
+  void load_history();
+  // Push a message onto history_ and, if a session path is set, durably append it to disk.
+  void append_history(const nlohmann::json& msg);
+  // Test observability: number of messages currently held in history_.
+  std::size_t history_size() const { return history_.size(); }
 
 private:
   void start_turn();
@@ -47,6 +57,7 @@ private:
   std::string model_;
   std::string system_prompt_;   // prepended as a {role:system} message each turn (may be empty)
   std::string memory_path_;     // live core-memory file; re-read each turn into the system message
+  std::string session_path_;    // per-session conversation jsonl; append-per-message when set
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm

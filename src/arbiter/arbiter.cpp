@@ -10,10 +10,41 @@
 #include "hades/blackboard.h"
 #include "hades/prompt.h"   // read_memory_layer
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <system_error>
 namespace hades {
 
 static constexpr int kMaxSteps = 25;
+
+// Push a message onto the in-memory conversation AND, when a session path is set, durably
+// append it as one JSON line. IO errors are swallowed (a disk hiccup must not crash the turn —
+// the message still lives in history_; resume just won't have the latest line). With no path
+// set this is pure push_back, identical to the pre-resume behavior.
+void Arbiter::append_history(const nlohmann::json& msg) {
+  history_.push_back(msg);
+  if (session_path_.empty()) return;
+  std::error_code ec;
+  const std::filesystem::path p(session_path_);
+  if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+  std::ofstream f(session_path_, std::ios::app);
+  if (f) f << msg.dump() << "\n";
+}
+
+// Reload a session jsonl into history_ on resume. Tolerant like load_memories: a blank or
+// corrupt line (e.g. a truncated trailing line from a mid-append crash) is skipped, never thrown.
+void Arbiter::load_history() {
+  if (session_path_.empty()) return;
+  std::ifstream f(session_path_);
+  if (!f) return;  // missing file: fresh session, not an error
+  std::string line;
+  while (std::getline(f, line)) {
+    if (line.empty()) continue;
+    auto j = nlohmann::json::parse(line, nullptr, false);
+    if (!j.is_discarded() && j.is_object()) history_.push_back(j);
+  }
+}
 
 void Arbiter::on_attach(Blackboard& bb) {
   // SAFETY: bb_ is non-owning; Arbiter outlives the Blackboard subscription
@@ -21,7 +52,7 @@ void Arbiter::on_attach(Blackboard& bb) {
   bb_ = &bb;
   bb.subscribe("USER_MESSAGE", [this](const Entry& e) {
     if (!e.value.is_string()) return;  // ignore malformed user input
-    history_.push_back({{"role", "user"}, {"content", e.value}});
+    append_history({{"role", "user"}, {"content", e.value}});
     steps_ = 0;
     ++turn_epoch_;   // a new user turn: later LLM_RESPONSEs stamped with prior epochs are stale
     bb_->post("MODE", "EXECUTING", "arbiter");
@@ -157,7 +188,7 @@ void Arbiter::dispatch_or_gate(const Action& act, const nlohmann::json& assistan
       return;
     }
   }
-  history_.push_back(assistant_msg);
+  append_history(assistant_msg);
   if (act.kind == Action::Kind::ToolCall) {
     bb_->post("TOOL_REQUEST", {{"id", act.tool_id}, {"tool", act.tool}, {"args", act.args}},
               "arbiter");
@@ -171,9 +202,9 @@ void Arbiter::on_tool_result(const Entry& e) {
   if (!v.is_object()) return;  // malformed tool result: ignore
   const auto content = v.contains("content") ? v["content"] : nlohmann::json::object();
   // History push BEFORE the guard so the assistant/tool message pair is always preserved.
-  history_.push_back({{"role", "tool"},
-                      {"tool_call_id", v.value("id", "")},
-                      {"content", content.dump()}});
+  append_history({{"role", "tool"},
+                  {"tool_call_id", v.value("id", "")},
+                  {"content", content.dump()}});
   if (++steps_ > kMaxSteps) {
     bb_->post("ASSISTANT_MESSAGE", "[stopped: reached max tool steps]", "arbiter");
     return;
@@ -187,7 +218,7 @@ void Arbiter::on_confirm(const Entry& e) {
   const auto& v = e.value;
   bool approved = v.is_object() && v.value("approved", false);
   if (approved) {
-    history_.push_back(pending_msg_);
+    append_history(pending_msg_);
     bb_->post("TOOL_REQUEST",
               {{"id", pending_.value("tool_id", "")},
                {"tool", pending_.value("tool", "")},

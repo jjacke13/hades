@@ -7,8 +7,10 @@
 // the max-steps guard that terminates runaway tool loops.
 
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <vector>
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
@@ -327,4 +329,56 @@ TEST(Arbiter, NoCoreMemoryWhenPathUnsetAndNoPrompt) {
   bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
   bb.post("USER_MESSAGE","hi","chat"); bb.pump();
   EXPECT_EQ(req["messages"][0]["role"], "user");   // no leading system message at all
+}
+
+// --- Session resume (Task 1): conversation persistence to a session jsonl ---
+
+// With a session path set, append_history both pushes to history_ AND appends one
+// JSON line per message (verbatim dump) — the user turn and the assistant answer.
+TEST(Arbiter, AppendHistoryWritesFileWhenPathSet) {
+  const std::string path = ::testing::TempDir() + "/sess_write.jsonl";
+  std::filesystem::remove(path);                   // start clean (TempDir may persist)
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_path(path);
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","hi there"},{"epoch",1}}, "llm"); bb.pump();
+  std::ifstream f(path);
+  ASSERT_TRUE(f.good());
+  std::vector<std::string> lines; std::string line;
+  while (std::getline(f, line)) if (!line.empty()) lines.push_back(line);
+  ASSERT_EQ(lines.size(), 2u);                     // user msg + assistant msg, one per line
+  const auto l1 = nlohmann::json::parse(lines[0]);
+  const auto l2 = nlohmann::json::parse(lines[1]);
+  EXPECT_EQ(l1.value("role",""), "user");
+  EXPECT_EQ(l1.value("content",""), "hi");
+  EXPECT_EQ(l2.value("role",""), "assistant");
+  EXPECT_EQ(l2.value("content",""), "hi there");
+}
+
+// Backward-compat: with NO session path, append_history is push-only — history_ grows
+// but NO file is ever created (existing behavior preserved for the 175 prior tests).
+TEST(Arbiter, AppendHistoryPushOnlyWhenNoPath) {
+  const std::string path = ::testing::TempDir() + "/sess_nopath.jsonl";
+  std::filesystem::remove(path);
+  Blackboard bb; Arbiter a; a.on_attach(bb);       // no set_session_path
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","hi there"},{"epoch",1}}, "llm"); bb.pump();
+  EXPECT_EQ(a.history_size(), 2u);                 // both messages held in memory
+  EXPECT_FALSE(std::filesystem::exists(path));     // but nothing persisted to disk
+}
+
+// load_history round-trips a written jsonl into history_ and tolerates a corrupt/truncated
+// trailing line (a crash mid-append) — the 3 valid lines load, the garbage tail is skipped.
+TEST(Arbiter, LoadHistoryRoundTripsAndToleratesCorruptTail) {
+  const std::string path = ::testing::TempDir() + "/sess_load.jsonl";
+  {
+    std::ofstream f(path, std::ios::trunc);
+    f << nlohmann::json({{"role","user"},{"content","one"}}).dump() << "\n";
+    f << nlohmann::json({{"role","assistant"},{"content","two"}}).dump() << "\n";
+    f << nlohmann::json({{"role","user"},{"content","three"}}).dump() << "\n";
+    f << "{\"role\":\"assistant\",\"content\":\"trun";   // truncated tail, no newline
+  }
+  Arbiter b; b.set_session_path(path);
+  EXPECT_NO_THROW(b.load_history());
+  EXPECT_EQ(b.history_size(), 3u);                 // 3 valid; corrupt trailing line skipped
 }
