@@ -61,17 +61,16 @@ Serve
 #   - PPQ (remote, reuses your LLM key): provider = http ; endpoint = https://api.ppq.ai/v1
 #       (NOT .../embeddings — the provider appends /embeddings) ; model = openai/text-embedding-3-small ;
 #       api_key_env = HADES_API_KEY  (embed cost hits your PPQ balance; NOT metered by the budget objective)
-# Module = embedding_memory
-# Embedding {
-#   provider           = subprocess
-#   command            = python3 ./tools/embed_reference.py
-#   cache_dir          = .hades/embeddings
-#   memory_store       = .hades/memory.jsonl
-#   sessions_dir       = .hades/sessions
-#   index_sessions     = true
-#   top_n              = 5
-#   min_similarity     = 0.25
-#   reindex_interval_s = 86400
-#   batch_size         = 32
-#   timeout_s          = 120
-# }
+Module = embedding_memory
+Embedding {
+  provider           = http
+  endpoint           = https://api.ppq.ai/v1
+  api_key_env        = HADES_API_KEY
+  model              = openai/text-embedding-3-small
+  index_sessions     = true
+  top_n              = 3
+  min_similarity     = 0.45
+  reindex_interval_s = 86400
+  batch_size         = 32
+  timeout_s          = 120
+}
