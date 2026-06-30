@@ -16,6 +16,12 @@ rl.on('line', (line) => {
   try {
     const req = JSON.parse(line);
     const texts = Array.isArray(req.texts) ? req.texts : [];
+    // Test sentinels (exact-match single text):
+    if (texts.length === 1 && texts[0] === "__DIE__") { process.exit(1); }  // no reply -> EOF/respawn path
+    if (texts.length === 1 && texts[0] === "__BADREPLY__") {                // non-string error -> provider's value() throws
+      process.stdout.write(JSON.stringify({ error: { nested: 1 } }) + "\n");
+      return;
+    }
     out = { model: "echo", dim: DIM, embeddings: texts.map(embed) };
   } catch (e) {                              // protocol error -> one error line
     out = { error: String(e) };

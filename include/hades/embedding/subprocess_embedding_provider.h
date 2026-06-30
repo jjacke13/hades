@@ -12,7 +12,7 @@ public:
   std::string model() const override;
 private:
   PersistentChild child_;
-  std::mutex mu_;                 // the warm child is shared (index task + per-turn query)
+  mutable std::mutex mu_;         // the warm child is shared (index task + per-turn query); mutable for const model()
   std::string model_;             // learned from the first successful reply
 };
 }  // namespace hades

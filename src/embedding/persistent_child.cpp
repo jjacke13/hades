@@ -1,6 +1,8 @@
 #include "hades/embedding/persistent_child.h"
+#include <cerrno>
 #include <csignal>
 #include <ctime>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -12,6 +14,7 @@ PersistentChild::PersistentChild(std::vector<std::string> argv, double timeout_s
 PersistentChild::~PersistentChild() { stop_(); }
 
 bool PersistentChild::ensure_started_() {
+  ::signal(SIGPIPE, SIG_IGN);                // writing to a dead warm child must not kill us (EPIPE, not SIGPIPE)
   if (alive_) return true;
   int ip[2], op[2];
   if (pipe(ip) != 0) return false;
@@ -29,28 +32,41 @@ bool PersistentChild::ensure_started_() {
   }
   close(ip[0]); close(op[1]);
   in_fd_ = ip[1]; out_fd_ = op[0]; pid_ = pid; alive_ = true; rbuf_.clear();
+  fcntl(in_fd_, F_SETFL, O_NONBLOCK);      // timeout-bounded writes (poll(POLLOUT)) — a stuck child can't deadlock past timeout_s_
   return true;
 }
 
 void PersistentChild::stop_() {
   if (in_fd_ >= 0) { close(in_fd_); in_fd_ = -1; }
   if (out_fd_ >= 0) { close(out_fd_); out_fd_ = -1; }
-  if (pid_ > 0) { kill(pid_, SIGKILL); int st = 0; waitpid(pid_, &st, 0); pid_ = -1; }
+  if (pid_ > 0) {
+    kill(pid_, SIGKILL);
+    int st = 0, rc;
+    do { rc = waitpid(pid_, &st, 0); } while (rc < 0 && errno == EINTR);  // EINTR-guarded reap (no zombie window)
+    pid_ = -1;
+  }
   alive_ = false;
 }
 
 PersistentChild::Reply PersistentChild::request(const std::string& line) {
   if (!ensure_started_()) return {false, "", "embedder spawn failed"};
-  // write request + newline
+  const double deadline = mono() + timeout_s_;   // ONE wall-clock budget shared across write + read
+  // write request + newline, timeout-bounded via poll(POLLOUT) (in_fd_ is non-blocking)
   std::string msg = line; msg.push_back('\n');
   std::size_t off = 0;
   while (off < msg.size()) {
+    double ms = (deadline - mono()) * 1000.0;
+    if (ms <= 0) { stop_(); return {false, "", "embedder write timed out"}; }
+    pollfd pfd{in_fd_, POLLOUT, 0};
+    int n = poll(&pfd, 1, static_cast<int>(ms));
+    if (n < 0) { if (errno == EINTR) continue; stop_(); return {false, "", "embedder poll error"}; }
+    if (n == 0) { stop_(); return {false, "", "embedder write timed out"}; }
     ssize_t w = write(in_fd_, msg.data() + off, msg.size() - off);
-    if (w <= 0) { stop_(); return {false, "", "embedder write failed"}; }
-    off += static_cast<std::size_t>(w);
+    if (w > 0) { off += static_cast<std::size_t>(w); }
+    else if (w < 0 && (errno == EINTR || errno == EAGAIN)) { continue; }   // not ready / interrupted -> poll again
+    else { stop_(); return {false, "", "embedder write failed"}; }         // EPIPE etc.: child gone
   }
   // read until we have one full line (or timeout / EOF)
-  const double deadline = mono() + timeout_s_;
   for (;;) {
     if (auto nl = rbuf_.find('\n'); nl != std::string::npos) {
       std::string out = rbuf_.substr(0, nl);
@@ -61,7 +77,7 @@ PersistentChild::Reply PersistentChild::request(const std::string& line) {
     if (ms <= 0) { stop_(); return {false, "", "embedder timed out"}; }
     pollfd pfd{out_fd_, POLLIN, 0};
     int n = poll(&pfd, 1, static_cast<int>(ms));
-    if (n < 0) { stop_(); return {false, "", "embedder poll error"}; }
+    if (n < 0) { if (errno == EINTR) continue; stop_(); return {false, "", "embedder poll error"}; }
     if (n == 0) { stop_(); return {false, "", "embedder timed out"}; }
     char buf[4096];
     ssize_t k = read(out_fd_, buf, sizeof buf);
