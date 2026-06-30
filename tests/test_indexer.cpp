@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include "hades/embedding/indexer.h"
 #include "hades/embedding/provider.h"
+#include "hades/embedding/session_turns.h"
 #include "hades/embedding/vector_cache.h"
 using namespace hades;
 
@@ -66,4 +68,22 @@ TEST(Indexer, IncrementalSkipsAlreadyCached) {
   EXPECT_EQ(st.skipped, 2u);
   EXPECT_EQ(p2.texts, 2);                       // provider asked only for the new ones
   EXPECT_EQ(vc.size(), 4u);
+}
+TEST(Indexer, IndexesSessionTurnsExcludingLive) {
+  namespace fs = std::filesystem;
+  std::string dir = testing::TempDir() + "/ix_sessions";
+  fs::create_directories(dir);
+  { std::ofstream f(dir + "/past.jsonl", std::ios::trunc);
+    f << "{\"role\":\"user\",\"content\":\"q\"}\n{\"role\":\"assistant\",\"content\":\"a\"}\n"; }
+  std::string live = dir + "/live.jsonl";
+  { std::ofstream f(live, std::ios::trunc);
+    f << "{\"role\":\"user\",\"content\":\"now\"}\n{\"role\":\"assistant\",\"content\":\"here\"}\n"; }
+  std::string cache = testing::TempDir() + "/ix_sess_cache.jsonl";
+  std::remove(cache.c_str());
+  FakeProvider prov;                            // reuse the FakeProvider from the archival tests
+  VectorCache vc(cache, "fake", 2); ASSERT_TRUE(vc.load());
+  auto st = index_sessions(prov, vc, dir, live, 32);
+  EXPECT_TRUE(st.ok);
+  EXPECT_EQ(st.embedded, 1u);                   // only past.jsonl's single turn; live excluded
+  EXPECT_EQ(vc.size(), 1u);
 }

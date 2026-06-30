@@ -24,6 +24,8 @@ EmbeddingMemoryModule::EmbeddingMemoryModule(std::unique_ptr<EmbeddingProvider> 
 void EmbeddingMemoryModule::on_start(const Block& cfg, Blackboard&) {
   if (cfg.kv.count("memory_store")) memory_store_ = cfg.kv.at("memory_store");
   if (cfg.kv.count("cache_dir")) cache_dir_ = cfg.kv.at("cache_dir");
+  if (cfg.kv.count("sessions_dir")) sessions_dir_ = cfg.kv.at("sessions_dir");
+  if (cfg.kv.count("index_sessions")) { bool b = index_sessions_; if (set_bool_on_string(cfg.kv.at("index_sessions"), b)) index_sessions_ = b; }
   if (cfg.kv.count("top_n")) { try { long n = std::stol(cfg.kv.at("top_n")); if (n > 0) top_n_ = static_cast<std::size_t>(n); } catch (...) {} }
   if (cfg.kv.count("batch_size")) { try { long n = std::stol(cfg.kv.at("batch_size")); if (n > 0) batch_size_ = static_cast<std::size_t>(n); } catch (...) {} }
   if (cfg.kv.count("min_similarity")) { double d = min_similarity_; if (set_pos_double_on_string(cfg.kv.at("min_similarity"), d)) min_similarity_ = static_cast<float>(d); }
@@ -55,6 +57,9 @@ void EmbeddingMemoryModule::run_index_() {
   VectorCache vc(cache_path(cache_dir_), probe.model, probe.dim);
   if (!vc.load()) vc.clear_file();               // stamped model/dim changed -> rebuild from scratch
   index_archival(*provider_, vc, memory_store_, batch_size_);
+  // Past-session corpus (per-turn), excluding the live mid-write session. Same cache + provider:
+  // both corpora share the one model-stamped VectorCache (the query path ranks across both).
+  if (index_sessions_) (void)index_sessions(*provider_, vc, sessions_dir_, live_session_path_, batch_size_);
   bb_->post("EMBED_INDEX_DONE", true, "embedding_memory");
 }
 

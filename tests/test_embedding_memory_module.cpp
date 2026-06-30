@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -88,4 +89,31 @@ TEST(EmbeddingMemoryModule, CacheStampMismatchAtQueryIsSoftEmpty) {
   bb.post("USER_MESSAGE", "SHIFT please", "chat");
   bb.pump();
   EXPECT_EQ(got, "");                            // stamp mismatch -> fail-soft empty
+}
+TEST(EmbeddingMemoryModule, RetrievesPastSessionTurnWhenIndexSessionsEnabled) {
+  // With index_sessions=true + a sessions dir holding ONE past session, the per-turn unit of that
+  // session is embedded into the same cache and is retrievable on a matching query (no live path
+  // set -> nothing excluded). The archival store is empty -> the hit comes from the session corpus.
+  namespace fs = std::filesystem;
+  std::string store = tmp("em_sess_store.jsonl"), cache = tmp("em_sess_cache");
+  { std::ofstream f(store, std::ios::trunc); }   // empty archival store
+  std::string sdir = tmp("em_sessions");
+  fs::remove_all(sdir);
+  fs::create_directories(sdir);
+  { std::ofstream f(sdir + "/past.jsonl", std::ios::trunc);
+    f << "{\"role\":\"user\",\"content\":\"what is alpha\"}\n"
+         "{\"role\":\"assistant\",\"content\":\"alpha is the first letter\"}\n"; }
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  Block b; b.section = "Embedding";
+  b.kv["memory_store"] = store; b.kv["cache_dir"] = cache; b.kv["min_similarity"] = "0.2";
+  b.kv["index_sessions"] = "true"; b.kv["sessions_dir"] = sdir;
+  Blackboard bb;
+  EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+  m.on_start(b, bb);                             // inline index (no executor) of archival + sessions
+  m.on_attach(bb);
+  std::string got;
+  bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
+  bb.post("USER_MESSAGE", "tell me about alpha", "chat");
+  bb.pump();
+  EXPECT_NE(got.find("alpha is the first letter"), std::string::npos);  // the past session's turn
 }

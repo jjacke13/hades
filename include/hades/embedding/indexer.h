@@ -12,4 +12,11 @@ class VectorCache;
 struct IndexStats { std::size_t embedded = 0; std::size_t skipped = 0; bool ok = true; };
 IndexStats index_archival(EmbeddingProvider& provider, VectorCache& cache,
                           const std::string& memory_store, std::size_t batch_size);
+// index_sessions: walk sessions_dir/*.jsonl (skipping exclude_path — the live, mid-write session,
+// matched by canonical path so a trailing slash / relative form can't sneak it back in), extract
+// per-turn units (session_turns), and embed only ids absent from the cache (src="session"). Same
+// batched, fail-soft contract as index_archival; a missing sessions_dir returns empty stats.
+IndexStats index_sessions(EmbeddingProvider& provider, VectorCache& cache,
+                          const std::string& sessions_dir, const std::string& exclude_path,
+                          std::size_t batch_size);
 }  // namespace hades

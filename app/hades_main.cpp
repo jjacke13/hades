@@ -126,6 +126,10 @@ int main(int argc, char** argv) {
     // Order: budget first, then the path, then load — load_history reads the path just set.
     agent.arbiter->set_history_budget_chars(history_budget);
     agent.arbiter->set_session_path(session_path);
+    // The embedding module must EXCLUDE the same live session file the Arbiter is writing (else the
+    // mid-write current session gets indexed as a "past" memory). Null-guarded: REPL/serve rosters
+    // may omit the embedding module. Same resolved path as the Arbiter.
+    if (agent.embedding) agent.embedding->set_live_session_path(session_path);
     // Also give the Arbiter the sessions dir so a `/new` mid-run rotates to a fresh file in the
     // same dir (no id-gen injection in prod -> defaults to make_session_id()).
     agent.arbiter->set_session_dir(sessions_dir);
