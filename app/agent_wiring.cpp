@@ -86,7 +86,8 @@ void wire_agent(Agent& a,
                 const std::vector<Block>& tools,
                 const std::vector<Block>& objectives,
                 const Block& memory,
-                std::string model) {
+                std::string model,
+                const Block& embedding = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -144,6 +145,18 @@ void wire_agent(Agent& a,
   if (a.memory) {
     a.memory->on_start(memory, bb);
     a.memory->on_attach(bb);
+  }
+
+  // 2c) EmbeddingMemoryModule (optional, opt-in via the `Module = embedding_memory` roster)
+  //     ALSO before the Arbiter, for the same reason as MemoryModule: it must post
+  //     RETRIEVED_MEMORY_SEMANTIC on the same pump before start_turn() reads it. The
+  //     executor (live path; created before wire_agent) lets its corpus index run OFF the
+  //     bus — set BEFORE on_attach because on_attach is what submits the index worker.
+  //     On the test overload a.embedding is null and a.executor null -> this is inert.
+  if (a.embedding) {
+    a.embedding->on_start(embedding, bb);
+    if (a.executor) a.embedding->set_executor(a.executor.get());
+    a.embedding->on_attach(bb);  // subscribes USER_MESSAGE before the Arbiter does
   }
 
   // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
@@ -235,6 +248,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   launcher.register_factory("llm",         []{ return std::make_unique<LLMModule>(); });
   launcher.register_factory("tool_runner", []{ return std::make_unique<ToolRunner>(); });
   launcher.register_factory("memory",      []{ return std::make_unique<MemoryModule>(); });
+  launcher.register_factory("embedding_memory",
+                            []{ return std::make_unique<EmbeddingMemoryModule>(); });
   launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
   launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
@@ -244,28 +259,36 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   a.llm     = take_as<LLMModule>(launcher, "llm");
   a.tools   = take_as<ToolRunner>(launcher, "tool_runner");
   a.memory  = take_as<MemoryModule>(launcher, "memory");
+  a.embedding = take_as<EmbeddingMemoryModule>(launcher, "embedding_memory");
   a.arbiter = take_as<Arbiter>(launcher, "arbiter");
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
 
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
-  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model);
+  const auto embed_blocks = m.of("Embedding");
+  const Block embedding = embed_blocks.empty() ? Block{} : embed_blocks.front();
+
+  // Live path only: own a small worker pool and offload the blocking LLM call onto it so
+  // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
+  // wire_agent because the optional EmbeddingMemoryModule submits its corpus index to this
+  // executor when it attaches INSIDE wire_agent (set_executor must precede its on_attach) —
+  // so the index runs off the pump thread. The TEST overload deliberately leaves a.executor
+  // null -> the LLM runs inline + a.embedding is null -> the whole existing suite is
+  // unchanged. `a.executor` is the Agent's LAST member, so it is joined before the
+  // modules/Blackboard tear down regardless of this construction order (see agent_wiring.h /
+  // hades_main).
+  constexpr unsigned kExecutorThreads = 2;
+  a.executor = std::make_unique<Executor>(kExecutorThreads);
+  if (a.llm) a.llm->set_executor(a.executor.get());
+
+  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
   // a roster may omit chat and/or serve. Tests still set small values through the same seam.
   if (a.chat)  a.chat->set_turn_timeout_s(turn_idle_timeout_s);
   if (a.serve) a.serve->set_collect_timeout_s(turn_idle_timeout_s);
-
-  // Live path only: own a small worker pool and offload the blocking LLM call onto
-  // it so the bus stays responsive (front-ends drive turns via run_until). The TEST
-  // overload deliberately leaves a.executor null -> the LLM runs inline -> the whole
-  // existing suite is unchanged. `a.executor` is the Agent's last member, so it is
-  // joined before the modules/Blackboard tear down (see agent_wiring.h / hades_main).
-  constexpr unsigned kExecutorThreads = 2;
-  a.executor = std::make_unique<Executor>(kExecutorThreads);
-  if (a.llm) a.llm->set_executor(a.executor.get());
   return a;
 }
 
