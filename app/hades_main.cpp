@@ -129,6 +129,9 @@ int main(int argc, char** argv) {
     // Also give the Arbiter the sessions dir so a `/new` mid-run rotates to a fresh file in the
     // same dir (no id-gen injection in prod -> defaults to make_session_id()).
     agent.arbiter->set_session_dir(sessions_dir);
+    // The --serve front-end reads the same session jsonl for GET /history (resumed-transcript
+    // render). Null-guarded: a REPL-only roster omits `serve`. Same resolved path as the Arbiter.
+    if (agent.serve) agent.serve->set_session_path(session_path);
     if (resume) agent.arbiter->load_history();
 
     if (serve) {

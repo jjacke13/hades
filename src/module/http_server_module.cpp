@@ -9,21 +9,10 @@
 #include <httplib.h>
 #include <iostream>
 #include "hades/blackboard.h"
+#include "hades/session_history.h"  // read_session_jsonl (GET /history)
 #include "hades/timeouts.h"   // kDefaultTurnIdleTimeoutS
 
 namespace {
-// Auth + CSRF seam — the single chokepoint. No password auth by design (the operator
-// secures reachability via their own private networking). But --serve is a loopback
-// BROWSER surface: any site the user visits can POST to 127.0.0.1 as a CORS "simple"
-// request (no preflight). So tool-invoking endpoints require a custom header the page
-// sends and a cross-origin simple request cannot add without a preflight we never grant.
-// Static GETs are exempt so the UI itself loads.
-bool authorize(const httplib::Request& req) {
-  if (req.method == "POST" && (req.path == "/chat" || req.path == "/confirm"))
-    return req.has_header("X-Hades");
-  return true;
-}
-
 // Generous IDLE ceiling for run_until — NOT a per-turn wall-clock cap. The timer
 // resets on every bus event, so it fires only after this many seconds of NO bus
 // activity (a genuinely hung/stalled worker), returning "[timed out]" instead of
@@ -76,6 +65,17 @@ void HttpServerModule::configure_server_(httplib::Server& srv, double idle_s) {
   srv.set_write_timeout(secs, 0);
 }
 
+bool HttpServerModule::authorize(const httplib::Request& req) {
+  // Tool-invoking POSTs and the conversation-returning GET /history require the custom header a
+  // cross-origin simple request cannot add without a preflight we never grant. Static GETs (the
+  // UI itself) stay exempt so the page can load.
+  if (req.method == "POST" && (req.path == "/chat" || req.path == "/confirm"))
+    return req.has_header("X-Hades");
+  if (req.path == "/history")
+    return req.has_header("X-Hades");
+  return true;
+}
+
 nlohmann::json HttpServerModule::collect_() {
   // Drive the turn to a decision: either the final reply was captured or the turn is
   // gated on a confirm. run_until pumps inline first (synchronous/test path completes
@@ -97,6 +97,12 @@ nlohmann::json HttpServerModule::collect_() {
             {"id", pending_confirm_.value("id", "")},
             {"prompt", pending_confirm_.value("prompt", "")}};
   return {{"reply", ""}};  // nothing to say
+}
+
+nlohmann::json HttpServerModule::history_json() const {
+  // Disk read only; no shared mutable state -> no mu_. A concurrent Arbiter append that leaves a
+  // half-written final line is skipped by read_session_jsonl's tolerant parse.
+  return {{"history", read_session_jsonl(session_path_)}};
 }
 
 nlohmann::json HttpServerModule::handle_message(const std::string& text) {
@@ -127,7 +133,7 @@ void HttpServerModule::listen(const std::string& host, int port, const std::stri
   // Auth chokepoint: runs before routing; a future token check goes in authorize().
   srv.set_pre_routing_handler(
       [](const httplib::Request& req, httplib::Response& res) {
-        if (!authorize(req)) {
+        if (!HttpServerModule::authorize(req)) {
           res.status = 403;
           res.set_content("forbidden: cross-origin request blocked (missing X-Hades header)",
                           "text/plain");
@@ -144,6 +150,9 @@ void HttpServerModule::listen(const std::string& host, int port, const std::stri
 
   srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
     res.set_content(R"({"ok":true})", "application/json");
+  });
+  srv.Get("/history", [this](const httplib::Request&, httplib::Response& res) {
+    res.set_content(history_json().dump(), "application/json");
   });
   srv.Post("/chat", [this](const httplib::Request& req, httplib::Response& res) {
     auto body = nlohmann::json::parse(req.body, nullptr, false);

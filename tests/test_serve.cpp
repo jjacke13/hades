@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 #include <ctime>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -104,4 +105,48 @@ TEST(HttpServer, ConfigureServerRaisesSocketTimeoutsAboveIdle) {
   EXPECT_EQ(srv.write_sec(), static_cast<time_t>(idle) + 60);
   EXPECT_GT(srv.read_sec(), static_cast<time_t>(idle));
   EXPECT_GT(srv.write_sec(), static_cast<time_t>(idle));
+}
+
+TEST(HttpServer, HistoryJsonReadsSessionFile) {
+  std::string p = testing::TempDir() + "/serve_hist.jsonl";
+  {
+    std::ofstream f(p);
+    f << "{\"role\":\"user\",\"content\":\"hi\"}\n"
+      << "{\"role\":\"assistant\",\"content\":\"yo\"}\n";
+  }
+  HttpServerModule srv;
+  srv.set_session_path(p);
+  auto out = srv.history_json();
+  ASSERT_TRUE(out.contains("history"));
+  ASSERT_EQ(out["history"].size(), 2u);
+  EXPECT_EQ(out["history"][0].value("content", ""), "hi");
+  EXPECT_EQ(out["history"][1].value("content", ""), "yo");
+}
+
+TEST(HttpServer, HistoryJsonEmptyWhenNoSessionPath) {
+  HttpServerModule srv;  // no session path set
+  auto out = srv.history_json();
+  ASSERT_TRUE(out.contains("history"));
+  EXPECT_TRUE(out["history"].empty());
+}
+
+TEST(HttpServer, AuthorizeGatesHistoryAndPostsButExemptsStaticGet) {
+  httplib::Request get_hist;
+  get_hist.method = "GET";
+  get_hist.path = "/history";
+  EXPECT_FALSE(HttpServerModule::authorize(get_hist));  // GET /history without X-Hades -> blocked
+  get_hist.set_header("X-Hades", "1");
+  EXPECT_TRUE(HttpServerModule::authorize(get_hist));    // with header -> allowed
+
+  httplib::Request get_root;
+  get_root.method = "GET";
+  get_root.path = "/";
+  EXPECT_TRUE(HttpServerModule::authorize(get_root));     // static GET exempt (UI must load)
+
+  httplib::Request post_chat;
+  post_chat.method = "POST";
+  post_chat.path = "/chat";
+  EXPECT_FALSE(HttpServerModule::authorize(post_chat));   // POST /chat without X-Hades -> blocked
+  post_chat.set_header("X-Hades", "1");
+  EXPECT_TRUE(HttpServerModule::authorize(post_chat));
 }

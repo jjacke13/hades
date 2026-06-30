@@ -10,6 +10,7 @@
 #pragma once
 #include <mutex>
 #include <string>
+#include <utility>
 #include <nlohmann/json.hpp>
 #include "hades/module.h"
 
@@ -17,6 +18,7 @@
 // every translation unit; the .cpp (and the serve test) include the real header.
 namespace httplib {
 class Server;
+struct Request;
 }
 
 namespace hades {
@@ -46,6 +48,20 @@ public:
   // wiring/tests can observe the configured value without binding a socket / driving a turn.
   double idle_timeout_s() const { return effective_collect_timeout_s(); }
 
+  // The --serve front-end reads the same per-session conversation jsonl that the Arbiter persists,
+  // so GET /history can re-render a resumed transcript. Wiring sets this to the resolved session
+  // path (empty -> history_json() returns {"history":[]}). Read-only; no coupling to the Arbiter.
+  void set_session_path(std::string p) { session_path_ = std::move(p); }
+  // Socket-free body of GET /history: {"history": [ ...raw stored messages... ]} read from disk.
+  // Const + socket-free so a test can assert it without binding a socket (mirrors handle_message).
+  nlohmann::json history_json() const;
+
+  // CSRF chokepoint (was a file-local helper; promoted to a public static so a test can assert it
+  // without a socket, like configure_server_). Returns false for a request that must be blocked:
+  // a tool-invoking POST (/chat,/confirm) or GET /history lacking the X-Hades header that a
+  // cross-origin "simple" request cannot add without a preflight we never grant. Static GETs pass.
+  static bool authorize(const httplib::Request& req);
+
   // Apply the socket read/write timeouts to a freshly-constructed httplib::Server before
   // listen(). Raised ABOVE idle_s so a long (up to the idle ceiling) collect_ handler's
   // connection is never dropped. Static + httplib-by-reference so a test can probe it
@@ -64,6 +80,7 @@ private:
   std::string last_reply_;
   bool got_reply_ = false;
   nlohmann::json pending_confirm_;  // null when no confirm is outstanding
+  std::string session_path_;  // per-session jsonl read by GET /history (set by wiring; may be empty)
   // collect_ idle-timeout override (seconds). 0 = use the production default
   // (kCollectTimeoutS in http_server_module.cpp); set_collect_timeout_s gives tests a small value.
   double collect_timeout_override_s_ = 0.0;
