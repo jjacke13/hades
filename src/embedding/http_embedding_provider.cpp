@@ -25,9 +25,9 @@ EmbedResult HttpEmbeddingProvider::embed(const std::vector<std::string>& texts) 
   auto j = nlohmann::json::parse(resp.body, nullptr, false);
   if (j.is_discarded() || !j.contains("data") || !j["data"].is_array()) { out.error = "embedding response not parseable"; return out; }
   for (const auto& d : j["data"]) {
-    if (!d.is_object() || !d.contains("embedding") || !d["embedding"].is_array()) { out.error = "embedding item malformed"; return {}; }
+    if (!d.is_object() || !d.contains("embedding") || !d["embedding"].is_array()) { return EmbedResult{{}, model_, 0, "embedding item malformed"}; }
     std::vector<float> v;
-    for (const auto& x : d["embedding"]) { if (!x.is_number()) { out.error = "embedding value not number"; return {}; } v.push_back(x.get<float>()); }
+    for (const auto& x : d["embedding"]) { if (!x.is_number()) { return EmbedResult{{}, model_, 0, "embedding value not number"}; } v.push_back(x.get<float>()); }
     out.vectors.push_back(std::move(v));
   }
   if (out.vectors.size() != texts.size()) { return EmbedResult{{}, model_, 0, "embedding count mismatch"}; }

@@ -39,3 +39,17 @@ TEST(HttpEmbeddingProvider, CountMismatchIsSoftError) {
   auto r = p.embed({"a", "b"});                // asked 2, got 1
   EXPECT_FALSE(r.error.empty());
 }
+TEST(HttpEmbeddingProvider, MalformedItemIsSoftError) {
+  // A data item missing/!array "embedding", or a non-number value, must set error (fail-soft) —
+  // regression: an earlier `return {}` discarded the just-set error, looking like empty success.
+  HttpEmbeddingProvider p1("https://x/v1", "k", "m",
+    [](auto, auto, auto) { return HttpResponse{200, R"({"data":[{"embedding":"oops"}]})"}; });
+  auto r1 = p1.embed({"a"});
+  EXPECT_FALSE(r1.error.empty());
+  EXPECT_TRUE(r1.vectors.empty());
+  HttpEmbeddingProvider p2("https://x/v1", "k", "m",
+    [](auto, auto, auto) { return HttpResponse{200, R"({"data":[{"embedding":["x"]}]})"}; });
+  auto r2 = p2.embed({"a"});
+  EXPECT_FALSE(r2.error.empty());
+  EXPECT_TRUE(r2.vectors.empty());
+}
