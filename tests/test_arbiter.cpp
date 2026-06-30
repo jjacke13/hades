@@ -488,6 +488,46 @@ TEST(Arbiter, SmallHistorySentWholeUnderDefaultBudget) {
   EXPECT_EQ(msgs[2].value("content",""), "gamma three");
 }
 
+// Edge: the most-recent message IS a {role:tool} result (the Arbiter calls start_turn() right
+// after on_tool_result appends one, so during a tool loop the tail is a tool). When the owning
+// assistant(tool_calls) + that tool together EXCEED the budget, the minimal VALID unit is the
+// [assistant(tool_calls), tool] PAIR — send it over-budget rather than an orphaned [tool] (which
+// providers reject with 400). Drive a real tool round-trip so history_ = [user, asst(tc), tool]
+// and capture the start_turn LLM_REQUEST fired by on_tool_result (tool is the last message).
+TEST(Arbiter, HistoryWindowTrailingToolKeepsItsAssistantPair) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ ToolSpec{"fs_read","",{}} });
+  a.set_history_budget_chars(200);             // small: asst(tc)+tool together exceed it
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  const std::string big(1000, 'D');            // large tool RESULT -> tool message alone > budget
+  bb.post("USER_MESSAGE","read it","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","fs_read"},
+          {"arguments",{{"path","/a"}}}}}}, "llm"); bb.pump();
+  // TOOL_RESULT appends {role:tool} then start_turn fires with history_=[user, asst(tc), tool];
+  // that request is reqs.back() and the tool IS its last history message.
+  bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"content",big}}}}, "tool_runner"); bb.pump();
+  ASSERT_GE(reqs.size(), 2u);
+  const auto& msgs = reqs.back()["messages"];   // no system/memory set -> messages ARE the window
+  ASSERT_FALSE(msgs.empty());                    // history non-empty -> window must be non-empty
+  // The window must open on the owning assistant(tool_calls) — NOT an orphan [tool], NOT empty.
+  EXPECT_EQ(msgs[0].value("role",""), "assistant");
+  ASSERT_TRUE(msgs[0].contains("tool_calls"));
+  EXPECT_FALSE(msgs[0]["tool_calls"].empty());
+  EXPECT_EQ(msgs[0]["tool_calls"][0].value("id",""), "c1");
+  // The tool result is included right after it -> a valid [assistant(tool_calls), tool] pair.
+  ASSERT_GE(msgs.size(), 2u);
+  EXPECT_EQ(msgs[1].value("role",""), "tool");
+  EXPECT_EQ(msgs[1].value("tool_call_id",""), "c1");
+  // Never an orphaned lone tool, and every tool message is preceded by its assistant tool_calls.
+  EXPECT_NE(msgs[0].value("role",""), "tool");
+  for (std::size_t i = 0; i < msgs.size(); ++i)
+    if (msgs[i].value("role","") == "tool") {
+      ASSERT_GT(i, 0u);
+      EXPECT_TRUE(msgs[i-1].value("role","") == "assistant" && msgs[i-1].contains("tool_calls"));
+    }
+}
+
 // load_history round-trips a written jsonl into history_ and tolerates a corrupt/truncated
 // trailing line (a crash mid-append) — the 3 valid lines load, the garbage tail is skipped.
 TEST(Arbiter, LoadHistoryRoundTripsAndToleratesCorruptTail) {

@@ -105,11 +105,14 @@ std::vector<nlohmann::json> Arbiter::windowed_history_() const {
     total += sz;
     s = i;
   }
-  // Tool-pairing invariant: drop any leading orphan {role:tool} message(s) so the window opens on
-  // a user or a complete assistant turn (a tool is always preceded by its assistant tool_calls, so
-  // advancing lands on a valid boundary). If advancing consumed everything, fall back to the last.
+  // Never begin on an orphaned tool result (provider-invalid). Advance past leading
+  // tool messages; if that consumes everything (tail is a tool), back up onto the
+  // owning assistant(tool_calls) so the window is the valid [assistant(tc), tool] pair.
   while (s < n && history_[s].value("role", "") == "tool") ++s;
-  if (s >= n) s = n - 1;
+  if (s >= n) {
+    s = n - 1;
+    while (s > 0 && history_[s].value("role", "") == "tool") --s;
+  }
   return std::vector<nlohmann::json>(history_.begin() + static_cast<std::ptrdiff_t>(s),
                                      history_.end());
 }
