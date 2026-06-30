@@ -9,6 +9,7 @@
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
 #include "hades/prompt.h"   // read_memory_layer
+#include "hades/session_id.h"   // make_session_id (NEW_SESSION rotation fallback)
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -79,6 +80,19 @@ void Arbiter::on_attach(Blackboard& bb) {
   bb.subscribe("TURN_ABANDONED", [this](const Entry&) {
     ++turn_epoch_;
     clear_pending();
+  });
+  // `/new` (REPL) posts NEW_SESSION to start a FRESH session mid-run: drop the in-memory
+  // conversation and rotate session_path_ to a brand-new file so subsequent appends land there,
+  // leaving the prior session intact on disk. Bumping turn_epoch_ (like TURN_ABANDONED) makes a
+  // brand-new turn context: any in-flight LLM_RESPONSE stamped with the old epoch is dropped by
+  // the freshness gate instead of landing in the fresh session. The id generator is injectable
+  // (test seam); in prod it is unset and falls back to make_session_id().
+  bb.subscribe("NEW_SESSION", [this](const Entry&) {
+    history_.clear();
+    clear_pending();
+    const std::string id = id_gen_ ? id_gen_() : make_session_id();
+    if (!sessions_dir_.empty()) session_path_ = sessions_dir_ + "/" + id + ".jsonl";
+    ++turn_epoch_;
   });
 }
 

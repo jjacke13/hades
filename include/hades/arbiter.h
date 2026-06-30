@@ -9,6 +9,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,6 +35,13 @@ public:
   // Path to the per-session conversation jsonl (one history_ message per line). When set,
   // append_history persists each message as it is added; load_history reloads it on resume.
   void set_session_path(std::string p) { session_path_ = std::move(p); }
+  // Directory under which a `/new` rotation creates the fresh session jsonl (dir/<id>.jsonl). Set
+  // alongside the initial session path so NEW_SESSION can rotate within the same dir; empty -> no
+  // rotation (session_path_ stays put, history still clears).
+  void set_session_dir(std::string d) { sessions_dir_ = std::move(d); }
+  // Inject the id generator used by NEW_SESSION to name the rotated file (test seam: deterministic
+  // ids without a clock). Unset -> the handler falls back to make_session_id() (prod default).
+  void set_id_generator(std::function<std::string()> g) { id_gen_ = std::move(g); }
   // Reload a session jsonl into history_ (tolerant: skip blank/corrupt lines). No-op if unset.
   void load_history();
   // Cap (chars) on the cumulative serialized size of history_ sent in ONE LLM request. The full
@@ -67,6 +75,8 @@ private:
   std::string system_prompt_;   // prepended as a {role:system} message each turn (may be empty)
   std::string memory_path_;     // live core-memory file; re-read each turn into the system message
   std::string session_path_;    // per-session conversation jsonl; append-per-message when set
+  std::string sessions_dir_;    // dir for a `/new` rotation (dir/<id>.jsonl); empty -> no rotation
+  std::function<std::string()> id_gen_;  // NEW_SESSION id source (test seam); null -> make_session_id
   double history_budget_chars_ = kDefaultHistoryBudgetChars;  // per-turn LLM-request size cap
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm

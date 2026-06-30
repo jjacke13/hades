@@ -126,6 +126,9 @@ int main(int argc, char** argv) {
     // Order: budget first, then the path, then load — load_history reads the path just set.
     agent.arbiter->set_history_budget_chars(history_budget);
     agent.arbiter->set_session_path(session_path);
+    // Also give the Arbiter the sessions dir so a `/new` mid-run rotates to a fresh file in the
+    // same dir (no id-gen injection in prod -> defaults to make_session_id()).
+    agent.arbiter->set_session_dir(sessions_dir);
     if (resume) agent.arbiter->load_history();
 
     if (serve) {

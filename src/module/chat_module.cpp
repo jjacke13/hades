@@ -121,6 +121,14 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
     out << "user> " << std::flush;
     if (!std::getline(in, line)) break;
     if (line == "/quit") break;
+    // `/new` starts a fresh session mid-run: post NEW_SESSION (Arbiter clears history_ + rotates
+    // the session file) and pump it; do NOT feed "/new" to the LLM as a USER_MESSAGE.
+    if (line == "/new") {
+      bb_->post("NEW_SESSION", nlohmann::json::object(), "chat");
+      bb_->pump();
+      print_assistant_("[new session]");
+      continue;
+    }
     if (line.empty()) continue;
     turn_done_ = false;
     bb_->post("USER_MESSAGE", line, "chat");
@@ -149,6 +157,14 @@ void ChatModule::run_repl_readline() {
     if (*raw) add_history(raw);       // non-empty lines recallable via up-arrow
     std::free(raw);
     if (line == "/quit") break;
+    // `/new` starts a fresh session mid-run: post NEW_SESSION (Arbiter clears history_ + rotates
+    // the session file) and pump it; do NOT feed "/new" to the LLM as a USER_MESSAGE.
+    if (line == "/new") {
+      bb_->post("NEW_SESSION", nlohmann::json::object(), "chat");
+      bb_->pump();
+      print_assistant_("[new session]");
+      continue;
+    }
     if (line.empty()) continue;
     turn_done_ = false;
     bb_->post("USER_MESSAGE", line, "chat");

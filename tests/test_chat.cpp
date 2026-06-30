@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 #include <sstream>
+#include <string>
+#include <vector>
 #include "hades/module/chat_module.h"
 #include "hades/blackboard.h"
 using namespace hades;
@@ -57,4 +59,21 @@ TEST(Chat, ConfirmPromptReadsYesFromStdin) {
   ASSERT_FALSE(resp.is_null());
   EXPECT_EQ(resp["id"], "c1");
   EXPECT_TRUE(resp["approved"].get<bool>());
+}
+
+// `/new` starts a fresh session mid-run: the REPL intercepts it (alongside `/quit`) and posts a
+// NEW_SESSION bus message — it must NOT be turned into a USER_MESSAGE (which would feed "/new" to
+// the LLM). Drive "/new\n/quit\n": expect exactly one NEW_SESSION and no USER_MESSAGE == "/new".
+TEST(Chat, SlashNewPostsNewSession) {
+  Blackboard bb; ChatModule c; c.on_attach(bb);
+  int new_session = 0;
+  std::vector<std::string> user_msgs;
+  bb.subscribe("NEW_SESSION", [&](const Entry&) { ++new_session; });
+  bb.subscribe("USER_MESSAGE", [&](const Entry& e) {
+    if (e.value.is_string()) user_msgs.push_back(e.value.get<std::string>());
+  });
+  std::istringstream in("/new\n/quit\n"); std::ostringstream out;
+  c.run_repl(in, out);
+  EXPECT_EQ(new_session, 1);                              // /new posted NEW_SESSION exactly once
+  for (const auto& m : user_msgs) EXPECT_NE(m, "/new");   // /new was NOT posted as a USER_MESSAGE
 }

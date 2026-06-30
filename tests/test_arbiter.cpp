@@ -570,3 +570,48 @@ TEST(Arbiter, LoadHistoryDropsLeadingOrphanTool) {
   EXPECT_NE(msgs[0].value("role",""), "tool");
   EXPECT_EQ(msgs[0].value("role",""), "user");     // opens on the loaded user message
 }
+
+// --- Session resume (Task 4): /new -> NEW_SESSION clears history_ + rotates the session file ---
+
+// NEW_SESSION (posted by the /new REPL command) clears history_ AND rotates session_path_ to
+// dir/<id>.jsonl via the INJECTED id generator (deterministic, no clock). The OLD session file is
+// left intact on disk; the next appended message lands in the NEW file. Bumping the turn epoch is
+// covered indirectly: the post-/new turn's LLM_RESPONSE must carry the fresh epoch to be applied.
+TEST(Arbiter, NewSessionClearsHistoryAndRotatesFile) {
+  const std::string dir = ::testing::TempDir() + "/newsess";
+  std::filesystem::create_directories(dir);
+  const std::string old_path = dir + "/old.jsonl";
+  const std::string new_path = dir + "/NEWID.jsonl";
+  std::filesystem::remove(old_path);
+  std::filesystem::remove(new_path);
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_dir(dir);
+  a.set_id_generator([] { return std::string("NEWID"); });   // deterministic rotation target
+  a.set_session_path(old_path);
+  // Drive a turn: history_ becomes non-empty and old.jsonl gets the user + assistant lines.
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();                       // turn epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","hi there"},{"epoch",1}}, "llm"); bb.pump();
+  ASSERT_EQ(a.history_size(), 2u);
+  // /new -> NEW_SESSION: clears history_ and rotates session_path_ to dir/NEWID.jsonl.
+  bb.post("NEW_SESSION", nlohmann::json::object(), "chat"); bb.pump(); // turn epoch -> 2
+  EXPECT_EQ(a.history_size(), 0u);                                      // history cleared
+  // Drive ANOTHER turn: the new messages must land in NEWID.jsonl, NOT old.jsonl. The fresh epoch
+  // (3 = ++ on USER_MESSAGE after the NEW_SESSION bump) proves NEW_SESSION advanced the epoch.
+  bb.post("USER_MESSAGE","fresh start","chat"); bb.pump();             // turn epoch -> 3
+  bb.post("LLM_RESPONSE", {{"text","reply two"},{"epoch",3}}, "llm"); bb.pump();
+  auto read_lines = [](const std::string& p) {
+    std::vector<std::string> lines; std::ifstream f(p); std::string l;
+    while (std::getline(f, l)) if (!l.empty()) lines.push_back(l);
+    return lines;
+  };
+  // old.jsonl: still exactly the two original lines (left intact, not appended to).
+  const auto old_lines = read_lines(old_path);
+  ASSERT_EQ(old_lines.size(), 2u);
+  EXPECT_EQ(nlohmann::json::parse(old_lines[0]).value("content",""), "hi");
+  EXPECT_EQ(nlohmann::json::parse(old_lines[1]).value("content",""), "hi there");
+  // NEWID.jsonl: the post-/new turn's two messages (user + assistant).
+  const auto new_lines = read_lines(new_path);
+  ASSERT_EQ(new_lines.size(), 2u);
+  EXPECT_EQ(nlohmann::json::parse(new_lines[0]).value("content",""), "fresh start");
+  EXPECT_EQ(nlohmann::json::parse(new_lines[1]).value("content",""), "reply two");
+}
