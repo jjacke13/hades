@@ -615,3 +615,68 @@ TEST(Arbiter, NewSessionClearsHistoryAndRotatesFile) {
   EXPECT_EQ(nlohmann::json::parse(new_lines[0]).value("content",""), "fresh start");
   EXPECT_EQ(nlohmann::json::parse(new_lines[1]).value("content",""), "reply two");
 }
+
+// /new rotation must be COLLISION-SAFE like the initial resolve_session_path: if dir/<id>.jsonl
+// already exists (e.g. two `/new` within one wall-clock second resolve to the same id), the Arbiter
+// rotates to the first free `-N` suffix (dir/<id>-1.jsonl) rather than appending into the existing
+// file. Here the injected id generator always returns "DUP" and dir/DUP.jsonl is pre-created; the
+// post-/new turn must land in dir/DUP-1.jsonl, leaving the pre-existing dir/DUP.jsonl untouched.
+TEST(Arbiter, NewSessionRotationIsCollisionSafe) {
+  const std::string dir = ::testing::TempDir() + "/newsess_collision";
+  std::filesystem::create_directories(dir);
+  const std::string dup_path = dir + "/DUP.jsonl";
+  const std::string dup1_path = dir + "/DUP-1.jsonl";
+  std::filesystem::remove(dup_path);
+  std::filesystem::remove(dup1_path);
+  { std::ofstream touch(dup_path); touch << "PREEXISTING\n"; }   // collide: dir/DUP.jsonl exists
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_dir(dir);
+  a.set_id_generator([] { return std::string("DUP"); });        // every rotation targets id "DUP"
+  // /new -> NEW_SESSION: rotation must AVOID the existing DUP.jsonl and pick DUP-1.jsonl.
+  bb.post("NEW_SESSION", nlohmann::json::object(), "chat"); bb.pump();   // turn epoch -> 1
+  // Drive a turn: the new messages must land in DUP-1.jsonl (collision avoided), NOT DUP.jsonl.
+  bb.post("USER_MESSAGE","collide test","chat"); bb.pump();             // turn epoch -> 2
+  bb.post("LLM_RESPONSE", {{"text","reply"},{"epoch",2}}, "llm"); bb.pump();
+  auto read_lines = [](const std::string& p) {
+    std::vector<std::string> lines; std::ifstream f(p); std::string l;
+    while (std::getline(f, l)) if (!l.empty()) lines.push_back(l);
+    return lines;
+  };
+  // DUP.jsonl: untouched — still exactly the single pre-existing sentinel line.
+  const auto dup_lines = read_lines(dup_path);
+  ASSERT_EQ(dup_lines.size(), 1u);
+  EXPECT_EQ(dup_lines[0], "PREEXISTING");
+  // DUP-1.jsonl: the post-/new turn's two messages landed here (the -N suffix proves collision-safe).
+  const auto dup1_lines = read_lines(dup1_path);
+  ASSERT_EQ(dup1_lines.size(), 2u);
+  EXPECT_EQ(nlohmann::json::parse(dup1_lines[0]).value("content",""), "collide test");
+  EXPECT_EQ(nlohmann::json::parse(dup1_lines[1]).value("content",""), "reply");
+}
+
+// /new with NO sessions_dir set (test/no-dir path): there is nowhere to rotate to, so NEW_SESSION
+// must CLEAR session_path_ — otherwise post-/new turns would silently keep appending to the OLD
+// session file. Here a session path is set directly (no dir); after /new the post-/new turn must
+// NOT append to the old file (history is in-memory only because session_path_ was cleared).
+TEST(Arbiter, NewSessionEmptyDirClearsPath) {
+  const std::string dir = ::testing::TempDir() + "/newsess_emptydir";
+  std::filesystem::create_directories(dir);
+  const std::string old_path = dir + "/old.jsonl";
+  std::filesystem::remove(old_path);
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_path(old_path);                                  // path set, but NO set_session_dir
+  // Drive a turn: old.jsonl gets the user + assistant lines.
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();                       // turn epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","hi there"},{"epoch",1}}, "llm"); bb.pump();
+  auto read_lines = [](const std::string& p) {
+    std::vector<std::string> lines; std::ifstream f(p); std::string l;
+    while (std::getline(f, l)) if (!l.empty()) lines.push_back(l);
+    return lines;
+  };
+  ASSERT_EQ(read_lines(old_path).size(), 2u);                    // old.jsonl has the first turn
+  // /new -> NEW_SESSION: no sessions_dir, so session_path_ is cleared (in-memory-only thereafter).
+  bb.post("NEW_SESSION", nlohmann::json::object(), "chat"); bb.pump();   // turn epoch -> 2
+  // Drive ANOTHER turn: it must NOT append to old.jsonl (path was cleared).
+  bb.post("USER_MESSAGE","fresh start","chat"); bb.pump();             // turn epoch -> 3
+  bb.post("LLM_RESPONSE", {{"text","reply two"},{"epoch",3}}, "llm"); bb.pump();
+  EXPECT_EQ(read_lines(old_path).size(), 2u);                    // old.jsonl untouched (still 2 lines)
+}

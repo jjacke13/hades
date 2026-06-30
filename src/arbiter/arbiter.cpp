@@ -9,7 +9,7 @@
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
 #include "hades/prompt.h"   // read_memory_layer
-#include "hades/session_id.h"   // make_session_id (NEW_SESSION rotation fallback)
+#include "hades/session_id.h"   // make_session_id + unique_fresh_path (NEW_SESSION rotation)
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -91,7 +91,15 @@ void Arbiter::on_attach(Blackboard& bb) {
     history_.clear();
     clear_pending();
     const std::string id = id_gen_ ? id_gen_() : make_session_id();
-    if (!sessions_dir_.empty()) session_path_ = sessions_dir_ + "/" + id + ".jsonl";
+    // Collision-safe rotation (same as the initial resolve_session_path): if dir/<id>.jsonl already
+    // exists — e.g. two `/new` within one wall-clock second — take the first free `-N` suffix so the
+    // fresh session never merges into an existing file. With no sessions_dir (test/no-dir path) there
+    // is nowhere to rotate to: clear session_path_ so post-/new turns are in-memory-only rather than
+    // silently appending to the OLD session file.
+    if (!sessions_dir_.empty())
+      session_path_ = unique_fresh_path(sessions_dir_, id);
+    else
+      session_path_.clear();
     ++turn_epoch_;
   });
 }

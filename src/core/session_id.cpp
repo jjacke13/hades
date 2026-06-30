@@ -12,10 +12,10 @@
 #include "hades/launcher.h"  // MalConfig
 namespace hades {
 
-namespace {
 // First NON-EXISTING path among dir/<id>.jsonl, dir/<id>-1.jsonl, dir/<id>-2.jsonl, … so two
-// hades launched in the same wall-clock second (1s id resolution) never resolve to one file and
-// interleave their conversations. In practice 1-2 iterations; the cap guards a pathological burst.
+// hades resolving the same id in the same wall-clock second (1s id resolution) never resolve to one
+// file and interleave their conversations. In practice 1-2 iterations; the cap guards a pathological
+// burst. Exported (session_id.h) so the Arbiter's `/new` rotation shares this collision-avoidance.
 std::string unique_fresh_path(const std::string& dir, const std::string& id) {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -28,7 +28,6 @@ std::string unique_fresh_path(const std::string& dir, const std::string& id) {
   }
   return base;  // 10k same-second collisions is not real; fall back to base rather than loop forever
 }
-}  // namespace
 
 std::string make_session_id() {
   const std::time_t now = std::time(nullptr);
