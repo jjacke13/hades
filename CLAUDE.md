@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `ac635c9`, **169/169 tests** (ASan+UBSan + **TSan** clean; suite ~2.3s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `1237ee5`, **175/175 tests** (ASan+UBSan + **TSan** clean; suite ~2.3s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -59,10 +59,11 @@ stale-epoch responses; **(2) race-free budget** — the offload worker captures 
 `this`) and posts ONLY `LLM_RESPONSE`; `spent_` accrues in a pump-thread `LLM_RESPONSE` handler (single
 writer → no race even if calls overlap); **(3) idle timeout** — `pump()` returns a dispatch count and
 `run_until` resets its deadline on progress, so a long-but-progressing turn no longer false-times-out (a
-stalled turn still fires). **LOAD-BEARING INVARIANT (documented at `kTurnTimeoutS`/`kCollectTimeoutS` +
-`http.h`):** the idle timeout (180s) MUST stay > max single in-flight poster (cpr 120s + tool 30s) — that
-is what guarantees no worker is alive when `run_until` abandons a turn, so no stale `LLM_RESPONSE` is
-produced. The epoch was **defense-in-depth** with a dispatch-ordering hole (epoch bumped only on
+stalled turn still fires). **LOAD-BEARING INVARIANT — now CONFIGURABLE + ENFORCED (see Configurable-timeouts
+below):** the idle ceiling (`turn_idle_timeout_s`, default **900s**) MUST stay > max single in-flight poster
+(`llm_timeout_s`, default 600s; tool 30s inline) — guarantees no worker is alive when `run_until` abandons a
+turn. As of the configurable-timeouts feature this is a HARD `MalConfig` at launch (`idle > llm`), not just a
+doc note. The epoch was **defense-in-depth** with a dispatch-ordering hole (epoch bumped only on
 `USER_MESSAGE` *dispatch*) — **NOW CLOSED** (shipped 2026-06-30, `ac635c9`): see the Turn-abandonment
 section below.
 
@@ -74,11 +75,23 @@ The Arbiter handles `TURN_ABANDONED` → `++turn_epoch_` + `clear_pending()`. So
 prompt — robust independent of timing (no longer reliant on the idle-timeout>poster invariant, though that
 still holds). Why no simpler fix: a slow-legit vs stale-after-abandon response are identical to the Arbiter;
 only the front-end knows a turn timed out, so an explicit abandonment signal is irreducible. The formerly-
-DISABLED test is now ACTIVE (`Arbiter.StaleResponseAfterAbandonmentIsDropped`). Test-only timeout seam
-(`set_turn_timeout_s`/`set_collect_timeout_s`; prod stays 180s). **Still deferred to tool-offload:**
-epoch-stamping `TOOL_RESULT` (tools run synchronously today → no stale tool result; noted in `arbiter.cpp`).
-Pieces: `src/arbiter/arbiter.cpp` (handler+`clear_pending`), `src/module/{chat,http_server}_module.cpp`
-(`abandon_turn_`), `docs/superpowers/*2026-06-30-turn-abandonment-epoch*`.
+DISABLED test is now ACTIVE (`Arbiter.StaleResponseAfterAbandonmentIsDropped`). Timeout seam
+(`set_turn_timeout_s`/`set_collect_timeout_s`) — now also the live config hook (see Configurable-timeouts).
+**Still deferred to tool-offload:** epoch-stamping `TOOL_RESULT` (tools run synchronously today → no stale
+tool result; noted in `arbiter.cpp`). Pieces: `src/arbiter/arbiter.cpp` (handler+`clear_pending`),
+`src/module/{chat,http_server}_module.cpp` (`abandon_turn_`), `docs/superpowers/*2026-06-30-turn-abandonment-epoch*`.
+
+#### Configurable timeouts (shipped 2026-06-30, `1237ee5`) — manifest-tunable think-time
+Two `Session`-block keys (defaults in `include/hades/timeouts.h`): **`llm_timeout_s`** (default **600**) →
+the cpr per-call HTTP timeout (`cpr_http`, the real cap on one LLM "think"); **`turn_idle_timeout_s`**
+(default **900**) → the front-ends' `run_until` IDLE ceiling (resets on every bus event, so it does NOT cap
+total turn time — only a single silent stretch). **Enforced invariant:** `wire_agent` throws `MalConfig` at
+launch (before key resolution/side effects) if `turn_idle_timeout_s <= llm_timeout_s` — a slow-but-alive call
+must post back before the idle timer abandons the turn. (Necessary+sufficient because ONLY the LLM is
+offloaded; tools run inline → can't trip the idle timer.) `--serve` httplib read/write socket timeouts are
+set to `idle + 60` so a long turn's connection isn't dropped. Bad/garbage value → default (never 0). dev.hades
+ships 600/900. Pieces: `include/hades/timeouts.h`, `src/module/llm_module.cpp` (cpr), `app/agent_wiring.cpp`
+(read+validate+set), `src/module/{chat,http_server}_module.cpp` (`effective_*_timeout`), `docs/superpowers/*2026-06-30-configurable-timeouts*`.
 
 ### Web UI (shipped 2026-06-29) — `--serve` browser front-end
 `hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
@@ -113,7 +126,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (169/169, ~2.3s)
+nix develop --command ctest --test-dir build                 # test (175/175, ~2.3s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
