@@ -29,14 +29,15 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `64f12ca`, **132/132 tests** (ASan+UBSan + **TSan** clean; +1 DISABLED regression test), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `1e5f4b6`, **165/165 tests** (ASan+UBSan + **TSan** clean; +1 DISABLED regression test), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · safety gate
-(destructive shell + write_file → y/N; `save_memory`/`pin_fact` NOT gated — append-only to own files) ·
+(`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
+model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
+destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 **two memory layers** (core + archival, see below) · layered **system prompt** (SOUL/USER static +
 live core MEMORY) · two front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
 labels) and **HTTP `--serve`** (browser web UI + JSON API, see below) · **worker-offload concurrency**
-(see below).
+(see below) · **manifest parser fails LOUD** on packed multi-kv lines (see below).
 
 ### Worker-offload (shipped 2026-06-29) — bus stays single-threaded, blocking LLM call offloaded
 The bus is **still single-threaded deterministic** (subscriber handlers run ONLY on the pump thread), but
@@ -101,7 +102,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (132/132)
+nix develop --command ctest --test-dir build                 # test (165/165)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -127,19 +128,42 @@ emits + an SSE endpoint) · **settings UI** (`web/settings.html` + `GET/POST /ma
 manifest — the static-dir + JSON-API seam is ready) · **auth** (fill in the `authorize()` seam — token/
 password) · agent↔agent **Bridge** (pShare-style, needs design — parked).
 
-## Architecture-honesty pass (after expert critique, 2026-06-29)
-4 debts flagged. **(1) DONE** — manifest `Module=` roster drives modules (pAntler, above).
-**(4) DONE** — worker-offload shipped (single-threaded deterministic bus + blocking LLM call offloaded to
-an `Executor` worker that `post()`s back; thread-safe `post()` + `run_until()`; opt-in, 127/127 +
-TSan-clean — see the Worker-offload section above). **(2) + (3) SPEC'd + PLANNED, build deferred:**
-**(2)** harden the one-kv-per-line manifest parser to fail LOUD (silent mis-parse — bit us 3×) — spec/plan
-at `docs/superpowers/{specs,plans}/2026-06-29-manifest-parser-fail-loud*`; **(3)** real tool
-**permission/capability** model (today: destructive-pattern blocklist; fs_read/http_fetch ungated) —
-spec/plan at `docs/superpowers/{specs,plans}/2026-06-29-tool-capability-model*` (both have OPEN QUESTIONS
-flagged in the spec header for the user). The worker-offload **run_until follow-up is DONE** (turn-epoch +
-race-free budget + idle timeout — see the Worker-offload section, `64f12ca`). **NEXT options:** build (2)
-or (3) from their committed plans (answer their spec OPEN QUESTIONS first), or the epoch-hardening +
-SSE/tool-offload bundle.
+## Architecture-honesty pass (after expert critique, 2026-06-29..30) — ALL 4 DONE
+**(1) DONE** — manifest `Module=` roster drives modules (pAntler, above).
+**(2) DONE** (`874544d`) — manifest parser fails LOUD on a single physical line packing >1 `key = value`
+(the silent mis-parse that bit us 3×): a leading-whitespace second-kv scanner records a `kMultiKvWarning`
+(parser stays pure), and `enforce_manifest()` at the launch boundary (before key resolution + side effects)
+promotes it to a hard `MalConfig` → the binary refuses to start on a corrupt manifest. No false-positive on
+URLs/base64/the legit single-kv inline (`Tool = fs { native=./x }`). (Header-form packing without braces +
+quoted/free-text values are documented v2 limits.) See `docs/superpowers/*2026-06-29-manifest-parser-fail-loud*`.
+**(3) DONE** (`1e5f4b6`) — real tool capability model — see the Tool-capability section below.
+**(4) DONE** — worker-offload (single-threaded deterministic bus + LLM call offloaded to an `Executor`;
+thread-safe `post()` + `run_until()`; opt-in; TSan-clean) + its **run_until follow-up** (turn-epoch,
+race-free budget, idle timeout) — see the Worker-offload section. **NEXT options:** SSE/tool-offload (+ the
+parked epoch dispatch-ordering hardening) · capability-model v2 (positive net allowlist, realpath/symlink
+path resolution, DNS-rebind/connect-time enforcement) · settings UI · embeddings · session resume · Bridge (parked).
+
+## Tool-capability model (shipped 2026-06-30, `main` @ `1e5f4b6`) — `CapabilityPolicy` objective
+Replaces "blocklist-only" tool safety. A built-in **`capability_of(tool)` table** (the AUTHORITY — a tool
+cannot grant itself permission; NOT read from its `describe`) maps the 7 tools to capabilities
+(`FsRead/FsWrite/Net/Exec/MemoryAppend/Unknown`). `CapabilityPolicy : Objective` reads **scopes from the
+manifest** (`Objective = capability_policy { fs_read_allow / fs_deny / block_private_net / confirm_unscoped }`,
+MULTI-LINE per the (2) parser footgun) and gates at the Arbiter veto seam: **hard-veto** fs_read of a denied
+path + http_fetch to a private/loopback host; **confirm** out-of-scope read / write_file / shell / unknown
+tool; **allow** in-scope read / public fetch / memory_append. `avoid_destructive` kept as a backstop
+(registered AFTER capability_policy; first hard-veto wins). **Inert unless the manifest lists it** → the test
+`build_agent` overload is unaffected. **SSRF/secret hardening (all closed):** redirects disabled in
+`http_fetch` (no redirect-SSRF); IPv6 link-local/ULA/`::`/IPv4-mapped (dotted+hex `::ffff:`) denied;
+empty/unparseable host fails CLOSED (deny); lexical path-normalize (`./.env`→deny, `..`→confirm);
+numeric-obfuscated IP (`2130706433`/`0x7f..`/octal) denied; **type-safe veto** (non-string LLM `path`/`url`
+args can't crash the bus — `str_arg` is_string guard + a fail-closed `try/catch` around every objective
+`veto()` in `dispatch_or_gate`); boundary-aware allow-match (`./workspace` ≠ `./workspace-backup`);
+trailing-dot host stripped. **Documented v1 gaps (v2):** DNS-rebinding/TOCTOU (host string checked, cpr
+resolves+connects later — needs connect-time enforcement), symlink path-deny bypass (lexical ≠ realpath),
+no positive `net_allow` egress allowlist (default-allow-public still permits exfil to arbitrary public
+hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/capability_policy.h`,
+`app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
+`tests/test_capability_{policy,wiring}.cpp`.
 
 ## Other open work
 session resume (history is in-memory only) · MCP tool discovery (MCP servers can be called but aren't
@@ -159,9 +183,15 @@ announced to the LLM) · persona switch · prompt caching · SSE streaming · se
   is load-bearing:** `Executor` joined before modules+Blackboard (Agent's `executor` is the last member;
   `bb` declared before `agent` in `hades_main`).
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
-  `=` wins, rest swallowed into the value). Multi-line blocks only (like `Session`/`Memory`/`Serve`). Bit
-  us **twice** (final whole-branch review each time): `Memory { store=… top_n=… }` and `Serve { host=… port=… webroot=… }`
-  single-line → silent mis-parse. Lock tests parse the shipped `dev.hades` to catch regressions.
+  `=` wins, rest swallowed). Use **multi-line blocks only** (like `Session`/`Memory`/`Serve`/`capability_policy`).
+  As of feature (2) this **now fails LOUD** — a packed line → `kMultiKvWarning` → `enforce_manifest` throws
+  `MalConfig` at launch (no more silent mis-parse; the legit single-kv inline `Tool = fs { native=./x }` and
+  `Objective = avoid_destructive { veto = true }` are still fine). Lock tests parse the shipped `dev.hades`.
+- **Tool calls are capability-gated** (feature (3)): `CapabilityPolicy` objective (built-in `capability_of`
+  table + manifest scopes) hard-vetoes secret-path reads + private-host fetches, confirm-gates write/shell/
+  unscoped, allows in-scope read/public-fetch/memory-append; `avoid_destructive` is the backstop. **Inert
+  unless the manifest lists `Objective = capability_policy`** (multi-line block). v2 gaps documented:
+  DNS-rebind/TOCTOU, symlink path-deny, no positive net allowlist. `http_fetch` no longer follows redirects.
 - `save_memory`/`pin_fact` store paths must contain **no whitespace** (tool argv is whitespace-split) —
   wiring throws `MalConfig` if they do.
 - `pin_fact` tool **requires** `memory_file` in the Session block (wiring throws `MalConfig` otherwise) —
