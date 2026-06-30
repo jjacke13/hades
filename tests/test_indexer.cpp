@@ -1,0 +1,52 @@
+#include <gtest/gtest.h>
+#include <fstream>
+#include <string>
+#include "hades/embedding/indexer.h"
+#include "hades/embedding/provider.h"
+#include "hades/embedding/vector_cache.h"
+using namespace hades;
+
+namespace {
+struct FakeProvider : EmbeddingProvider {     // deterministic dim-2 vectors, counts calls
+  int batches = 0; int texts = 0;
+  EmbedResult embed(const std::vector<std::string>& in) override {
+    ++batches; texts += static_cast<int>(in.size());
+    EmbedResult r; r.model = "fake"; r.dim = 2;
+    for (std::size_t i = 0; i < in.size(); ++i) r.vectors.push_back({static_cast<float>(in[i].size()), 1.0f});
+    return r;
+  }
+  std::string model() const override { return "fake"; }
+};
+std::string tmp(const std::string& n) { return testing::TempDir() + "/" + n; }
+void write_store(const std::string& p, int n) {
+  std::ofstream f(p, std::ios::trunc);
+  for (int i = 0; i < n; ++i) f << "{\"text\":\"fact " << i << "\",\"ts\":" << i << "}\n";
+}
+}  // namespace
+
+TEST(Indexer, EmbedsAllNewRecords) {
+  std::string store = tmp("ix_store.jsonl"), cache = tmp("ix_cache.jsonl");
+  std::remove(cache.c_str());
+  write_store(store, 3);
+  FakeProvider prov;
+  VectorCache vc(cache, "fake", 2); ASSERT_TRUE(vc.load());
+  auto st = index_archival(prov, vc, store, 32);
+  EXPECT_TRUE(st.ok);
+  EXPECT_EQ(st.embedded, 3u);
+  EXPECT_EQ(vc.size(), 3u);
+  EXPECT_TRUE(vc.has("memory#0"));
+}
+TEST(Indexer, IncrementalSkipsAlreadyCached) {
+  std::string store = tmp("ix_store2.jsonl"), cache = tmp("ix_cache2.jsonl");
+  std::remove(cache.c_str());
+  write_store(store, 2);
+  { FakeProvider p1; VectorCache vc(cache, "fake", 2); vc.load(); index_archival(p1, vc, store, 32); }
+  write_store(store, 4);                        // 2 new records appended
+  FakeProvider p2;
+  VectorCache vc(cache, "fake", 2); ASSERT_TRUE(vc.load());
+  auto st = index_archival(p2, vc, store, 32);
+  EXPECT_EQ(st.embedded, 2u);                   // only the 2 NEW ones
+  EXPECT_EQ(st.skipped, 2u);
+  EXPECT_EQ(p2.texts, 2);                       // provider asked only for the new ones
+  EXPECT_EQ(vc.size(), 4u);
+}
