@@ -58,6 +58,9 @@ Serve
 #   - sentence-transformers: provider = subprocess ; command = python3 ./tools/embed_reference.py
 #   - ollama:    `ollama pull nomic-embed-text`; provider = http ; endpoint = http://localhost:11434/v1 ; model = nomic-embed-text
 #   - llama.cpp: `llama-server --embedding`;       provider = http ; endpoint = http://localhost:8080/v1 (OpenAI-compat /embeddings)
+#   - PPQ (remote, reuses your LLM key): provider = http ; endpoint = https://api.ppq.ai/v1
+#       (NOT .../embeddings — the provider appends /embeddings) ; model = openai/text-embedding-3-small ;
+#       api_key_env = HADES_API_KEY  (embed cost hits your PPQ balance; NOT metered by the budget objective)
 # Module = embedding_memory
 # Embedding {
 #   provider           = subprocess
