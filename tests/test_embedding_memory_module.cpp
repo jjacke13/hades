@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include "hades/module/embedding_memory_module.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"
+#include "hades/embedding/defaults.h"
 using namespace hades;
 
 namespace {
@@ -23,6 +27,16 @@ struct FakeProvider : EmbeddingProvider {       // "alpha"->(1,0), "beta"->(0,1)
 };
 struct FailProvider : EmbeddingProvider {
   EmbedResult embed(const std::vector<std::string>&) override { return {{}, "fake", 0, "boom"}; }
+  std::string model() const override { return "fake"; }
+};
+struct CountingProvider : EmbeddingProvider {    // atomic call counter so a timer tick is observable
+  std::atomic<int> calls{0};
+  EmbedResult embed(const std::vector<std::string>& in) override {
+    calls.fetch_add(1, std::memory_order_relaxed);
+    EmbedResult r; r.model = "fake"; r.dim = 2;
+    for (std::size_t i = 0; i < in.size(); ++i) r.vectors.push_back({1.0f, 0.0f});
+    return r;
+  }
   std::string model() const override { return "fake"; }
 };
 struct ShiftingProvider : EmbeddingProvider {   // index/probe -> "modelA"; a "SHIFT" query -> "modelB"
@@ -113,6 +127,16 @@ TEST(EmbeddingMemoryModule, ReindexIntervalParsedAndDefaulted) {
     m.on_start(b, bb);
     EXPECT_DOUBLE_EQ(m.reindex_interval_s(), 5.0);
   }
+  {  // "0.0" (not just literal "0") also -> off; a negative -> keep default (never silent-disable)
+    EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+    Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "0.0";
+    m.on_start(b, bb);
+    EXPECT_DOUBLE_EQ(m.reindex_interval_s(), 0.0);
+    EmbeddingMemoryModule m2(std::make_unique<FakeProvider>());
+    Block b2 = cfg(store, cache); b2.kv["reindex_interval_s"] = "-3";
+    m2.on_start(b2, bb);
+    EXPECT_DOUBLE_EQ(m2.reindex_interval_s(), kDefaultReindexIntervalS);
+  }
   {  // garbage -> keep default
     EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
     Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "not-a-number";
@@ -138,6 +162,29 @@ TEST(EmbeddingMemoryModule, TimerStartsAndJoinsCleanly) {
     bb.pump();                                     // normal turn while the timer is alive
   }  // m destructs here -> dtor stops+joins the timer; must NOT hang
   SUCCEED();
+}
+TEST(EmbeddingMemoryModule, TimerFiresPeriodically) {
+  // A tiny interval makes the timer re-run run_index_ — exercising the wait_for-timeout -> unlock/run/
+  // relock loop body (otherwise only covered by a manual harness). Bounded poll (no fixed sleep, no
+  // flake): wait up to ~3s for the provider's embed-call count to rise past a post-attach snapshot.
+  std::string store = tmp("em_fire_store.jsonl"), cache = tmp("em_fire_cache");
+  { std::ofstream f(store, std::ios::trunc); f << "{\"text\":\"alpha\",\"ts\":1}\n"; }
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  Blackboard bb;
+  auto up = std::make_unique<CountingProvider>();
+  CountingProvider* cp = up.get();               // raw view for polling; module owns `up`
+  EmbeddingMemoryModule m(std::move(up));
+  Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "0.05";   // fires fast
+  m.on_start(b, bb);
+  m.on_attach(bb);                                 // initial inline index + timer starts
+  const int after_attach = cp->calls.load();       // calls so far (initial index)
+  bool fired = false;
+  for (int i = 0; i < 300 && !fired; ++i) {        // up to ~3s
+    if (cp->calls.load() > after_attach) fired = true;
+    else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(fired);                              // a periodic tick re-ran run_index_
+  // m destructs at scope exit -> stops+joins the fast timer; must not hang.
 }
 TEST(EmbeddingMemoryModule, RetrievesPastSessionTurnWhenIndexSessionsEnabled) {
   // With index_sessions=true + a sessions dir holding ONE past session, the per-turn unit of that

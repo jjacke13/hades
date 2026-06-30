@@ -26,6 +26,11 @@ public:
   // Stops + joins the periodic reindex timer BEFORE the module's other members / the Blackboard are
   // destroyed — so no late timer tick run_index_()s (and bb_->post()s) into a dead bus. Load-bearing.
   ~EmbeddingMemoryModule();
+  // Owns a thread/mutex/cv -> non-copyable, non-movable (only ever held by unique_ptr). Explicit for clarity.
+  EmbeddingMemoryModule(const EmbeddingMemoryModule&) = delete;
+  EmbeddingMemoryModule& operator=(const EmbeddingMemoryModule&) = delete;
+  EmbeddingMemoryModule(EmbeddingMemoryModule&&) = delete;
+  EmbeddingMemoryModule& operator=(EmbeddingMemoryModule&&) = delete;
   std::string type() const override { return "embedding_memory"; }
   void on_start(const Block& cfg, Blackboard& bb) override;
   void on_attach(Blackboard& bb) override;
@@ -51,6 +56,9 @@ private:
   std::size_t batch_size_ = kDefaultEmbedBatch;
   double timeout_s_ = kDefaultEmbedTimeoutS;
   double reindex_interval_s_ = kDefaultReindexIntervalS;  // re-run run_index_ every N s; 0 = launch-only
+  // Serializes run_index_(): the initial Executor-worker index and a periodic timer tick (or two ticks
+  // at a tiny interval) must not concurrently build+append the same cache file (-> duplicate lines).
+  std::mutex index_mu_;
   Blackboard* bb_ = nullptr;
   Executor* executor_ = nullptr;
   // Periodic reindex timer (started in on_attach when reindex_interval_s_ > 0; stopped+joined in dtor).

@@ -41,11 +41,14 @@ void EmbeddingMemoryModule::on_start(const Block& cfg, Blackboard&) {
   if (cfg.kv.count("min_similarity")) { double d = min_similarity_; if (set_pos_double_on_string(cfg.kv.at("min_similarity"), d)) min_similarity_ = static_cast<float>(d); }
   if (cfg.kv.count("timeout_s")) { double d = timeout_s_; if (set_pos_double_on_string(cfg.kv.at("timeout_s"), d)) timeout_s_ = d; }
   if (cfg.kv.count("reindex_interval_s")) {
-    // 0 = off (launch-only); set_pos_double_on_string rejects 0, so special-case it. Any other value
-    // must be > 0 to start a timer; garbage -> keep the daily default (never silently disable).
-    const std::string& v = cfg.kv.at("reindex_interval_s");
-    if (v == "0") reindex_interval_s_ = 0.0;
-    else { double d = reindex_interval_s_; if (set_pos_double_on_string(v, d)) reindex_interval_s_ = d; }
+    // Parse the value THEN branch (not via set_pos_double_on_string, which rejects 0): ANY zero
+    // (0, 0.0) = off (launch-only); a positive value = the interval; a negative or garbage value
+    // keeps the daily default (never silently disable a timer the operator intended to keep).
+    double d;
+    if (set_double_on_string(cfg.kv.at("reindex_interval_s"), d)) {
+      if (d == 0.0) reindex_interval_s_ = 0.0;
+      else if (d > 0.0) reindex_interval_s_ = d;
+    }
   }
   if (!provider_) {                              // build from config (not the test-injected path)
     const std::string kind = cfg.kv.count("provider") ? cfg.kv.at("provider") : "subprocess";
@@ -64,6 +67,10 @@ void EmbeddingMemoryModule::on_start(const Block& cfg, Blackboard&) {
 
 void EmbeddingMemoryModule::run_index_() {
   if (!provider_ || !bb_) return;
+  // Serialize concurrent runs (initial Executor index vs a periodic timer tick) so they can't both
+  // load the same cache, treat the same records as new, and double-append. Held only for the index;
+  // the dtor stops the timer via reindex_mu_ (independent lock), so this never blocks teardown.
+  std::lock_guard<std::mutex> index_lk(index_mu_);
   std::error_code ec;
   std::filesystem::create_directories(cache_dir_, ec);
   // Probe one embed to learn model+dim: a subprocess provider only knows them after the first reply,
