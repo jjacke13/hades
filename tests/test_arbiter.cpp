@@ -764,3 +764,19 @@ TEST(Arbiter, SemanticAbsentIsUnchanged) {
       block = m["content"];
   EXPECT_EQ(block, "Relevant memories:\n- only keyword");  // identical to pre-embedding behavior
 }
+TEST(Arbiter, SemanticOnlyWithAbsentKeywordStillInjectsBlock) {
+  // Valid path: embedding_memory present but keyword RETRIEVED_MEMORY absent -> the semantic block
+  // is still injected (merge_memory_blocks("", sem) == sem).
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY_SEMANTIC", "- embedding result", "embedding_memory");
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(reqs.empty());
+  std::string block;
+  for (const auto& m : reqs[0]["messages"])
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Relevant memories:", 0) == 0)
+      block = m["content"];
+  EXPECT_EQ(block, "Relevant memories:\n- embedding result");
+}
