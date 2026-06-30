@@ -242,41 +242,64 @@ TEST(Arbiter, StaleEpochResponseIsDropped) {
   EXPECT_EQ(req_epochs[1], static_cast<std::uint64_t>(2));
 }
 
-// Documents the turn-epoch DISPATCH-ORDERING hole that the test above does NOT cover.
+// Closes the turn-epoch DISPATCH-ORDERING hole via the abandonment model.
 //
-// The Arbiter bumps turn_epoch_ only when a USER_MESSAGE is DISPATCHED (in its handler),
-// not when it is posted. Front-ends post USER_MESSAGE then run_until{pump}. If a stale
-// LLM_RESPONSE{epoch:E} is enqueued AHEAD of the next USER_MESSAGE{->E+1}, a single pump()
-// dispatches the stale response FIRST — while turn_epoch_ is still E — so the freshness
-// gate (ep == turn_epoch_) PASSES and the Arbiter would act on the stale response for the
-// new prompt. (StaleEpochResponseIsDropped pumps the second USER_MESSAGE first, bumping the
-// epoch to 2 BEFORE the stale epoch-1 response is dispatched, so it never exercises this.)
+// The Arbiter bumps turn_epoch_ only when a USER_MESSAGE is DISPATCHED, so a stale
+// LLM_RESPONSE{epoch:E} enqueued AHEAD of the next USER_MESSAGE{->E+1} would (without a
+// signal) be dispatched while turn_epoch_ is still E and wrongly answer the new prompt.
+// The robust fix: when a turn is abandoned (front-end run_until timeout), the front-end
+// posts TURN_ABANDONED; the Arbiter bumps turn_epoch_ on it, so the late worker response
+// for the abandoned turn is then dropped by the existing freshness gate (ep != turn_epoch_).
 //
-// DISABLED because it is UNREACHABLE in the shipped binary: the idle timeout
-// (kTurnTimeoutS / kCollectTimeoutS = 180s) is greater than the maximum single in-flight
-// poster duration (cpr LLM cap ~120s + tool cap ~30s) and resets on ANY bus activity, so a
-// still-running worker always posts within the window — when run_until finally abandons a
-// turn (180s of NO activity) NO worker is in flight, hence no post-abandonment stale
-// LLM_RESPONSE is ever produced (see src/module/chat_module.cpp). The epoch is
-// defense-in-depth; that timing invariant is the real guarantee.
-//
-// The body asserts the DESIRED (hardened) behavior — the stale response is NOT acted upon —
-// so ENABLING this test later validates the fix (bump the epoch on turn abandonment / drop
-// responses for abandoned turns, planned alongside SSE / tool-offload). It would currently
-// FAIL (the stale response IS accepted), which is exactly WHY it is DISABLED.
-TEST(Arbiter, DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted) {
+// Ordering: at idle-timeout the queue is empty, so TURN_ABANDONED is enqueued first and any
+// late worker LLM_RESPONSE{E} lands strictly after it — the Arbiter bumps the epoch before
+// the stale response is dispatched. This test models that: abandon turn 1, THEN deliver the
+// stale epoch-1 response, and assert it is dropped while a fresh response still works.
+TEST(Arbiter, StaleResponseAfterAbandonmentIsDropped) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   std::vector<std::string> answers;
+  std::vector<std::uint64_t> req_epochs;
   bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ answers.push_back(e.value); });
-  bb.post("USER_MESSAGE","first","chat"); bb.pump();   // turn epoch 1
-  // Front-end-realistic order: the (abandoned) first turn's stale response is enqueued
-  // AHEAD of the next user message, so a single pump dispatches it while turn_epoch_ is
-  // STILL 1 — the epoch check passes and (today) the Arbiter acts on it.
-  bb.post("LLM_RESPONSE", {{"text","late answer"},{"epoch",1}}, "llm");
-  bb.post("USER_MESSAGE","second","chat");
-  bb.pump();
-  // Hardened expectation: the stale response must NOT surface as an answer for the new turn.
-  for (const auto& s : answers) EXPECT_NE(s, "late answer");
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req_epochs.push_back(e.value.value("epoch", static_cast<std::uint64_t>(0))); });
+  bb.post("USER_MESSAGE","first","chat"); bb.pump();   // turn epoch 1; LLM_REQUEST{1} emitted, left unanswered
+  ASSERT_FALSE(req_epochs.empty());
+  const std::uint64_t abandoned_epoch = req_epochs.back();   // the live epoch of the turn we abandon
+  // The front-end abandons the turn (run_until timed out): it posts TURN_ABANDONED, which the
+  // Arbiter must treat as bumping the turn epoch (invalidating the in-flight response).
+  bb.post("TURN_ABANDONED", nlohmann::json::object(), "chat"); bb.pump();
+  // The abandoned turn's worker finally completes and posts its (now stale) response.
+  bb.post("LLM_RESPONSE", {{"text","late answer for turn 1"},{"epoch",abandoned_epoch}}, "llm"); bb.pump();
+  for (const auto& s : answers) EXPECT_NE(s, "late answer for turn 1");   // dropped: abandoned epoch != current
+  // The next user turn proceeds normally; its fresh response (stamped with the live epoch) IS applied.
+  bb.post("USER_MESSAGE","second","chat"); bb.pump();
+  const std::uint64_t live_epoch = req_epochs.back();        // epoch the Arbiter now expects
+  bb.post("LLM_RESPONSE", {{"text","real"},{"epoch",live_epoch}}, "llm"); bb.pump();
+  ASSERT_FALSE(answers.empty());
+  EXPECT_EQ(answers.back(), "real");
+  // Epoch numbering: ++ on USER_MESSAGE and on TURN_ABANDONED -> 1 (first), 2 (abandon), 3 (second).
+  EXPECT_EQ(abandoned_epoch, static_cast<std::uint64_t>(1));
+  EXPECT_EQ(live_epoch, static_cast<std::uint64_t>(3));
+}
+
+// TURN_ABANDONED must also clear a pending confirm: a confirm-gated action from the abandoned
+// turn must NOT execute if a late CONFIRM_RESPONSE for it arrives in the next turn. Modeled on
+// DestructiveToolCallIsConfirmGated (an AvoidDestructive objective + a destructive tool_call).
+TEST(Arbiter, TurnAbandonedClearsPendingConfirm) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.add_objective(std::make_unique<AvoidDestructive>());
+  nlohmann::json confirm; bool tool_called=false;
+  bb.subscribe("CONFIRM_REQUEST",[&](const Entry& e){ confirm=e.value; });
+  bb.subscribe("TOOL_REQUEST",[&](const Entry&){ tool_called=true; });
+  bb.post("USER_MESSAGE","wipe","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","shell"},
+          {"arguments",{{"cmd","rm -rf /"}}}}}}, "llm"); bb.pump();
+  ASSERT_FALSE(confirm.is_null());                 // gated -> awaiting confirmation (pending_ set)
+  EXPECT_FALSE(tool_called);
+  // The turn is abandoned before the user answers the confirm prompt.
+  bb.post("TURN_ABANDONED", nlohmann::json::object(), "chat"); bb.pump();
+  // A late approval for the abandoned action must NOT resurrect it (pending_ was cleared).
+  bb.post("CONFIRM_RESPONSE", {{"id","c1"},{"approved",true}}, "chat"); bb.pump();
+  EXPECT_FALSE(tool_called);                        // pending cleared on abandonment -> no execution
 }
 
 // Defense-in-depth (final-review C-fix): an objective that THROWS from veto() must not crash the

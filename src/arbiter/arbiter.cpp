@@ -30,6 +30,17 @@ void Arbiter::on_attach(Blackboard& bb) {
   bb.subscribe("LLM_RESPONSE", [this](const Entry& e) { on_llm_response(e); });
   bb.subscribe("TOOL_RESULT", [this](const Entry& e) { on_tool_result(e); });
   bb.subscribe("CONFIRM_RESPONSE", [this](const Entry& e) { on_confirm(e); });
+  // A front-end abandons a turn (run_until timeout) by posting TURN_ABANDONED. Bumping the
+  // epoch invalidates the abandoned turn's in-flight LLM_RESPONSE (dropped by on_llm_response's
+  // freshness gate when it lands after this), and clearing the pending confirm prevents a
+  // confirm-gated action from the abandoned turn surviving into the next one (same reset as
+  // on_confirm). NOTE: tools run SYNCHRONOUSLY today so no stale TOOL_RESULT can exist; when
+  // tool-offload lands, extend this epoch+abandonment pattern to TOOL_RESULT as well.
+  bb.subscribe("TURN_ABANDONED", [this](const Entry&) {
+    ++turn_epoch_;
+    pending_ = nullptr;
+    pending_msg_ = nullptr;
+  });
 }
 
 void Arbiter::start_turn() {
