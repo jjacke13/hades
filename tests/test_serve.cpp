@@ -62,7 +62,7 @@ TEST(HttpServer, ChatTimeoutPostsAbandoned) {
   Blackboard bb;
   HttpServerModule srv;
   srv.on_attach(bb);
-  srv.set_collect_timeout_s(0.02);  // force a fast abandonment instead of the 180s default
+  srv.set_collect_timeout_s(0.02);  // force a fast abandonment instead of the 900s default
   int abandoned = 0;
   bb.subscribe("TURN_ABANDONED", [&](const Entry&) { ++abandoned; });
   auto out = srv.handle_message("hang");

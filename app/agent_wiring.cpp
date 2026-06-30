@@ -211,16 +211,23 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   // turn_idle_timeout_s MUST stay > llm_timeout_s so a slow-but-alive LLM call posts back
   // (resetting the idle deadline) before run_until abandons the turn. (Live path only —
   // the test build_agent overload never runs this, so existing inline tests are unchanged.)
+  // NOTE: this resolves llm_timeout_s purely for the invariant guard below; LLMModule::on_start
+  // ALSO resolves it from this same Session block (for the cpr per-call timeout). The duplicate
+  // read is intentional — the LLM self-builds its provider from the Session block, and both sites
+  // use the same key + default + validator, so they compute an identical value. Do not "dedupe".
   double llm_timeout_s = kDefaultLlmTimeoutS;
   if (s.kv.count("llm_timeout_s"))
     set_pos_double_on_string(s.kv.at("llm_timeout_s"), llm_timeout_s);
   double turn_idle_timeout_s = kDefaultTurnIdleTimeoutS;
   if (s.kv.count("turn_idle_timeout_s"))
     set_pos_double_on_string(s.kv.at("turn_idle_timeout_s"), turn_idle_timeout_s);
-  if (turn_idle_timeout_s <= llm_timeout_s)
-    throw MalConfig("turn_idle_timeout_s (" + std::to_string(turn_idle_timeout_s) +
-                    ") must be greater than llm_timeout_s (" + std::to_string(llm_timeout_s) +
+  if (turn_idle_timeout_s <= llm_timeout_s) {
+    // Format without std::to_string's trailing zeros (900.000000 -> "900", 1.5 -> "1.5").
+    auto fmt = [](double d) { std::ostringstream o; o << d; return o.str(); };
+    throw MalConfig("turn_idle_timeout_s (" + fmt(turn_idle_timeout_s) +
+                    ") must be greater than llm_timeout_s (" + fmt(llm_timeout_s) +
                     ") — a slow LLM call would be abandoned mid-flight");
+  }
 
   // pAntler: the Module= roster decides which modules exist. Factories just construct;
   // the LLM self-builds its provider from the Session block in on_start (existing path).

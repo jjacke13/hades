@@ -30,7 +30,7 @@ TEST(Chat, ReplTimeoutPostsAbandonedAndPrints) {
   Blackboard bb; ChatModule c; c.on_attach(bb);
   int abandoned = 0;
   bb.subscribe("TURN_ABANDONED", [&](const Entry&) { ++abandoned; });
-  c.set_turn_timeout_s(0.02);  // force a fast abandonment instead of the 180s default
+  c.set_turn_timeout_s(0.02);  // force a fast abandonment instead of the 900s default
   std::istringstream in("hang\n/quit\n"); std::ostringstream out;
   c.run_repl(in, out);
   EXPECT_EQ(abandoned, 1);
@@ -42,7 +42,7 @@ TEST(Chat, ConfirmPromptReadsYesFromStdin) {
   // The fake agent below never posts ASSISTANT_MESSAGE, so the turn never completes and
   // run_until waits out its idle timeout. The confirm 'y' is read inline during the first
   // pump (before any timeout), so a tiny test-only timeout keeps the assertions valid while
-  // cutting the wall-clock from the 180s production default to milliseconds. The fast timeout
+  // cutting the wall-clock from the production default (900s) to milliseconds. The fast timeout
   // does post TURN_ABANDONED and print [timed out], but nothing here asserts on that output.
   c.set_turn_timeout_s(0.05);
   nlohmann::json resp;
