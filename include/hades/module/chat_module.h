@@ -35,6 +35,10 @@ private:
   // turn) and pump once so that happens before the next prompt is read, then tell the
   // user. Used by both run_repl and run_repl_readline so the two paths behave identically.
   void abandon_turn_();
+  // run_until idle timeout in seconds: the test override if set (>0), else the production
+  // kTurnTimeoutS default. Defined in chat_module.cpp so it can see the file-local constant;
+  // shared by run_repl and run_repl_readline so both loops use one source of truth.
+  double effective_timeout_() const;
 
   Blackboard* bb_  = nullptr;
   std::ostream* out_ = nullptr;

@@ -47,6 +47,10 @@ constexpr const char* kReset      = "\033[0m";
 constexpr double kTurnTimeoutS = 180.0;
 }  // namespace
 
+double ChatModule::effective_timeout_() const {
+  return turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kTurnTimeoutS;
+}
+
 void ChatModule::on_attach(Blackboard& bb) {
   bb_ = &bb;
   bb.subscribe("ASSISTANT_MESSAGE", [this](const Entry& e) {
@@ -121,8 +125,7 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
     // a worker and run_until sleeps on the bus until it posts back (inline turns
     // complete during the first pump). The CONFIRM_REQUEST handler reads y/N inline
     // during a run_until pump and posts CONFIRM_RESPONSE, then the turn continues.
-    const double timeout_s = turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kTurnTimeoutS;
-    if (!bb_->run_until([this] { return turn_done_; }, timeout_s)) abandon_turn_();
+    if (!bb_->run_until([this] { return turn_done_; }, effective_timeout_())) abandon_turn_();
   }
 }
 
@@ -148,8 +151,7 @@ void ChatModule::run_repl_readline() {
     bb_->post("USER_MESSAGE", line, "chat");
     // run_until drives the turn (offloaded LLM on a worker, or inline) to its final
     // ASSISTANT_MESSAGE; assistant output prints in cooked mode after readline returns.
-    const double timeout_s = turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kTurnTimeoutS;
-    if (!bb_->run_until([this] { return turn_done_; }, timeout_s)) abandon_turn_();
+    if (!bb_->run_until([this] { return turn_done_; }, effective_timeout_())) abandon_turn_();
   }
 }
 

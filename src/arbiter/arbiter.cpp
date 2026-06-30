@@ -38,9 +38,13 @@ void Arbiter::on_attach(Blackboard& bb) {
   // tool-offload lands, extend this epoch+abandonment pattern to TOOL_RESULT as well.
   bb.subscribe("TURN_ABANDONED", [this](const Entry&) {
     ++turn_epoch_;
-    pending_ = nullptr;
-    pending_msg_ = nullptr;
+    clear_pending();
   });
+}
+
+void Arbiter::clear_pending() {
+  pending_ = nullptr;
+  pending_msg_ = nullptr;
 }
 
 void Arbiter::start_turn() {
@@ -192,8 +196,7 @@ void Arbiter::on_confirm(const Entry& e) {
   } else {
     bb_->post("ASSISTANT_MESSAGE", "[declined by user]", "arbiter");
   }
-  pending_ = nullptr;
-  pending_msg_ = nullptr;
+  clear_pending();
 }
 
 }  // namespace hades

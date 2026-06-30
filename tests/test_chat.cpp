@@ -39,6 +39,12 @@ TEST(Chat, ReplTimeoutPostsAbandonedAndPrints) {
 
 TEST(Chat, ConfirmPromptReadsYesFromStdin) {
   Blackboard bb; ChatModule c; c.on_attach(bb);
+  // The fake agent below never posts ASSISTANT_MESSAGE, so the turn never completes and
+  // run_until waits out its idle timeout. The confirm 'y' is read inline during the first
+  // pump (before any timeout), so a tiny test-only timeout keeps the assertions valid while
+  // cutting the wall-clock from the 180s production default to milliseconds. The fast timeout
+  // does post TURN_ABANDONED and print [timed out], but nothing here asserts on that output.
+  c.set_turn_timeout_s(0.05);
   nlohmann::json resp;
   bb.subscribe("CONFIRM_RESPONSE", [&](const Entry& e) { resp = e.value; });
   // a fake agent: on USER_MESSAGE, raise a confirm request

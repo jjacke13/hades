@@ -39,12 +39,16 @@ When `run_until(...)` returns **false** (idle timeout — the turn is abandoned)
 - surface it to the user: REPL prints `assistant> [timed out]` (today it silently loops); HTTP `collect_`
   already returns `{"reply":"[timed out]"}` — keep that, just add the `TURN_ABANDONED` post.
 
-**Ordering correctness:** at the instant `run_until` returns false, the queue is empty (idle timeout = no
-bus activity for `timeout_s`; had a response been queued, `pump()` would have processed it and the turn
-would have completed, returning true). So `TURN_ABANDONED` is enqueued into an empty queue; any subsequently
-stale worker `LLM_RESPONSE{E}` lands strictly AFTER it. On the next drain the Arbiter processes
-`TURN_ABANDONED` first → bumps the epoch → the stale `LLM_RESPONSE{E}` is then dropped by the existing
-epoch check. Robust regardless of how long the worker runs.
+**Ordering correctness:** the actual guarantee is sequencing, not an empty-queue claim. The front-end
+posts `TURN_ABANDONED` AND pumps it (so the Arbiter bumps its epoch) BEFORE it reads/accepts the next
+user input. Therefore any later stale worker `LLM_RESPONSE{E}` — even one that raced into the queue during
+`run_until`'s final ~20 ms `cv.wait_for` (which can wake the predicate and still return false with that
+entry queued) — is stamped with the now-superseded epoch and is dropped by the existing epoch check before
+it can contaminate a SUBSEQUENT prompt. The one harmless residual: a response that raced in just before
+abandonment may still be *delivered late against its OWN turn* and print after `[timed out]` — purely
+cosmetic, and unreachable today because the idle timeout is held strictly greater than the maximum single
+in-flight poster duration (so no worker is still running when `run_until` abandons). Robust regardless of
+how long the worker runs.
 
 ### 2. Arbiter handles `TURN_ABANDONED` (`arbiter.cpp`)
 Subscribe to `TURN_ABANDONED`. On it:

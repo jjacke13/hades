@@ -36,6 +36,9 @@ private:
   void on_tool_result(const Entry&);
   void on_confirm(const Entry&);
   void dispatch_or_gate(const Action&, const nlohmann::json& assistant_msg);
+  // Reset the single pending-confirm slot. Shared by on_confirm (confirm resolved) and the
+  // TURN_ABANDONED handler (turn dropped) so the two resets can never drift apart.
+  void clear_pending();
 
   Blackboard* bb_ = nullptr;
   std::vector<nlohmann::json> history_;
