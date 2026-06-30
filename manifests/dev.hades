@@ -36,7 +36,7 @@ Objective = stay_on_budget   { hard_cap_usd = 1.0 }
 # MULTI-LINE block (one key=value per line): a packed line would fail enforce_manifest at boot.
 Objective = capability_policy
 {
-  fs_read_allow     = ./ ./workspace ./docs ./manifests ./prompts ./web
+  fs_read_allow     = ./workspace ./docs ./manifests ./prompts ./web
   fs_deny           = /etc /root .env secrets/ .ssh/ .git/credentials id_rsa
   block_private_net = true
   confirm_unscoped  = true

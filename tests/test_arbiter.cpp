@@ -8,11 +8,23 @@
 
 #include <cstdint>
 #include <fstream>
+#include <stdexcept>
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
 #include "hades/objective/avoid_destructive.h"
 using namespace hades;
+
+namespace {
+// An objective that throws from veto() — proves the Arbiter's dispatch_or_gate try/catch
+// fails closed instead of unwinding the bus (defense-in-depth, final-review C-fix).
+struct ThrowingObjective : Objective {
+  std::string type() const override { return "throwing"; }
+  VetoResult veto(const Blackboard&, const Action&) const override {
+    throw std::runtime_error("boom");
+  }
+};
+}  // namespace
 TEST(Arbiter, PrependsSystemPromptToLlmRequest) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   a.set_system_prompt("you are hades");
@@ -265,6 +277,25 @@ TEST(Arbiter, DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted) {
   bb.pump();
   // Hardened expectation: the stale response must NOT surface as an answer for the new turn.
   for (const auto& s : answers) EXPECT_NE(s, "late answer");
+}
+
+// Defense-in-depth (final-review C-fix): an objective that THROWS from veto() must not crash the
+// single-threaded bus. dispatch_or_gate catches it and FAILS CLOSED (hard block), so the tool
+// never runs and a "[blocked: objective error: …]" answer surfaces — pump() never throws.
+TEST(Arbiter, ObjectiveExceptionFailsClosedWithoutCrashing) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.add_objective(std::make_unique<ThrowingObjective>());
+  a.set_tools({ ToolSpec{"fs_read","",{}} });
+  std::string out; bool tool_called=false;
+  bb.subscribe("ASSISTANT_MESSAGE",[&](const Entry& e){ out=e.value; });
+  bb.subscribe("TOOL_REQUEST",[&](const Entry&){ tool_called=true; });
+  bb.post("USER_MESSAGE","read it","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","fs_read"},
+          {"arguments",{{"path","/a"}}}}}}, "llm");
+  EXPECT_NO_THROW(bb.pump());                              // objective throw must NOT escape pump
+  EXPECT_FALSE(tool_called);                               // failed closed -> tool never ran
+  EXPECT_NE(out.find("blocked"), std::string::npos);       // hard block surfaced
+  EXPECT_NE(out.find("objective error"), std::string::npos);
 }
 
 TEST(Arbiter, NoCoreMemoryWhenPathUnsetAndNoPrompt) {

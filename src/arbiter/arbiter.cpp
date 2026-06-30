@@ -9,6 +9,7 @@
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
 #include "hades/prompt.h"   // read_memory_layer
+#include <exception>
 #include <string>
 namespace hades {
 
@@ -116,7 +117,16 @@ void Arbiter::dispatch_or_gate(const Action& act, const nlohmann::json& assistan
   // confirm (needs_confirm) or hard-veto wins and short-circuits dispatch.
   for (auto& o : objectives_) {
     if (!o->active(*bb_)) continue;
-    auto v = o->veto(*bb_, act);
+    // FAIL CLOSED on any objective exception (e.g. a non-string LLM arg reaching a buggy
+    // veto): treat it as a hard block rather than letting it unwind pump() and crash the bus.
+    VetoResult v;
+    try {
+      v = o->veto(*bb_, act);
+    } catch (const std::exception& ex) {
+      v = VetoResult{true, std::string("objective error: ") + ex.what(), false};
+    } catch (...) {
+      v = VetoResult{true, "objective error: unknown exception", false};
+    }
     if (v.vetoed && v.needs_confirm) {
       pending_ = nlohmann::json{{"kind", static_cast<int>(act.kind)},
                                 {"tool", act.tool},

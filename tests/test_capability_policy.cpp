@@ -176,3 +176,60 @@ TEST(CapabilityPolicy, FailsClosedOnNumericObfuscatedHost) {
   EXPECT_TRUE (CapabilityPolicy::is_private_host("2130706433"));
   EXPECT_FALSE(CapabilityPolicy::is_private_host("93.184.216.34"));
 }
+
+// CRITICAL (final review) — a non-string path/url (the LLM emits fs_read {"path":123} /
+// {"path":null}, http_fetch {"url":42}) must NOT throw json type_error.302 on the veto path
+// (which would unwind pump() and crash the bus). str_arg yields "" and the existing fail-closed
+// handling applies: empty path -> confirm_unscoped, empty url -> deny. Never throws.
+TEST(CapabilityPolicy, NonStringPathOrUrlArgsFailClosedWithoutThrowing) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  const std::vector<nlohmann::json> bad = {
+      nlohmann::json(123), nlohmann::json(nullptr),
+      nlohmann::json::array({1, 2}), nlohmann::json::object()};
+  for (const auto& b : bad) {
+    Action r{Action::Kind::ToolCall}; r.tool = "fs_read"; r.args = {{"path", b}};
+    VetoResult vr;
+    EXPECT_NO_THROW(vr = p.veto(bb, r)) << b.dump();
+    EXPECT_TRUE(vr.vetoed) << b.dump();
+    EXPECT_TRUE(vr.needs_confirm) << b.dump();            // empty path -> confirm_unscoped
+
+    Action w{Action::Kind::ToolCall}; w.tool = "write_file";
+    w.args = {{"path", b}, {"content", "x"}};
+    EXPECT_NO_THROW(p.veto(bb, w)) << b.dump();           // empty path -> confirm (no throw)
+
+    Action n{Action::Kind::ToolCall}; n.tool = "http_fetch"; n.args = {{"url", b}};
+    VetoResult vn;
+    EXPECT_NO_THROW(vn = p.veto(bb, n)) << b.dump();
+    EXPECT_TRUE(vn.vetoed) << b.dump();
+    EXPECT_FALSE(vn.needs_confirm) << b.dump();           // empty/unparseable host -> deny
+  }
+}
+
+// IMPORTANT 2 — allow match is path-component-boundary aware: allow "./workspace" must NOT also
+// allow a sibling like "./workspace-backup" or "./workspaceX" (the old starts_with over-matched).
+// The root itself and any path UNDER it are allowed; a sibling -> unscoped -> confirm.
+TEST(CapabilityPolicy, AllowMatchIsPathBoundaryAware) {
+  CapabilityScope s;
+  s.fs_read_allow     = {"./workspace"};
+  s.fs_deny           = {};
+  s.confirm_unscoped  = true;
+  Blackboard bb; CapabilityPolicy p(std::move(s));
+  EXPECT_FALSE(p.veto(bb, read("./workspace/notes.txt")).vetoed);   // under allow root -> allow
+  EXPECT_FALSE(p.veto(bb, read("./workspace")).vetoed);             // the root itself -> allow
+  auto sib = p.veto(bb, read("./workspace-backup/secrets"));        // sibling -> NOT allowed
+  EXPECT_TRUE(sib.vetoed); EXPECT_TRUE(sib.needs_confirm);          // unscoped -> confirm
+  auto sibx = p.veto(bb, read("./workspaceX"));
+  EXPECT_TRUE(sibx.vetoed); EXPECT_TRUE(sibx.needs_confirm);
+}
+
+// MINOR — a trailing dot (FQDN-absolute form) must not dodge the loopback/private classifier:
+// "localhost." and "127.0.0.1." are still private.
+TEST(CapabilityPolicy, TrailingDotHostStillClassifiedPrivate) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  for (const char* u : {"http://localhost./", "http://127.0.0.1./x"}) {
+    auto v = p.veto(bb, fetch(u));
+    EXPECT_TRUE(v.vetoed) << u; EXPECT_FALSE(v.needs_confirm) << u;
+  }
+  EXPECT_TRUE(CapabilityPolicy::is_private_host("localhost."));
+  EXPECT_TRUE(CapabilityPolicy::is_private_host("127.0.0.1."));
+}

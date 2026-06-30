@@ -15,10 +15,33 @@
 namespace hades {
 namespace {
 
+// DENY match: plain prefix. Over-matching on deny is the SAFE direction (denying slightly more
+// is fine), so a bare starts_with is intentional here.
 bool any_prefix(const std::string& s, const std::vector<std::string>& ps) {
   for (const auto& p : ps)
     if (!p.empty() && s.starts_with(p)) return true;
   return false;
+}
+// ALLOW match: path-component-boundary aware. An allow entry matches only if the (canon'd)
+// request path EQUALS the entry or sits UNDER it (entry + "/"), so allow "./workspace" does NOT
+// also allow the siblings "./workspace-backup" / "./workspaceX" (a bare starts_with would). An
+// entry that already ends in '/' (e.g. the "./" root) is used as the prefix verbatim.
+bool allow_match(const std::string& s, const std::vector<std::string>& ps) {
+  for (const auto& p : ps) {
+    if (p.empty()) continue;
+    if (s == p) return true;
+    const std::string pref = (p.back() == '/') ? p : p + "/";
+    if (s.starts_with(pref)) return true;
+  }
+  return false;
+}
+// Type-safe string-arg extraction. nlohmann::json::value(key, default) THROWS type_error.302 when
+// the key exists but is NOT a string (the LLM can emit fs_read {"path":123} / {"url":null}); this
+// returns "" in that case so the caller's fail-closed handling (empty path -> confirm; empty url
+// -> deny) applies. NEVER throws — a non-string arg must not crash the bus.
+std::string str_arg(const nlohmann::json& args, const char* key) {
+  auto it = args.find(key);
+  return (it != args.end() && it->is_string()) ? it->get<std::string>() : std::string{};
 }
 std::string lower(std::string s) {
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -154,6 +177,7 @@ std::string CapabilityPolicy::parse_host(const std::string& url) {
 
 bool CapabilityPolicy::is_private_host(const std::string& raw) {
   std::string h = lower(raw);
+  if (!h.empty() && h.back() == '.') h.pop_back();         // FQDN-absolute trailing dot: localhost.
   if (h.empty()) return false;                             // emptiness is fail-closed at veto()
   if (h == "localhost" || h == "::1" || h == "::") return true;  // loopback + unspecified IPv6
   if (h.find(':') != std::string::npos) {                  // IPv6 literal (hostnames have no colon)
@@ -183,25 +207,25 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
     case Capability::Exec:
       return confirm("exec capability (" + a.tool + "): runs an arbitrary command");
     case Capability::FsWrite: {
-      std::string path = canon_path(a.args.value("path", ""));
+      std::string path = canon_path(str_arg(a.args, "path"));
       if (any_prefix(path, scope_.fs_deny))
         return deny("write to a denied path: " + path);
       return confirm("fs_write (" + a.tool + ") overwrites a file: " + path);
     }
     case Capability::FsRead: {
-      std::string path = canon_path(a.args.value("path", ""));
+      std::string path = canon_path(str_arg(a.args, "path"));
       if (any_prefix(path, scope_.fs_deny))
         return deny("read of a denied path: " + path);
       if (escapes_base(path))                           // surviving ".." -> never silently allow
         return confirm("fs_read escapes its base via '..': " + path);
-      if (any_prefix(path, scope_.fs_read_allow))
+      if (allow_match(path, scope_.fs_read_allow))      // boundary-aware (no sibling over-match)
         return allow();
       return scope_.confirm_unscoped
                  ? confirm("fs_read outside allowed scope: " + path)
                  : deny("fs_read outside allowed scope: " + path);
     }
     case Capability::Net: {
-      std::string host = parse_host(a.args.value("url", ""));
+      std::string host = parse_host(str_arg(a.args, "url"));
       if (host.empty())                                 // a gate must not allow what it can't classify
         return deny("net fetch with an unparseable/empty host");
       if (scope_.block_private_net && is_private_host(host))
