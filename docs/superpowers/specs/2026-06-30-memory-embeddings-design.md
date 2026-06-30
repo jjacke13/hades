@@ -87,27 +87,32 @@ public:
 - Separate cache file per source family keeps memory vs session corpora independently rebuildable.
 
 ### 3. Indexer — lazy, incremental, background
-- **Trigger:** lazy auto-index. At module start, an **Executor** task (so startup/bus is not blocked) runs an
-  **incremental** index: read the corpus, compute the set of `id`s already cached, embed (in `batch_size`
-  batches) only the *new* records, append them to the cache. The first build is the slow one (logged with a
-  count); subsequent launches are near-instant. The module answers semantic queries with whatever is cached and
-  is empty (keyword-only) until the first index completes.
+- **Trigger:** the index always runs **incrementally** (compute the set of `id`s already cached, embed only the
+  *new* records in `batch_size` batches, append to the cache). It runs **(a) once at launch** — so a fresh or
+  updated store is ready immediately; a launch with no new records is a **no-op** — **and (b) every
+  `reindex_interval_s`** thereafter (default **86400 = daily**) to pick up sessions that completed during a
+  long-running process. Both runs are the same incremental task on an **Executor** worker (startup/bus not
+  blocked; reuses the warm provider, no respawn). `reindex_interval_s = 0` ⇒ launch-only (no periodic timer).
+  The first build (cold cache) is the slow one (logged with a count); the module answers semantic queries with
+  whatever is cached and is empty (keyword-only) until that first index completes.
+- **Reuses existing loaders (no new format):** the archival corpus is read with the existing **`load_memories`**
+  (`.hades/memory.jsonl` → `MemoryRecord`); the session corpus is read with the existing **`read_session_jsonl`**
+  (the GET /history reader) → the raw message array, transformed into per-turn pairs. The embedder consumes
+  exactly what `save_memory` and session-resume already persist.
 - **Corpus:**
-  - archival `memory.jsonl` → 1 record per line = 1 vector.
+  - archival `memory.jsonl` → 1 `MemoryRecord` per line, embed `record.text` = 1 vector.
   - past `sessions_dir/*.jsonl` (when `index_sessions=true`) → **per turn**: each `{role:user}` paired with the
     following `{role:assistant, content:string}` (intervening tool turns folded into that pair's text as
     `"U: <user>\nA: <assistant>"`); 1 vector per turn. **The live/current session file is excluded** (it is
     mid-write and already in the Arbiter's working context); identified by the active session path passed in.
-- **Periodic reindex:** `reindex_interval_s` (default `0` = launch-only). When >0, an Executor timer re-runs the
-  incremental index every interval (e.g. `86400` = daily) to pick up newly-completed sessions, embedding only
-  new `id`s. (Reuses the warm provider; no respawn.)
 - A standalone re-index entry point is **deferred** (lazy covers the need); noted for v2 if a manual `--reindex`
   is wanted.
 
 ### 4. `EmbeddingMemoryModule` (`type()=="embedding_memory"`) — the query path
 - `on_start`: parse the `Embedding` block (provider kind + provider config; `cache_dir`, `memory_store`,
-  `sessions_dir`, `index_sessions`, `top_n` default 5, `min_similarity` default 0.25, `reindex_interval_s`,
-  `batch_size` default 32, `timeout_s` default 120). Bad/garbage values → defaults (never 0/empty silently).
+  `sessions_dir`, `index_sessions`, `top_n` default 5, `min_similarity` default 0.25, `reindex_interval_s`
+  **default 86400** (daily; `0` = launch-only), `batch_size` default 32, `timeout_s` default 120). Bad/garbage
+  values → defaults (never 0/empty silently).
 - `on_attach`: construct the provider; kick off the background index (3); subscribe `USER_MESSAGE`.
 - On `USER_MESSAGE`: embed **only the query** (1 provider call, fail-soft on error/timeout → empty), L2-normalize,
   cosine vs the in-memory cache, drop matches below `min_similarity` (the weak-match floor — cosine always
@@ -142,7 +147,7 @@ Embedding {
   index_sessions     = true
   top_n              = 5
   min_similarity     = 0.25
-  reindex_interval_s = 0
+  reindex_interval_s = 86400   # daily (default); 0 = launch-only
   batch_size         = 32
   timeout_s          = 120
 }
