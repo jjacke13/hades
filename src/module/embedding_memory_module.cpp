@@ -127,7 +127,11 @@ void EmbeddingMemoryModule::on_attach(Blackboard& bb) {
         if (reindex_cv_.wait_for(lk, std::chrono::duration<double>(reindex_interval_s_),
                                  [this] { return stop_reindex_.load(); })) break;  // stopped during wait
         lk.unlock();
-        run_index_();                          // incremental: embeds only NEW records
+        // Guard the bare std::thread entry: an uncaught throw out of run_index_ would std::terminate
+        // the whole process (unlike the Executor, which catches; and the query handler, which catches).
+        // Unreachable today (both corpora are parse-validated UTF-8), but defense-in-depth matches the
+        // feature's never-crash discipline.
+        try { run_index_(); } catch (...) { /* skip this tick; the cache is unchanged or append-only */ }
         lk.lock();
       }
     });

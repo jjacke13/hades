@@ -45,7 +45,9 @@ void VectorCache::put(const CachedVec& rec) {
   std::ofstream f(path_, std::ios::app);
   if (!f) return;                                // disk hiccup: in-memory still has it
   nlohmann::json j{{"id", rec.id}, {"src", rec.src}, {"model", model_}, {"dim", dim_}, {"text", rec.text}, {"vec", v}};
-  f << j.dump() << "\n";
+  // UTF-8-replace dump: rec.text is corpus text; a plain dump() throws on invalid UTF-8, which on the
+  // index thread would escape run_index_. Replace instead (matches the subprocess-request dump).
+  f << j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 }
 
 std::vector<ScoredMemory> VectorCache::query(std::vector<float> q, std::size_t top_n, float min_similarity) const {
