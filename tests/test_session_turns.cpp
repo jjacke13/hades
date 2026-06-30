@@ -41,3 +41,26 @@ TEST(SessionTurns, TrailingUserWithoutAssistantIsDropped) {
   auto turns = extract_session_turns(p);
   ASSERT_EQ(turns.size(), 1u);                  // dangling user (no answer yet) dropped
 }
+TEST(SessionTurns, UnansweredUserDoesNotAdvanceTurnIndex) {
+  // An interleaved unanswered user (no following assistant before the next user) is dropped WITHOUT
+  // advancing the index -> the next completed pair is still #0 (ids stay dense). Locks the exact id.
+  std::string p = write_sess("st4.jsonl",
+    "{\"role\":\"user\",\"content\":\"unanswered\"}\n"
+    "{\"role\":\"user\",\"content\":\"q1\"}\n"
+    "{\"role\":\"assistant\",\"content\":\"a1\"}\n");
+  auto turns = extract_session_turns(p);
+  ASSERT_EQ(turns.size(), 1u);
+  EXPECT_EQ(turns[0].id, "session:st4.jsonl#0");   // dense: the dropped user did not bump the index
+  EXPECT_EQ(turns[0].text, "U: q1\nA: a1");
+}
+TEST(SessionTurns, NonStringRoleDoesNotThrow) {
+  // A corrupt/external line with a non-string "role" must be skipped, not throw type_error.
+  std::string p = write_sess("st5.jsonl",
+    "{\"role\":42,\"content\":\"junk\"}\n"
+    "{\"role\":\"user\",\"content\":\"q1\"}\n"
+    "{\"role\":\"assistant\",\"content\":\"a1\"}\n");
+  std::vector<SessionTurn> turns;
+  ASSERT_NO_THROW({ turns = extract_session_turns(p); });
+  ASSERT_EQ(turns.size(), 1u);
+  EXPECT_EQ(turns[0].text, "U: q1\nA: a1");
+}
