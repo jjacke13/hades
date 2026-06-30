@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `1237ee5`, **175/175 tests** (ASan+UBSan + **TSan** clean; suite ~2.3s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `e80be5d`, **197/197 tests** (ASan+UBSan + **TSan** clean; suite ~2.5s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -93,6 +93,28 @@ set to `idle + 60` so a long turn's connection isn't dropped. Bad/garbage value 
 ships 600/900. Pieces: `include/hades/timeouts.h`, `src/module/llm_module.cpp` (cpr), `app/agent_wiring.cpp`
 (read+validate+set), `src/module/{chat,http_server}_module.cpp` (`effective_*_timeout`), `docs/superpowers/*2026-06-30-configurable-timeouts*`.
 
+#### Session resume (shipped 2026-06-30, `e80be5d`) — restart keeps the conversation
+The Arbiter persists the turn-by-turn conversation (`history_`) per session to **`.hades/sessions/<id>.jsonl`**
+(`id` = launch timestamp), **append-per-message** (`append_history` replaces the 4 raw `history_.push_back`
+sites; UTF-8-replace dump → never throws; IO best-effort). `load_history` reloads it tolerantly (skips
+corrupt/blank lines; **sanitizes BOTH a leading orphan `{role:tool}` and a trailing orphan
+`assistant(tool_calls)`** from a mid-pair crash — else the resumed request is provider-invalid). **CLI:**
+`hades <manifest> [--resume [id]]` — no flag → new session; `--resume` → newest `*.jsonl`; `--resume <id>`
+→ specific (`MalConfig` if missing). Session paths are **collision-safe** (`unique_fresh_path` → `-N` suffix;
+used by both the initial path and `/new`). **Overflow guard:** `start_turn()` sends only the most-recent
+suffix of `history_` within `history_budget_chars` (Session block, default **120000** ≈ ~30k tokens),
+**tool-pairing-safe** (never begins on an orphan tool; keeps the `assistant(tool_calls)+tool` pair even if
+it alone exceeds budget). Full history stays in memory + on disk; only the request is bounded — this also
+fixed a pre-existing unbounded-`history_` latent bug. **`/new`** REPL command → `NEW_SESSION` bus msg →
+Arbiter clears history + `clear_pending()` + rotates to a fresh file + `++turn_epoch_` (drops a stale
+old-session response); intercepted in both REPL loops (not a USER_MESSAGE). **Web UI:** silent context on
+`--serve --resume` (agent regains history; browser blank — `GET /history` re-render deferred). Config:
+`Session { sessions_dir = .hades/sessions, history_budget_chars = 120000 }`. Pieces:
+`src/arbiter/arbiter.cpp` (append/load/window/NEW_SESSION), `include/hades/{session_id.h,history_budget.h}`,
+`src/core/session_id.cpp`, `app/hades_main.cpp` (`--resume`), `src/module/chat_module.cpp` (`/new`),
+`docs/superpowers/*2026-06-30-session-resume*`. **Deferred (v2):** `GET /history` web re-render · embeddings
+over the session-files corpus (the separate-files design enables it) · `/sessions` list+switch · retention/pruning.
+
 ### Web UI (shipped 2026-06-29) — `--serve` browser front-end
 `hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
 `/`) + the JSON API (`POST /chat`, `POST /confirm`, `GET /health`). Page (`web/{index.html,style.css,app.js}`,
@@ -126,7 +148,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (175/175, ~2.3s)
+nix develop --command ctest --test-dir build                 # test (197/197, ~2.5s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -167,7 +189,7 @@ race-free budget, idle timeout) + **turn-abandonment hardening** (`TURN_ABANDONE
 dispatch-ordering hole independent of timing — see the Worker-offload section). **NEXT options:**
 SSE/tool-offload (when tool-offload lands, extend the epoch+abandonment pattern to `TOOL_RESULT`) ·
 capability-model v2 (positive net allowlist, realpath/symlink path resolution, DNS-rebind/connect-time
-enforcement) · settings UI · embeddings · session resume · Bridge (parked).
+enforcement) · settings UI · embeddings (over the session-files corpus too) · `GET /history` web re-render · Bridge (parked).
 
 ## Tool-capability model (shipped 2026-06-30, `main` @ `1e5f4b6`) — `CapabilityPolicy` objective
 Replaces "blocklist-only" tool safety. A built-in **`capability_of(tool)` table** (the AUTHORITY — a tool
@@ -192,8 +214,9 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `tests/test_capability_{policy,wiring}.cpp`.
 
 ## Other open work
-session resume (history is in-memory only) · MCP tool discovery (MCP servers can be called but aren't
-announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · agent↔agent Bridge (parked).
+MCP tool discovery (MCP servers can be called but aren't announced to the LLM) · persona switch · prompt
+caching · SSE streaming · settings UI · `GET /history` web re-render · embeddings (archival + session corpus)
+· agent↔agent Bridge (parked).
 
 ## Gotchas
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
