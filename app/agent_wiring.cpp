@@ -12,16 +12,29 @@
 
 #include "app/agent_wiring.h"
 #include <cstdlib>
+#include <sstream>
 #include "hades/blackboard.h"
 #include "hades/launcher.h"  // Launcher + MalConfig
 #include "hades/llm/http.h"
 #include "hades/llm/openai_compat_provider.h"
 #include "hades/objective/avoid_destructive.h"
+#include "hades/objective/capability_policy.h"
 #include "hades/objective/stay_on_budget.h"
 #include "hades/prompt.h"  // assemble_system_prompt
 #include "hades/module/memory_module.h"
 namespace hades {
 namespace {
+
+// Split a manifest value into a whitespace-separated list. This is the one place where
+// whitespace is an INTENDED list separator (CapabilityPolicy path/host scopes carry several
+// entries per key); tool store paths deliberately forbid whitespace (see wire_agent).
+std::vector<std::string> split_ws_list(const std::string& v) {
+  std::vector<std::string> out;
+  std::istringstream is(v);
+  std::string w;
+  while (is >> w) out.push_back(w);
+  return out;
+}
 
 // Map one Objective block onto a concrete Objective. Unknown types are skipped
 // (the manifest parser already collected a warning); we never throw here so a
@@ -33,6 +46,19 @@ std::unique_ptr<Objective> make_objective(const Block& b) {
     return std::make_unique<StayOnBudget>(cap);
   }
   if (b.name == "avoid_destructive") return std::make_unique<AvoidDestructive>();
+  if (b.name == "capability_policy") {
+    // Path/host scopes are whitespace-separated lists; the two bools are set-on-string
+    // (default true in CapabilityScope, so an omitted key keeps the safe default).
+    CapabilityScope sc;
+    if (b.kv.count("fs_read_allow"))  sc.fs_read_allow  = split_ws_list(b.kv.at("fs_read_allow"));
+    if (b.kv.count("fs_deny"))        sc.fs_deny        = split_ws_list(b.kv.at("fs_deny"));
+    if (b.kv.count("net_deny_hosts")) sc.net_deny_hosts = split_ws_list(b.kv.at("net_deny_hosts"));
+    if (b.kv.count("block_private_net"))
+      set_bool_on_string(b.kv.at("block_private_net"), sc.block_private_net);
+    if (b.kv.count("confirm_unscoped"))
+      set_bool_on_string(b.kv.at("confirm_unscoped"), sc.confirm_unscoped);
+    return std::make_unique<CapabilityPolicy>(std::move(sc));
+  }
   return nullptr;
 }
 
