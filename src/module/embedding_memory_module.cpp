@@ -60,19 +60,30 @@ void EmbeddingMemoryModule::run_index_() {
 
 void EmbeddingMemoryModule::on_attach(Blackboard& bb) {
   bb_ = &bb;
+  // Subscribe BEFORE submitting the index worker — the Blackboard's subs list is not thread-safe
+  // (see blackboard.h); the worker only post()s (thread-safe), but subscribing first keeps the
+  // documented "all subscribe()s before any worker starts" convention with no reasoning needed.
+  bb.subscribe("USER_MESSAGE", [this](const Entry& e) {
+    // Whole handler in try/catch: this runs on the pump thread, so a throw here would unwind pump()
+    // and kill the bus. The EmbeddingProvider contract is no-throw, but a misbehaving provider or
+    // bad_alloc must still degrade to keyword-only (post "") — same fail-closed discipline as the
+    // Arbiter's objective veto() guard. The key is posted on EVERY path so it is never left stale.
+    try {
+      if (!e.value.is_string() || !provider_) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }
+      EmbedResult q = provider_->embed({e.value.get<std::string>()});
+      if (!q.error.empty() || q.vectors.size() != 1) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }
+      VectorCache vc(cache_path(cache_dir_), q.model, q.dim);
+      if (!vc.load()) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }  // mismatch -> keyword only
+      auto top = vc.query(q.vectors[0], top_n_, min_similarity_);
+      std::string rendered;
+      for (const auto& r : top) rendered += "- " + r.text + "\n";
+      if (!rendered.empty() && rendered.back() == '\n') rendered.pop_back();
+      bb_->post("RETRIEVED_MEMORY_SEMANTIC", rendered, "embedding_memory");
+    } catch (...) {
+      bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory");  // fail-soft: never crash a turn
+    }
+  });
   if (executor_) executor_->submit([this] { run_index_(); });  // live: off the bus
   else run_index_();                                           // tests: inline + deterministic
-  bb.subscribe("USER_MESSAGE", [this](const Entry& e) {
-    if (!e.value.is_string() || !provider_) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }
-    EmbedResult q = provider_->embed({e.value.get<std::string>()});
-    if (!q.error.empty() || q.vectors.size() != 1) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }
-    VectorCache vc(cache_path(cache_dir_), q.model, q.dim);
-    if (!vc.load()) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }  // mismatch -> keyword only
-    auto top = vc.query(q.vectors[0], top_n_, min_similarity_);
-    std::string rendered;
-    for (const auto& r : top) rendered += "- " + r.text + "\n";
-    if (!rendered.empty() && rendered.back() == '\n') rendered.pop_back();
-    bb_->post("RETRIEVED_MEMORY_SEMANTIC", rendered, "embedding_memory");
-  });
 }
 }  // namespace hades
