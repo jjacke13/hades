@@ -389,6 +389,105 @@ TEST(Arbiter, AppendHistoryPushOnlyWhenNoPath) {
   EXPECT_FALSE(std::filesystem::exists(path));     // but nothing persisted to disk
 }
 
+// --- Session resume (Task 2): per-turn overflow window in start_turn() ---
+
+// With a tiny budget, the LLM request carries only the most-recent SUFFIX of history_ whose
+// cumulative serialized size fits the budget (the full history stays in memory/on disk; only the
+// REQUEST is bounded). The window must be a recent suffix (oldest turns trimmed), within ~budget
+// (over by at most the single always-included first message), and must NOT begin on a {role:tool}.
+TEST(Arbiter, HistoryWindowSendsRecentSuffixWithinBudget) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_history_budget_chars(200);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  // Drive several plain user/assistant round trips so history_ grows well past 200 chars.
+  // Distinctive, similarly-sized contents so we can tell the recent suffix from the old head.
+  const int turns = 6;
+  for (int t = 1; t <= turns; ++t) {
+    bb.post("USER_MESSAGE", "user turn number " + std::to_string(t) + " padding xxxxx", "chat");
+    bb.pump();
+    bb.post("LLM_RESPONSE", {{"text","assistant reply number " + std::to_string(t) + " yyyyy"},
+                            {"epoch", t}}, "llm");
+    bb.pump();
+  }
+  // One more user turn; its start_turn LLM_REQUEST carries the largest history (all prior pairs +
+  // this user msg). Capture it as the window under test (no response needed for this turn).
+  bb.post("USER_MESSAGE", "user turn number 7 padding xxxxx", "chat"); bb.pump();
+  ASSERT_FALSE(reqs.empty());
+  const auto& msgs = reqs.back()["messages"];
+  // No system prompt / no memory set -> messages ARE the windowed history (no leading block).
+  ASSERT_FALSE(msgs.empty());
+  // (a) recent suffix: the newest user msg is present; the earliest turn-1 messages are trimmed.
+  const std::string dump = msgs.dump();
+  EXPECT_NE(dump.find("number 7"), std::string::npos);   // most-recent present
+  EXPECT_EQ(dump.find("number 1"), std::string::npos);   // earliest trimmed (suffix, not whole)
+  // (b) cumulative size within budget, over by at most the first (always-included) message.
+  double total = 0.0, first = 0.0;
+  for (std::size_t i = 0; i < msgs.size(); ++i) {
+    const double sz = static_cast<double>(msgs[i].dump().size());
+    if (i == 0) first = sz;
+    total += sz;
+  }
+  EXPECT_LE(total - first, 200.0);
+  // (c) the window NEVER begins on an orphan {role:tool} message.
+  const std::string r0 = msgs[0].value("role","");
+  EXPECT_NE(r0, "tool");
+  EXPECT_TRUE(r0 == "user" || r0 == "assistant");
+}
+
+// Tool-pairing invariant: when the budget cut would land such that a {role:tool} result becomes
+// the window's first message (its assistant tool_calls trimmed out), the advance must drop the
+// orphaned tool too, so the window opens on a user or a complete assistant turn. The oldest turn
+// here is a tool round-trip whose assistant(tool_calls) carries a LARGE argument; a small budget
+// excludes that big assistant message while the following small tool result would otherwise lead.
+TEST(Arbiter, HistoryWindowNeverStartsOnOrphanToolMessage) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ ToolSpec{"fs_read","",{}} });
+  a.set_history_budget_chars(300);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  const std::string big(600, 'Z');   // large tool argument -> large assistant(tool_calls) dump
+  bb.post("USER_MESSAGE","u1","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","fs_read"},
+          {"arguments",{{"path",big}}}}}}, "llm"); bb.pump();
+  bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"content","R"}}}}, "tool_runner"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","answer after tool"},{"epoch",1}}, "llm"); bb.pump();  // turn 1 ends
+  // A small second turn; capture its request: history = u1, asst(LARGE tool_calls), tool, answer, u2.
+  bb.post("USER_MESSAGE","u2 small","chat"); bb.pump();
+  ASSERT_FALSE(reqs.empty());
+  const auto& msgs = reqs.back()["messages"];
+  ASSERT_FALSE(msgs.empty());
+  // The window must NOT begin on the orphaned tool result.
+  const std::string r0 = msgs[0].value("role","");
+  EXPECT_NE(r0, "tool");
+  EXPECT_TRUE(r0 == "user" || r0 == "assistant");
+  // The big assistant(tool_calls) message was trimmed (budget excluded it).
+  EXPECT_EQ(msgs.dump().find(big), std::string::npos);
+  // Any tool message remaining must still be preceded by its assistant tool_calls (no orphan).
+  for (std::size_t i = 0; i < msgs.size(); ++i)
+    if (msgs[i].value("role","") == "tool") {
+      ASSERT_GT(i, 0u);
+      EXPECT_TRUE(msgs[i-1].value("role","") == "assistant" && msgs[i-1].contains("tool_calls"));
+    }
+}
+
+// Backward-compat: under the default budget (120000) a small history is sent WHOLE — no trimming.
+// Locks the no-op-below-budget guarantee that keeps the existing arbiter tests unchanged.
+TEST(Arbiter, SmallHistorySentWholeUnderDefaultBudget) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);   // default budget kDefaultHistoryBudgetChars
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  bb.post("USER_MESSAGE","alpha one","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","beta two"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("USER_MESSAGE","gamma three","chat"); bb.pump();   // last request: full history
+  ASSERT_FALSE(reqs.empty());
+  const auto& msgs = reqs.back()["messages"];
+  ASSERT_EQ(msgs.size(), 3u);                   // user(alpha) + assistant(beta) + user(gamma), no trim
+  EXPECT_EQ(msgs[0].value("content",""), "alpha one");
+  EXPECT_EQ(msgs[1].value("content",""), "beta two");
+  EXPECT_EQ(msgs[2].value("content",""), "gamma three");
+}
+
 // load_history round-trips a written jsonl into history_ and tolerates a corrupt/truncated
 // trailing line (a crash mid-append) — the 3 valid lines load, the garbage tail is skipped.
 TEST(Arbiter, LoadHistoryRoundTripsAndToleratesCorruptTail) {

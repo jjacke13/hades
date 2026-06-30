@@ -81,6 +81,39 @@ void Arbiter::clear_pending() {
   pending_msg_ = nullptr;
 }
 
+// Bound the per-turn LLM request to history_budget_chars_: return the most-recent suffix of
+// history_ whose cumulative serialized size fits the budget. The FULL history stays in memory and
+// on disk — only the request is trimmed (this also caps an otherwise-unbounded history_ in a long
+// live session). Two invariants: (1) never send ZERO history when history exists — the single
+// most-recent message is always included even if it alone exceeds the budget; (2) never begin the
+// window on an orphaned {role:tool} message (a tool result with no preceding assistant tool_calls
+// is invalid to most providers) — advance past any leading tool message(s) onto a user/assistant
+// boundary. Sizing uses the same fail-soft dump as append_history so a bad-UTF-8 message can't
+// throw here.
+std::vector<nlohmann::json> Arbiter::windowed_history_() const {
+  const std::size_t n = history_.size();
+  if (n == 0) return {};
+  // Walk newest -> oldest, accumulating dump sizes; include while within budget. s is the window
+  // start; it stays at n (the sentinel) until the first message is included, which guarantees the
+  // most-recent message is always kept even if it alone exceeds the budget.
+  std::size_t s = n;
+  double total = 0.0;
+  for (std::size_t i = n; i-- > 0;) {
+    const double sz = static_cast<double>(
+        history_[i].dump(-1, ' ', false, nlohmann::json::error_handler_t::replace).size());
+    if (s != n && total + sz > history_budget_chars_) break;  // adding this would overflow; stop
+    total += sz;
+    s = i;
+  }
+  // Tool-pairing invariant: drop any leading orphan {role:tool} message(s) so the window opens on
+  // a user or a complete assistant turn (a tool is always preceded by its assistant tool_calls, so
+  // advancing lands on a valid boundary). If advancing consumed everything, fall back to the last.
+  while (s < n && history_[s].value("role", "") == "tool") ++s;
+  if (s >= n) s = n - 1;
+  return std::vector<nlohmann::json>(history_.begin() + static_cast<std::ptrdiff_t>(s),
+                                     history_.end());
+}
+
 void Arbiter::start_turn() {
   nlohmann::json tools = nlohmann::json::array();
   for (auto& t : tools_)
@@ -99,7 +132,7 @@ void Arbiter::start_turn() {
   }
   if (!sys.empty())
     messages.push_back({{"role", "system"}, {"content", sys}});
-  for (const auto& m : history_) messages.push_back(m);
+  for (const auto& m : windowed_history_()) messages.push_back(m);
 
   // Inject dynamically retrieved memory as an ephemeral {role:system} block immediately
   // before the last user message. Recomputed from the Blackboard each turn and never

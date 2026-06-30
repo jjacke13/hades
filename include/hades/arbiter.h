@@ -14,6 +14,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "hades/entry.h"
+#include "hades/history_budget.h"   // kDefaultHistoryBudgetChars
 #include "hades/module.h"
 #include "hades/objective.h"
 #include "hades/llm/provider.h"   // ToolSpec
@@ -35,6 +36,10 @@ public:
   void set_session_path(std::string p) { session_path_ = std::move(p); }
   // Reload a session jsonl into history_ (tolerant: skip blank/corrupt lines). No-op if unset.
   void load_history();
+  // Cap (chars) on the cumulative serialized size of history_ sent in ONE LLM request. The full
+  // history stays in memory + on disk; only the per-turn request is bounded (default 120000).
+  // Ignores non-positive values so a misparsed/absent config can't disable the window.
+  void set_history_budget_chars(double c) { if (c > 0) history_budget_chars_ = c; }
   // Push a message onto history_ and, if a session path is set, durably append it to disk.
   void append_history(const nlohmann::json& msg);
   // Test observability: number of messages currently held in history_.
@@ -42,6 +47,10 @@ public:
 
 private:
   void start_turn();
+  // Most-recent suffix of history_ within history_budget_chars_, beginning on a valid (non-orphan
+  // {role:tool}) boundary. Built fresh each turn; the leading system/memory messages are added by
+  // start_turn() OUTSIDE this budget (they are not part of history_).
+  std::vector<nlohmann::json> windowed_history_() const;
   void on_llm_response(const Entry&);
   void on_tool_result(const Entry&);
   void on_confirm(const Entry&);
@@ -58,6 +67,7 @@ private:
   std::string system_prompt_;   // prepended as a {role:system} message each turn (may be empty)
   std::string memory_path_;     // live core-memory file; re-read each turn into the system message
   std::string session_path_;    // per-session conversation jsonl; append-per-message when set
+  double history_budget_chars_ = kDefaultHistoryBudgetChars;  // per-turn LLM-request size cap
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm
