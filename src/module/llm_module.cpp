@@ -23,13 +23,19 @@ void LLMModule::on_start(const Block& cfg, Blackboard&) {
   set_pos_double_on_string(
       cfg.kv.count("price_per_mtok") ? cfg.kv.at("price_per_mtok") : "0",
       price_per_mtok_);
+  // Resolve the per-call cpr timeout BEFORE the provider build / api-key check, so an
+  // injected-provider test can construct + on_start and assert resolved_llm_timeout_s()
+  // without a real endpoint or env var. Default kDefaultLlmTimeoutS; a bad/zero value is
+  // ignored by set_pos_double_on_string (keeps the default — same style as price_per_mtok).
+  if (cfg.kv.count("llm_timeout_s"))
+    set_pos_double_on_string(cfg.kv.at("llm_timeout_s"), llm_timeout_s_);
   if (provider_) return;  // injected (tests)
   std::string ep    = cfg.kv.count("endpoint")    ? cfg.kv.at("endpoint")    : "";
   std::string model = cfg.kv.count("model")       ? cfg.kv.at("model")       : "";
   std::string env   = cfg.kv.count("api_key_env") ? cfg.kv.at("api_key_env") : "HADES_API_KEY";
   const char* key   = std::getenv(env.c_str());
   if (!key) throw MalConfig("LLM api key env var not set: " + env);
-  provider_ = std::make_unique<OpenAICompatProvider>(ep, key, model, cpr_http());
+  provider_ = std::make_unique<OpenAICompatProvider>(ep, key, model, cpr_http(llm_timeout_s_));
 }
 
 void LLMModule::on_attach(Blackboard& bb) {

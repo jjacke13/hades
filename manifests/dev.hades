@@ -9,6 +9,8 @@ Session
   system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
   # user_file        = prompts/user.md   # USER — your profile (optional)
   memory_file        = memory/facts.md   # MEMORY — always-on core memory (pin_fact writes it)
+  llm_timeout_s       = 600   # per-call LLM HTTP timeout (cpr). Default 600.
+  turn_idle_timeout_s = 900   # run_until idle ceiling (front-ends). Default 900. MUST be > llm_timeout_s.
 }
 Module = llm
 Module = tool_runner

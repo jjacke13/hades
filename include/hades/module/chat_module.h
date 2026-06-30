@@ -17,10 +17,13 @@ public:
   std::string type() const override { return "chat"; }
   void on_attach(Blackboard& bb) override;
   void run_repl(std::istream& in, std::ostream& out);  // blocks until EOF or /quit
-  // Test seam: override the run_until idle timeout so a unit test can force a fast turn
-  // abandonment instead of waiting out the 180s production default. Any value > 0 takes
-  // effect; production never calls this (keeps kTurnTimeoutS, see chat_module.cpp).
+  // Configured idle ceiling (0 ⇒ default kDefaultTurnIdleTimeoutS = 900s). Wiring sets
+  // the manifest's turn_idle_timeout_s through this seam; tests pass a small value to
+  // force a fast turn abandonment instead of waiting out the production default.
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
+  // The effective run_until idle ceiling (override if set, else the default). Exposed so
+  // wiring/tests can observe the configured value without driving a full turn.
+  double idle_timeout_s() const { return effective_timeout_(); }
 private:
   // Interactive REPL backed by GNU readline (line editing: arrows, history,
   // Ctrl-A/E, reverse i-search). Used only when stdin is a real TTY; otherwise

@@ -96,6 +96,21 @@ TEST(LLMModule, OffloadsToExecutorWithoutBlockingTheBus) {
   EXPECT_TRUE(ok);
   EXPECT_EQ(text, "slow ok");
 }
+TEST(LLMModule, ResolvesLlmTimeoutFromSession) {
+  // on_start resolves the per-call cpr timeout from the Session block BEFORE the
+  // provider build / api-key check, so an injected provider lets us assert the
+  // resolved value without needing a real endpoint or HADES_API_KEY.
+  Blackboard bb;
+  LLMModule m(std::make_unique<StubProvider>());   // injected -> no real provider build
+  Block cfg; cfg.kv["llm_timeout_s"] = "5";
+  m.on_start(cfg, bb);
+  EXPECT_DOUBLE_EQ(m.resolved_llm_timeout_s(), 5.0);
+
+  LLMModule m2(std::make_unique<StubProvider>());
+  Block cfg2;   // no llm_timeout_s -> default
+  m2.on_start(cfg2, bb);
+  EXPECT_DOUBLE_EQ(m2.resolved_llm_timeout_s(), 600.0);
+}
 TEST(LLMModule, BudgetAccruesOnPumpThreadUnderOffload) {
   // Race-free budget: under an Executor the worker posts ONLY LLM_RESPONSE; the
   // LLMModule accrues spent_ and posts BUDGET_SPENT_USD from a pump-thread

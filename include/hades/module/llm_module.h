@@ -8,6 +8,7 @@
 #include <memory>
 #include "hades/module.h"
 #include "hades/llm/provider.h"
+#include "hades/timeouts.h"   // kDefaultLlmTimeoutS
 namespace hades {
 class Blackboard;
 class Executor;
@@ -30,8 +31,15 @@ public:
   // order is load-bearing. (The worker no longer mutates spent_ — budget is
   // accrued on the pump thread by the LLM_RESPONSE handler.)
   void set_executor(Executor* e) { executor_ = e; }
+  // The per-call cpr HTTP timeout (seconds) resolved from the Session block in
+  // on_start (`llm_timeout_s`, default kDefaultLlmTimeoutS). Exposed so wiring can
+  // enforce the idle>llm invariant and tests can assert the resolution.
+  double resolved_llm_timeout_s() const { return llm_timeout_s_; }
 private:
   std::unique_ptr<Provider> provider_;
+  // Resolved in on_start BEFORE the provider build / api-key check, then passed to
+  // cpr_http(); defaults to kDefaultLlmTimeoutS when `llm_timeout_s` is absent.
+  double llm_timeout_s_ = kDefaultLlmTimeoutS;
   // spent_ is written ONLY on the pump thread (the LLM_RESPONSE handler accrues
   // it post-a-delta) → race-free regardless of overlapping offloaded LLM calls;
   // the worker mutates no module state.

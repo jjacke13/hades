@@ -92,6 +92,62 @@ Memory
   EXPECT_NE(a.arbiter, nullptr);
   EXPECT_NE(a.memory, nullptr);   // built regardless of roster order; wire_agent enforces attach order
 }
+// A full roster whose Session block carries explicit timeout keys. The {IDLE}/{LLM}
+// placeholders are substituted per-test so each builds its own valid (or invalid) pair.
+const char* kTimeoutRoster = R"(
+Session
+{
+  provider       = openai_compat
+  endpoint       = https://example.invalid/v1
+  model          = test-model
+  api_key_env    = HADES_TEST_KEY
+  price_per_mtok = 1.0
+  llm_timeout_s       = {LLM}
+  turn_idle_timeout_s = {IDLE}
+}
+Module = llm
+Module = tool_runner
+Module = memory
+Module = chat
+Module = arbiter
+Module = serve
+Memory
+{
+  store = .hades/test_mem.jsonl
+  top_n = 5
+}
+Arbiter { policy = v1 }
+)";
+std::string with_timeouts(const std::string& llm, const std::string& idle) {
+  std::string m = kTimeoutRoster;
+  m.replace(m.find("{LLM}"), 5, llm);
+  m.replace(m.find("{IDLE}"), 6, idle);
+  return m;
+}
+
+TEST(PantlerWiring, IdleTimeoutFromManifest) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  Blackboard bb;
+  Agent a = build_agent(bb, parse_manifest(with_timeouts("10", "30")));
+  ASSERT_NE(a.chat, nullptr);
+  EXPECT_DOUBLE_EQ(a.chat->idle_timeout_s(), 30.0);   // manifest value flows to the front-end
+}
+TEST(PantlerWiring, InvalidTimeoutInvariant) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  Blackboard bb;
+  // turn_idle_timeout_s (60) <= llm_timeout_s (120): a slow LLM call would be abandoned
+  // mid-flight, so the build must fail loud.
+  EXPECT_THROW(build_agent(bb, parse_manifest(with_timeouts("120", "60"))), MalConfig);
+}
+TEST(PantlerWiring, DefaultsWhenAbsent) {
+  setenv("HADES_TEST_KEY", "x", 1);
+  Blackboard bb;
+  Agent a = build_agent(bb, parse_manifest(kFullRoster));   // no timeout keys
+  ASSERT_NE(a.chat, nullptr);
+  ASSERT_NE(a.llm, nullptr);
+  EXPECT_DOUBLE_EQ(a.chat->idle_timeout_s(), 900.0);        // default idle ceiling
+  EXPECT_DOUBLE_EQ(a.llm->resolved_llm_timeout_s(), 600.0); // default per-call cpr timeout
+}
 TEST(PantlerWiring, CorruptInlineMultiKvManifestThrowsMalConfig) {
   setenv("HADES_TEST_KEY", "x", 1);
   // A full roster, but the Memory block packs two kv pairs on ONE line (the silent-corruption

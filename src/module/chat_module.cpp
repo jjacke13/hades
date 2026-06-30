@@ -7,6 +7,7 @@
 
 #include "hades/module/chat_module.h"
 #include "hades/blackboard.h"
+#include "hades/timeouts.h"   // kDefaultTurnIdleTimeoutS
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -36,15 +37,17 @@ constexpr const char* kReset      = "\033[0m";
 // pump -> returns immediately.
 //
 // LOAD-BEARING INVARIANT: this idle timeout MUST stay greater than the maximum single
-// in-flight poster duration (cpr LLM cap ~120s in include/hades/llm/http.h + tool cap
-// ~30s in include/hades/module/tool_runner.h). That guarantee is what ensures no worker
-// is still running when run_until abandons a turn, so no stale LLM_RESPONSE is produced
-// after abandonment — the turn-epoch (Arbiter::on_llm_response freshness gate) is only
-// defense-in-depth. If you add tool-offload / SSE / configurable timeouts that can keep a
-// worker alive past this idle window, you MUST harden the epoch (bump it on turn
-// abandonment / drop responses for abandoned turns) — see the run_until follow-up spec
-// and the DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted regression test.
-constexpr double kTurnTimeoutS = 180.0;
+// in-flight poster duration (cpr LLM cap = llm_timeout_s, default kDefaultLlmTimeoutS=600s
+// in include/hades/timeouts.h + tool cap ~30s in include/hades/module/tool_runner.h). That
+// guarantee is what ensures no worker is still running when run_until abandons a turn, so no
+// stale LLM_RESPONSE is produced after abandonment — the turn-epoch (Arbiter::on_llm_response
+// freshness gate) is only defense-in-depth. The invariant is now enforced at the build
+// boundary: app/agent_wiring.cpp throws MalConfig if turn_idle_timeout_s <= llm_timeout_s.
+// If you add tool-offload / SSE that can keep a worker alive past this idle window, you MUST
+// harden the epoch (bump it on turn abandonment / drop responses for abandoned turns) — see
+// the run_until follow-up spec and the
+// DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted regression test.
+constexpr double kTurnTimeoutS = kDefaultTurnIdleTimeoutS;
 }  // namespace
 
 double ChatModule::effective_timeout_() const {

@@ -31,9 +31,9 @@ public:
   // to loopback at the call site so the agent is not network-exposed by default.
   void listen(const std::string& host, int port, const std::string& webroot);
 
-  // Test seam: override the collect_ idle timeout so a unit test can force a fast turn
-  // abandonment instead of waiting out the 180s production default. Any value > 0 takes
-  // effect; production never calls this (keeps kCollectTimeoutS, see http_server_module.cpp).
+  // Configured idle ceiling (0 ⇒ default kDefaultTurnIdleTimeoutS = 900s). Wiring sets
+  // the manifest's turn_idle_timeout_s through this seam; tests pass a small value to
+  // force a fast turn abandonment instead of waiting out the production default.
   void set_collect_timeout_s(double s) { collect_timeout_override_s_ = s; }
 
 private:

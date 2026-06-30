@@ -22,6 +22,7 @@
 #include "hades/objective/stay_on_budget.h"
 #include "hades/prompt.h"  // assemble_system_prompt
 #include "hades/module/memory_module.h"
+#include "hades/timeouts.h"  // kDefaultLlmTimeoutS / kDefaultTurnIdleTimeoutS
 namespace hades {
 namespace {
 
@@ -205,6 +206,22 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   const Block& s = *session;
   const std::string model = s.kv.count("model") ? s.kv.at("model") : "";
 
+  // Manifest-configurable think-time limits (Session block; defaults from timeouts.h).
+  // Fail loud BEFORE building anything heavy if the load-bearing invariant is violated:
+  // turn_idle_timeout_s MUST stay > llm_timeout_s so a slow-but-alive LLM call posts back
+  // (resetting the idle deadline) before run_until abandons the turn. (Live path only —
+  // the test build_agent overload never runs this, so existing inline tests are unchanged.)
+  double llm_timeout_s = kDefaultLlmTimeoutS;
+  if (s.kv.count("llm_timeout_s"))
+    set_pos_double_on_string(s.kv.at("llm_timeout_s"), llm_timeout_s);
+  double turn_idle_timeout_s = kDefaultTurnIdleTimeoutS;
+  if (s.kv.count("turn_idle_timeout_s"))
+    set_pos_double_on_string(s.kv.at("turn_idle_timeout_s"), turn_idle_timeout_s);
+  if (turn_idle_timeout_s <= llm_timeout_s)
+    throw MalConfig("turn_idle_timeout_s (" + std::to_string(turn_idle_timeout_s) +
+                    ") must be greater than llm_timeout_s (" + std::to_string(llm_timeout_s) +
+                    ") — a slow LLM call would be abandoned mid-flight");
+
   // pAntler: the Module= roster decides which modules exist. Factories just construct;
   // the LLM self-builds its provider from the Session block in on_start (existing path).
   Launcher launcher(bb);
@@ -227,6 +244,12 @@ Agent build_agent(Blackboard& bb, const Manifest& m) {
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model);
+
+  // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
+  // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
+  // a roster may omit chat and/or serve. Tests still set small values through the same seam.
+  if (a.chat)  a.chat->set_turn_timeout_s(turn_idle_timeout_s);
+  if (a.serve) a.serve->set_collect_timeout_s(turn_idle_timeout_s);
 
   // Live path only: own a small worker pool and offload the blocking LLM call onto
   // it so the bus stays responsive (front-ends drive turns via run_until). The TEST
