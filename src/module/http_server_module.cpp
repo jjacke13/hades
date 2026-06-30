@@ -61,12 +61,26 @@ void HttpServerModule::on_attach(Blackboard& bb) {
                [this](const Entry& e) { pending_confirm_ = e.value; });
 }
 
+double HttpServerModule::effective_collect_timeout_s() const {
+  return collect_timeout_override_s_ > 0.0 ? collect_timeout_override_s_ : kCollectTimeoutS;
+}
+
+void HttpServerModule::configure_server_(httplib::Server& srv, double idle_s) {
+  // Socket read/write timeouts bracket socket I/O, NOT handler duration — a long collect_
+  // handler (it can run up to the idle ceiling while run_until waits on the bus) is NOT
+  // killed by these. We still raise them above the idle ceiling (idle + 60s) so a slow but
+  // legitimate turn's connection is never cut off mid-flight (defensive + documents intent).
+  // Keep-alive left at the httplib default.
+  const time_t secs = static_cast<time_t>(idle_s) + 60;
+  srv.set_read_timeout(secs, 0);
+  srv.set_write_timeout(secs, 0);
+}
+
 nlohmann::json HttpServerModule::collect_() {
   // Drive the turn to a decision: either the final reply was captured or the turn is
   // gated on a confirm. run_until pumps inline first (synchronous/test path completes
   // immediately) and otherwise sleeps on the bus until a worker posts the result.
-  const double timeout_s =
-      collect_timeout_override_s_ > 0.0 ? collect_timeout_override_s_ : kCollectTimeoutS;
+  const double timeout_s = effective_collect_timeout_s();
   const bool done = bb_->run_until(
       [this] { return got_reply_ || !pending_confirm_.is_null(); }, timeout_s);
   if (!done) {
@@ -105,6 +119,10 @@ nlohmann::json HttpServerModule::handle_confirm(const std::string& id, bool appr
 
 void HttpServerModule::listen(const std::string& host, int port, const std::string& webroot) {
   httplib::Server srv;
+
+  // Raise the socket read/write timeouts above the configured idle ceiling so a long
+  // collect_ handler's connection is never dropped (see configure_server_).
+  configure_server_(srv, effective_collect_timeout_s());
 
   // Auth chokepoint: runs before routing; a future token check goes in authorize().
   srv.set_pre_routing_handler(
