@@ -5,9 +5,13 @@
 // merges it with the keyword RETRIEVED_MEMORY). Corpus is indexed incrementally: on an Executor worker
 // when set (live), else inline (tests). Every embedder failure is fail-soft (empty result, no crash).
 #pragma once
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 #include "hades/embedding/defaults.h"
 #include "hades/embedding/provider.h"
@@ -19,10 +23,14 @@ class EmbeddingMemoryModule : public Module {
 public:
   EmbeddingMemoryModule() = default;
   explicit EmbeddingMemoryModule(std::unique_ptr<EmbeddingProvider> p);  // test injection
+  // Stops + joins the periodic reindex timer BEFORE the module's other members / the Blackboard are
+  // destroyed — so no late timer tick run_index_()s (and bb_->post()s) into a dead bus. Load-bearing.
+  ~EmbeddingMemoryModule();
   std::string type() const override { return "embedding_memory"; }
   void on_start(const Block& cfg, Blackboard& bb) override;
   void on_attach(Blackboard& bb) override;
   void set_executor(Executor* ex) { executor_ = ex; }
+  double reindex_interval_s() const { return reindex_interval_s_; }  // test seam (0 = off)
   // The live (current) session file to EXCLUDE from the past-session corpus pass — it is mid-write.
   // Wired (in wire_agent) to the SAME path the Arbiter persists to, and MUST be called BEFORE
   // on_attach: on_attach is what submits the index worker (which reads live_session_path_), so the
@@ -42,7 +50,15 @@ private:
   float min_similarity_ = kDefaultMinSimilarity;
   std::size_t batch_size_ = kDefaultEmbedBatch;
   double timeout_s_ = kDefaultEmbedTimeoutS;
+  double reindex_interval_s_ = kDefaultReindexIntervalS;  // re-run run_index_ every N s; 0 = launch-only
   Blackboard* bb_ = nullptr;
   Executor* executor_ = nullptr;
+  // Periodic reindex timer (started in on_attach when reindex_interval_s_ > 0; stopped+joined in dtor).
+  // The interruptible wait_for(predicate) lets the dtor wake the wait immediately (no full-interval
+  // join stall). stop_reindex_ is set under reindex_mu_ so the predicate observes it under the same lock.
+  std::thread reindex_thread_;
+  std::atomic<bool> stop_reindex_{false};
+  std::mutex reindex_mu_;
+  std::condition_variable reindex_cv_;
 };
 }  // namespace hades

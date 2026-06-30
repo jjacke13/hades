@@ -90,6 +90,55 @@ TEST(EmbeddingMemoryModule, CacheStampMismatchAtQueryIsSoftEmpty) {
   bb.pump();
   EXPECT_EQ(got, "");                            // stamp mismatch -> fail-soft empty
 }
+TEST(EmbeddingMemoryModule, ReindexIntervalParsedAndDefaulted) {
+  // The config seam for the periodic reindex timer: absent -> daily default; "0" -> off; "5" -> 5s.
+  // (Testing the live timer FIRING is timing-dependent; covered by inspection/manual — see report.)
+  std::string store = tmp("em_ri_store.jsonl"), cache = tmp("em_ri_cache");
+  { std::ofstream f(store, std::ios::trunc); f << "{\"text\":\"alpha\",\"ts\":1}\n"; }
+  Blackboard bb;
+  {  // absent key -> default 86400
+    EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+    m.on_start(cfg(store, cache), bb);
+    EXPECT_DOUBLE_EQ(m.reindex_interval_s(), kDefaultReindexIntervalS);
+  }
+  {  // explicit "0" -> off (0 is valid here, unlike set_pos_double_on_string)
+    EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+    Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "0";
+    m.on_start(b, bb);
+    EXPECT_DOUBLE_EQ(m.reindex_interval_s(), 0.0);
+  }
+  {  // explicit "5" -> 5
+    EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+    Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "5";
+    m.on_start(b, bb);
+    EXPECT_DOUBLE_EQ(m.reindex_interval_s(), 5.0);
+  }
+  {  // garbage -> keep default
+    EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+    Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "not-a-number";
+    m.on_start(b, bb);
+    EXPECT_DOUBLE_EQ(m.reindex_interval_s(), kDefaultReindexIntervalS);
+  }
+}
+TEST(EmbeddingMemoryModule, TimerStartsAndJoinsCleanly) {
+  // A positive interval starts a background timer thread. With a long interval (3600s) it never fires
+  // during the test, but the module's destructor MUST stop+notify+join it promptly (no hang, no crash,
+  // no use-after-free against the Blackboard). This guards the teardown invariant.
+  std::string store = tmp("em_timer_store.jsonl"), cache = tmp("em_timer_cache");
+  { std::ofstream f(store, std::ios::trunc); f << "{\"text\":\"alpha\",\"ts\":1}\n"; }
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  Blackboard bb;
+  {
+    EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+    Block b = cfg(store, cache); b.kv["reindex_interval_s"] = "3600";
+    m.on_start(b, bb);
+    EXPECT_DOUBLE_EQ(m.reindex_interval_s(), 3600.0);
+    m.on_attach(bb);                               // starts the timer thread (inline, no executor)
+    bb.post("USER_MESSAGE", "tell me about alpha", "chat");
+    bb.pump();                                     // normal turn while the timer is alive
+  }  // m destructs here -> dtor stops+joins the timer; must NOT hang
+  SUCCEED();
+}
 TEST(EmbeddingMemoryModule, RetrievesPastSessionTurnWhenIndexSessionsEnabled) {
   // With index_sessions=true + a sessions dir holding ONE past session, the per-turn unit of that
   // session is embedded into the same cache and is retrievable on a matching query (no live path

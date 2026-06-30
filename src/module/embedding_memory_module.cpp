@@ -1,4 +1,5 @@
 #include "hades/module/embedding_memory_module.h"
+#include <chrono>
 #include <filesystem>
 #include <sstream>
 #include <system_error>
@@ -21,6 +22,15 @@ std::string cache_path(const std::string& dir) { return dir + "/memory.vec.jsonl
 
 EmbeddingMemoryModule::EmbeddingMemoryModule(std::unique_ptr<EmbeddingProvider> p) : provider_(std::move(p)) {}
 
+EmbeddingMemoryModule::~EmbeddingMemoryModule() {
+  // Stop + wake + join the timer FIRST (before any other member or the Blackboard is destroyed) so a
+  // late tick can never run_index_()/bb_->post() into a torn-down module or a dead bus. notify_all
+  // wakes the interruptible wait so join returns at once rather than after a full interval.
+  { std::lock_guard<std::mutex> lk(reindex_mu_); stop_reindex_ = true; }
+  reindex_cv_.notify_all();
+  if (reindex_thread_.joinable()) reindex_thread_.join();
+}
+
 void EmbeddingMemoryModule::on_start(const Block& cfg, Blackboard&) {
   if (cfg.kv.count("memory_store")) memory_store_ = cfg.kv.at("memory_store");
   if (cfg.kv.count("cache_dir")) cache_dir_ = cfg.kv.at("cache_dir");
@@ -30,6 +40,13 @@ void EmbeddingMemoryModule::on_start(const Block& cfg, Blackboard&) {
   if (cfg.kv.count("batch_size")) { try { long n = std::stol(cfg.kv.at("batch_size")); if (n > 0) batch_size_ = static_cast<std::size_t>(n); } catch (...) {} }
   if (cfg.kv.count("min_similarity")) { double d = min_similarity_; if (set_pos_double_on_string(cfg.kv.at("min_similarity"), d)) min_similarity_ = static_cast<float>(d); }
   if (cfg.kv.count("timeout_s")) { double d = timeout_s_; if (set_pos_double_on_string(cfg.kv.at("timeout_s"), d)) timeout_s_ = d; }
+  if (cfg.kv.count("reindex_interval_s")) {
+    // 0 = off (launch-only); set_pos_double_on_string rejects 0, so special-case it. Any other value
+    // must be > 0 to start a timer; garbage -> keep the daily default (never silently disable).
+    const std::string& v = cfg.kv.at("reindex_interval_s");
+    if (v == "0") reindex_interval_s_ = 0.0;
+    else { double d = reindex_interval_s_; if (set_pos_double_on_string(v, d)) reindex_interval_s_ = d; }
+  }
   if (!provider_) {                              // build from config (not the test-injected path)
     const std::string kind = cfg.kv.count("provider") ? cfg.kv.at("provider") : "subprocess";
     if (kind == "http") {
@@ -90,5 +107,23 @@ void EmbeddingMemoryModule::on_attach(Blackboard& bb) {
   });
   if (executor_) executor_->submit([this] { run_index_(); });  // live: off the bus
   else run_index_();                                           // tests: inline + deterministic
+  // Periodic reindex: re-run the (incremental) indexer every reindex_interval_s so a long-running
+  // --serve picks up sessions that completed since launch. 0 = off (launch-only). run_index_ only
+  // post()s (thread-safe) + appends the model-stamped cache file; the per-turn query re-opens the cache
+  // read-only and tolerates a half-written final line, so no extra lock is needed against the query.
+  // The subprocess provider serializes embed() with its own mutex (HTTP embed is per-call) -> the
+  // timer's embeds and the pump-thread query's embeds don't race. Dtor stops+joins this thread.
+  if (reindex_interval_s_ > 0) {
+    reindex_thread_ = std::thread([this] {
+      std::unique_lock<std::mutex> lk(reindex_mu_);
+      while (!stop_reindex_) {
+        if (reindex_cv_.wait_for(lk, std::chrono::duration<double>(reindex_interval_s_),
+                                 [this] { return stop_reindex_.load(); })) break;  // stopped during wait
+        lk.unlock();
+        run_index_();                          // incremental: embeds only NEW records
+        lk.lock();
+      }
+    });
+  }
 }
 }  // namespace hades
