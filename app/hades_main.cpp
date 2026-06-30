@@ -95,9 +95,11 @@ int main(int argc, char** argv) {
         set_pos_double_on_string(session->kv.at("history_budget_chars"), history_budget);
     }
     const std::string new_id = make_session_id();
-    const std::string session_path = resolve_session_path(sessions_dir, resume, resume_id, new_id);
-    // resolve_session_path returns the fresh new_id path when a resume found nothing to resume.
-    if (resume && session_path == sessions_dir + "/" + new_id + ".jsonl")
+    const SessionResolution sr = resolve_session_path(sessions_dir, resume, resume_id, new_id);
+    const std::string session_path = sr.path;
+    // fresh_fallback is set ONLY when a resume found nothing to resume (explicit flag, not a
+    // string compare — a new session's `-N` collision suffix no longer breaks this note).
+    if (sr.fresh_fallback)
       std::cerr << "hades: no prior session in " << sessions_dir << "; starting fresh\n";
 
     Eventlog eventlog("session.log");
