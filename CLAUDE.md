@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `e916084`, **204/204 tests** (ASan+UBSan + **TSan** clean; suite ~2.5s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `e916084` (+ `feat/memory-embeddings`), **236/236 tests** (ASan+UBSan + **TSan** clean; suite ~2.6s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -158,6 +158,30 @@ is the one-place add for it later. Seam also set for a future settings UI (`web/
   fail-fast) and appends the path to the tool argv (single source of truth).
 Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/config/prompt.cpp`
 (`assemble_system_prompt`=SOUL+USER, `read_memory_layer`=live core), `tools/{save_memory,pin_fact}_main.cpp`.
+
+### Memory embeddings (P1, shipped 2026-06-30, branch `feat/memory-embeddings`) — opt-in semantic recall
+A third, **opt-in** memory path that semantic-ranks the archival corpus instead of keyword-matching it.
+**Inert unless the manifest roster lists `Module = embedding_memory`** (omit → `Agent.embedding==nullptr`;
+dev.hades ships the block COMMENTED so it stays keyword-by-default + runnable without an embedder).
+- **`EmbeddingMemoryModule`** (`type()=="embedding_memory"`, `src/module/embedding_memory_module.cpp`):
+  on `USER_MESSAGE` embeds the query (warm provider), cosine-ranks the `VectorCache` above `min_similarity`,
+  posts `RETRIEVED_MEMORY_SEMANTIC`; the **Arbiter merges + dedups** it with the keyword `RETRIEVED_MEMORY`
+  into one injected block. Corpus indexed **incrementally** (`index_archival`, stable `memory#i` ids, batched).
+- **Providers** (`src/embedding/`): **subprocess** (warm process, one JSON line in/out — see the reference
+  embedder `tools/embed_reference.py`, sentence-transformers `all-MiniLM-L6-v2`) **or** **http**
+  (OpenAI-compat `/embeddings` — recommended local backends **ollama** `nomic-embed-text` + **llama.cpp**
+  `llama-server --embedding`, both documented in `embed_reference.py` + the dev.hades comment).
+- **`VectorCache`** is **model-stamped** (`.hades/embeddings/memory.vec.jsonl`): a stamp mismatch → rebuild
+  (never compares incomparable vectors). **Fail-soft everywhere** — any embedder error degrades to keyword-only
+  (`RETRIEVED_MEMORY_SEMANTIC=""`), never crashes a turn (whole `USER_MESSAGE` handler in try/catch).
+- **Wiring** (`app/agent_wiring.{h,cpp}`): `Agent.embedding` member sits among the modules (destroyed before
+  `executor`/Blackboard); attached **before the Arbiter** (its semantic post lands on the same pump before
+  `start_turn`); the **Executor is set before `on_attach`** so the index runs OFF the bus (executor now
+  created before `wire_agent`). Config = `Embedding` block (`provider/command/endpoint/model/cache_dir/
+  memory_store/top_n/min_similarity/batch_size/timeout_s`). The test `build_agent` overload leaves
+  `embedding` null → existing tests unaffected. **Deferred (P2):** session-file corpus + periodic reindex.
+Pieces: `src/module/embedding_memory_module.cpp`, `src/embedding/*`, `include/hades/embedding/*`,
+`tools/embed_reference.py`, `tests/test_embedding_{vec_math,memory_module,wiring}.cpp`, `test_{vector_cache,indexer,http_embedding_provider,subprocess_embedding_provider}.cpp`.
 
 ## Build / run
 ```bash
