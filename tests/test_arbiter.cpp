@@ -571,6 +571,55 @@ TEST(Arbiter, LoadHistoryDropsLeadingOrphanTool) {
   EXPECT_EQ(msgs[0].value("role",""), "user");     // opens on the loaded user message
 }
 
+// load_history sanitizes a TRAILING orphan {role:assistant, tool_calls:...}: a mid-pair crash that
+// loses the tool-result line (the largest line — file/http content) leaves history_ ending on an
+// assistant tool_calls with no following tool result. The next user turn would form
+// [..., assistant(tool_calls), user] — an interior orphan providers reject (400). The trailing
+// orphan is dropped on load so history_ ends on a user/assistant-answer boundary.
+TEST(Arbiter, LoadHistoryDropsTrailingOrphanAssistantToolCalls) {
+  const std::string path = ::testing::TempDir() + "/sess_trail_orphan.jsonl";
+  {
+    std::ofstream f(path, std::ios::trunc);
+    f << nlohmann::json({{"role","user"},{"content","hi"}}).dump() << "\n";
+    f << nlohmann::json({{"role","assistant"},
+                         {"tool_calls", nlohmann::json::array({{{"id","c1"}}})}}).dump() << "\n";
+    // NO tool result line — simulating the lost (largest) tool-result line of a mid-pair crash.
+  }
+  Arbiter a; a.set_session_path(path);
+  EXPECT_NO_THROW(a.load_history());
+  EXPECT_EQ(a.history_size(), 1u);                 // orphan assistant(tool_calls) dropped; user kept
+}
+
+// NON-REGRESSION: a normal resume whose tail is an assistant ANSWER (content, NO tool_calls) is
+// UNTOUCHED — the trailing-orphan strip must only target assistant-with-tool_calls.
+TEST(Arbiter, LoadHistoryKeepsTrailingAssistantAnswer) {
+  const std::string path = ::testing::TempDir() + "/sess_trail_answer.jsonl";
+  {
+    std::ofstream f(path, std::ios::trunc);
+    f << nlohmann::json({{"role","user"},{"content","hi"}}).dump() << "\n";
+    f << nlohmann::json({{"role","assistant"},{"content","answer"}}).dump() << "\n";
+  }
+  Arbiter a; a.set_session_path(path);
+  EXPECT_NO_THROW(a.load_history());
+  EXPECT_EQ(a.history_size(), 2u);                 // normal answer tail kept
+}
+
+// NON-REGRESSION: a COMPLETE pair (tail = {role:tool} following the assistant tool_calls) is
+// UNTOUCHED — the assistant tool_calls has its matching result, so nothing is an orphan.
+TEST(Arbiter, LoadHistoryKeepsCompleteToolPair) {
+  const std::string path = ::testing::TempDir() + "/sess_complete_pair.jsonl";
+  {
+    std::ofstream f(path, std::ios::trunc);
+    f << nlohmann::json({{"role","user"},{"content","hi"}}).dump() << "\n";
+    f << nlohmann::json({{"role","assistant"},
+                         {"tool_calls", nlohmann::json::array({{{"id","c1"}}})}}).dump() << "\n";
+    f << nlohmann::json({{"role","tool"},{"tool_call_id","c1"},{"content","result"}}).dump() << "\n";
+  }
+  Arbiter a; a.set_session_path(path);
+  EXPECT_NO_THROW(a.load_history());
+  EXPECT_EQ(a.history_size(), 3u);                 // complete pair untouched
+}
+
 // --- Session resume (Task 4): /new -> NEW_SESSION clears history_ + rotates the session file ---
 
 // NEW_SESSION (posted by the /new REPL command) clears history_ AND rotates session_path_ to

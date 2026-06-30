@@ -38,9 +38,11 @@ void Arbiter::append_history(const nlohmann::json& msg) {
 
 // Reload a session jsonl into history_ on resume. Tolerant like load_memories: a blank or
 // corrupt line (e.g. a truncated trailing line from a mid-append crash) is skipped, never thrown.
-// windowed_history_() assumes well-formed history; load_history therefore sanitizes a LEADING
-// orphan {role:tool} (a tool result whose owning assistant tool_calls was lost to a mid-pair
-// crash — invalid to providers) so history_ always opens on a user/assistant boundary.
+// windowed_history_() assumes well-formed history; load_history therefore sanitizes BOTH boundary
+// orphans from a mid-pair crash (invalid to providers): a LEADING {role:tool} (a tool result whose
+// owning assistant tool_calls was lost) and a TRAILING {role:assistant, tool_calls} (an assistant
+// tool-call whose following tool result was lost) — so history_ opens AND closes on a clean
+// user/assistant-answer boundary.
 void Arbiter::load_history() {
   if (session_path_.empty()) return;
   std::ifstream f(session_path_);
@@ -54,6 +56,13 @@ void Arbiter::load_history() {
   // Drop leading orphan tool message(s); the window must begin on user/assistant (or be empty).
   while (!history_.empty() && history_.front().value("role", "") == "tool")
     history_.erase(history_.begin());
+  // Mid-pair crash: a truncated/lost tool-result line can leave a trailing assistant(tool_calls)
+  // (an assistant tool-call with no following tool result). The next user turn would form
+  // [assistant(tool_calls), user], which providers reject — drop the trailing orphan.
+  while (!history_.empty() &&
+         history_.back().value("role", "") == "assistant" &&
+         history_.back().contains("tool_calls"))
+    history_.pop_back();
 }
 
 void Arbiter::on_attach(Blackboard& bb) {
