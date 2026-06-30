@@ -355,6 +355,28 @@ TEST(Arbiter, AppendHistoryWritesFileWhenPathSet) {
   EXPECT_EQ(l2.value("content",""), "hi there");
 }
 
+// Fail-soft: a message whose content carries invalid UTF-8 bytes must NOT throw out of
+// append_history (msg.dump() would throw json::type_error.316 by default) — it would unwind
+// through Blackboard::pump() and abort the turn. The replace error handler emits U+FFFD for
+// the bad bytes; the message is still persisted (one line written).
+TEST(Arbiter, AppendHistoryDoesNotThrowOnInvalidUtf8) {
+  const std::string path = ::testing::TempDir() + "/sess_badutf8.jsonl";
+  std::filesystem::remove(path);                   // start clean (TempDir may persist)
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_path(path);
+  nlohmann::json msg;
+  msg["role"] = "user";
+  msg["content"] = std::string("bad\xff\xfe" "byte");  // invalid UTF-8 bytes in content
+  EXPECT_NO_THROW(a.append_history(msg));           // replace handler: never throws
+  std::ifstream f(path);
+  ASSERT_TRUE(f.good());
+  std::vector<std::string> lines; std::string line;
+  while (std::getline(f, line)) if (!line.empty()) lines.push_back(line);
+  ASSERT_EQ(lines.size(), 1u);                      // the message was persisted (bad bytes replaced)
+  const auto l1 = nlohmann::json::parse(lines[0]);  // line is valid JSON (U+FFFD substituted)
+  EXPECT_EQ(l1.value("role",""), "user");
+}
+
 // Backward-compat: with NO session path, append_history is push-only — history_ grows
 // but NO file is ever created (existing behavior preserved for the 175 prior tests).
 TEST(Arbiter, AppendHistoryPushOnlyWhenNoPath) {

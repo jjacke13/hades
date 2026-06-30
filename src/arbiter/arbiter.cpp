@@ -29,7 +29,10 @@ void Arbiter::append_history(const nlohmann::json& msg) {
   const std::filesystem::path p(session_path_);
   if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
   std::ofstream f(session_path_, std::ios::app);
-  if (f) f << msg.dump() << "\n";
+  // dump(indent=-1, indent_char=' ', ensure_ascii=false, error_handler=replace): invalid UTF-8
+  // bytes in content become U+FFFD instead of throwing json::type_error.316 (which would unwind
+  // through Blackboard::pump() and abort the turn). Compact one-line output for valid UTF-8.
+  if (f) f << msg.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 }
 
 // Reload a session jsonl into history_ on resume. Tolerant like load_memories: a blank or
