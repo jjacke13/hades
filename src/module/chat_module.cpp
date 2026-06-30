@@ -53,14 +53,8 @@ void ChatModule::on_attach(Blackboard& bb) {
     // The turn's final message (answer / [blocked] / [declined] / [stopped]) — latch
     // turn completion so run_until() returns once the turn has resolved.
     turn_done_ = true;
-    if (!out_ || !e.value.is_string()) return;
-    const std::string msg = e.value.get<std::string>();
-    // Interactive: blank line before + bold-green label + blank line after, so each
-    // turn reads as its own block. Non-TTY (pipe/test): byte-identical to the original.
-    if (color_)
-      (*out_) << "\n" << kBoldGreen << "assistant> " << kReset << msg << "\n\n";
-    else
-      (*out_) << "assistant> " << msg << "\n";
+    if (!e.value.is_string()) return;
+    print_assistant_(e.value.get<std::string>());
   });
   bb.subscribe("CONFIRM_REQUEST", [this](const Entry& e) {
     if (!in_) return;  // no interactive stream -> cannot answer; skip
@@ -78,6 +72,24 @@ void ChatModule::on_attach(Blackboard& bb) {
               {{"id", e.value.value("id", "")}, {"approved", yes}},
               "chat");
   });
+}
+
+void ChatModule::print_assistant_(const std::string& msg) {
+  if (!out_) return;
+  // Interactive: blank line before + bold-green label + blank line after, so each
+  // turn reads as its own block. Non-TTY (pipe/test): byte-identical to the original.
+  if (color_)
+    (*out_) << "\n" << kBoldGreen << "assistant> " << kReset << msg << "\n\n";
+  else
+    (*out_) << "assistant> " << msg << "\n";
+}
+
+void ChatModule::abandon_turn_() {
+  // Signal abandonment, then pump so the Arbiter processes it (bumps the turn epoch) before
+  // the next user line is read; harmless if no one is listening / the queue is otherwise empty.
+  bb_->post("TURN_ABANDONED", nlohmann::json::object(), "chat");
+  bb_->pump();
+  print_assistant_("[timed out]");
 }
 
 void ChatModule::run_repl(std::istream& in, std::ostream& out) {
@@ -109,7 +121,8 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
     // a worker and run_until sleeps on the bus until it posts back (inline turns
     // complete during the first pump). The CONFIRM_REQUEST handler reads y/N inline
     // during a run_until pump and posts CONFIRM_RESPONSE, then the turn continues.
-    bb_->run_until([this] { return turn_done_; }, kTurnTimeoutS);
+    const double timeout_s = turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kTurnTimeoutS;
+    if (!bb_->run_until([this] { return turn_done_; }, timeout_s)) abandon_turn_();
   }
 }
 
@@ -135,7 +148,8 @@ void ChatModule::run_repl_readline() {
     bb_->post("USER_MESSAGE", line, "chat");
     // run_until drives the turn (offloaded LLM on a worker, or inline) to its final
     // ASSISTANT_MESSAGE; assistant output prints in cooked mode after readline returns.
-    bb_->run_until([this] { return turn_done_; }, kTurnTimeoutS);
+    const double timeout_s = turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kTurnTimeoutS;
+    if (!bb_->run_until([this] { return turn_done_; }, timeout_s)) abandon_turn_();
   }
 }
 

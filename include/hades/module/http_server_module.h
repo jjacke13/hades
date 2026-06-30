@@ -31,6 +31,11 @@ public:
   // to loopback at the call site so the agent is not network-exposed by default.
   void listen(const std::string& host, int port, const std::string& webroot);
 
+  // Test seam: override the collect_ idle timeout so a unit test can force a fast turn
+  // abandonment instead of waiting out the 180s production default. Any value > 0 takes
+  // effect; production never calls this (keeps kCollectTimeoutS, see http_server_module.cpp).
+  void set_collect_timeout_s(double s) { collect_timeout_override_s_ = s; }
+
 private:
   nlohmann::json collect_();  // after a post, pump the turn and read the captured result
 
@@ -39,5 +44,8 @@ private:
   std::string last_reply_;
   bool got_reply_ = false;
   nlohmann::json pending_confirm_;  // null when no confirm is outstanding
+  // collect_ idle-timeout override (seconds). 0 = use the production default
+  // (kCollectTimeoutS in http_server_module.cpp); set_collect_timeout_s gives tests a small value.
+  double collect_timeout_override_s_ = 0.0;
 };
 }  // namespace hades

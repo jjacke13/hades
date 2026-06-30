@@ -62,9 +62,18 @@ nlohmann::json HttpServerModule::collect_() {
   // Drive the turn to a decision: either the final reply was captured or the turn is
   // gated on a confirm. run_until pumps inline first (synchronous/test path completes
   // immediately) and otherwise sleeps on the bus until a worker posts the result.
+  const double timeout_s =
+      collect_timeout_override_s_ > 0.0 ? collect_timeout_override_s_ : kCollectTimeoutS;
   const bool done = bb_->run_until(
-      [this] { return got_reply_ || !pending_confirm_.is_null(); }, kCollectTimeoutS);
-  if (!done) return {{"reply", "[timed out]"}};  // hung worker -> don't block forever
+      [this] { return got_reply_ || !pending_confirm_.is_null(); }, timeout_s);
+  if (!done) {
+    // Idle timeout: the turn is abandoned. Signal it (the Arbiter bumps its turn epoch on
+    // TURN_ABANDONED, dropping any late worker response for this turn) and pump so that
+    // happens promptly; still under mu_, so the bus stays serialized. Then report the timeout.
+    bb_->post("TURN_ABANDONED", nlohmann::json::object(), "serve");
+    bb_->pump();
+    return {{"reply", "[timed out]"}};  // hung worker -> don't block forever
+  }
   if (got_reply_) return {{"reply", last_reply_}};
   if (!pending_confirm_.is_null())
     return {{"needs_confirm", true},

@@ -22,6 +22,21 @@ TEST(Chat, ReplPostsUserAndPrintsAssistant) {
   EXPECT_NE(out.str().find("echo:hello"), std::string::npos);
 }
 
+TEST(Chat, ReplTimeoutPostsAbandonedAndPrints) {
+  // A turn that NEVER completes: no handler turns USER_MESSAGE into ASSISTANT_MESSAGE,
+  // so run_until hits the (tiny, test-only) idle timeout and the turn is abandoned. The
+  // REPL must post TURN_ABANDONED (so the Arbiter can bump its turn epoch) and surface
+  // [timed out] to the user, then continue to the next prompt.
+  Blackboard bb; ChatModule c; c.on_attach(bb);
+  int abandoned = 0;
+  bb.subscribe("TURN_ABANDONED", [&](const Entry&) { ++abandoned; });
+  c.set_turn_timeout_s(0.02);  // force a fast abandonment instead of the 180s default
+  std::istringstream in("hang\n/quit\n"); std::ostringstream out;
+  c.run_repl(in, out);
+  EXPECT_EQ(abandoned, 1);
+  EXPECT_NE(out.str().find("[timed out]"), std::string::npos);
+}
+
 TEST(Chat, ConfirmPromptReadsYesFromStdin) {
   Blackboard bb; ChatModule c; c.on_attach(bb);
   nlohmann::json resp;

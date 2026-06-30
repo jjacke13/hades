@@ -10,6 +10,7 @@
 #include <utility>
 #include "app/agent_wiring.h"
 #include "hades/blackboard.h"
+#include "hades/module/http_server_module.h"
 using namespace hades;
 
 namespace {
@@ -40,6 +41,21 @@ TEST(HttpServer, ChatReturnsReply) {
   auto agent = build_agent(bb, std::make_unique<TextProvider>("hi there"), {}, {}, "m");
   auto out = agent.serve->handle_message("hello");
   EXPECT_EQ(out.value("reply", ""), "hi there");
+}
+
+TEST(HttpServer, ChatTimeoutPostsAbandoned) {
+  // No Arbiter attached -> USER_MESSAGE has no handler, so the turn never produces an
+  // ASSISTANT_MESSAGE or CONFIRM_REQUEST: collect_'s run_until hits the (tiny, test-only)
+  // idle timeout. handle_message must post TURN_ABANDONED and return the [timed out] reply.
+  Blackboard bb;
+  HttpServerModule srv;
+  srv.on_attach(bb);
+  srv.set_collect_timeout_s(0.02);  // force a fast abandonment instead of the 180s default
+  int abandoned = 0;
+  bb.subscribe("TURN_ABANDONED", [&](const Entry&) { ++abandoned; });
+  auto out = srv.handle_message("hang");
+  EXPECT_EQ(out.value("reply", ""), "[timed out]");
+  EXPECT_EQ(abandoned, 1);
 }
 
 TEST(HttpServer, DestructiveCallNeedsConfirmThenDeclined) {
