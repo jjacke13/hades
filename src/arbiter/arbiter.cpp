@@ -11,6 +11,7 @@
 #include "hades/prompt.h"   // read_memory_layer
 #include "hades/session_id.h"   // make_session_id + unique_fresh_path (NEW_SESSION rotation)
 #include "hades/session_history.h"   // read_session_jsonl (shared tolerant parse)
+#include <algorithm>   // std::find (merge_memory_blocks dedup)
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -150,6 +151,26 @@ std::vector<nlohmann::json> Arbiter::windowed_history_() const {
                                      history_.end());
 }
 
+// Merge two "- bullet\n" lists into one, de-duplicating identical lines, keyword order first.
+static std::string merge_memory_blocks(const std::string& keyword, const std::string& semantic) {
+  std::vector<std::string> lines;
+  auto add = [&](const std::string& blk) {
+    std::size_t pos = 0;
+    while (pos < blk.size()) {
+      std::size_t nl = blk.find('\n', pos);
+      std::string line = blk.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+      if (!line.empty() && std::find(lines.begin(), lines.end(), line) == lines.end()) lines.push_back(line);
+      if (nl == std::string::npos) break;
+      pos = nl + 1;
+    }
+  };
+  add(keyword);
+  add(semantic);
+  std::string out;
+  for (std::size_t i = 0; i < lines.size(); ++i) { out += lines[i]; if (i + 1 < lines.size()) out += "\n"; }
+  return out;
+}
+
 void Arbiter::start_turn() {
   nlohmann::json tools = nlohmann::json::array();
   for (auto& t : tools_)
@@ -170,13 +191,15 @@ void Arbiter::start_turn() {
     messages.push_back({{"role", "system"}, {"content", sys}});
   for (const auto& m : windowed_history_()) messages.push_back(m);
 
-  // Inject dynamically retrieved memory as an ephemeral {role:system} block immediately
-  // before the last user message. Recomputed from the Blackboard each turn and never
-  // stored in history_, so it refreshes per turn and never accumulates stale memory.
-  if (auto mem = bb_->get("RETRIEVED_MEMORY");
-      mem && mem->value.is_string() && !mem->value.get<std::string>().empty()) {
-    nlohmann::json block = {{"role", "system"},
-                            {"content", "Relevant memories:\n" + mem->value.get<std::string>()}};
+  // Inject dynamically retrieved memory (keyword RETRIEVED_MEMORY + semantic RETRIEVED_MEMORY_SEMANTIC,
+  // merged + deduped) as an ephemeral {role:system} block immediately before the last user message.
+  // Recomputed each turn, never stored in history_. Semantic absent/empty -> identical to keyword-only.
+  std::string kw, sem;
+  if (auto m = bb_->get("RETRIEVED_MEMORY"); m && m->value.is_string()) kw = m->value.get<std::string>();
+  if (auto m = bb_->get("RETRIEVED_MEMORY_SEMANTIC"); m && m->value.is_string()) sem = m->value.get<std::string>();
+  std::string merged = merge_memory_blocks(kw, sem);
+  if (!merged.empty()) {
+    nlohmann::json block = {{"role", "system"}, {"content", "Relevant memories:\n" + merged}};
     int last_user = -1;
     for (int i = 0; i < static_cast<int>(messages.size()); ++i)
       if (messages[i].value("role", "") == "user") last_user = i;

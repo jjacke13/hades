@@ -729,3 +729,38 @@ TEST(Arbiter, NewSessionEmptyDirClearsPath) {
   bb.post("LLM_RESPONSE", {{"text","reply two"},{"epoch",3}}, "llm"); bb.pump();
   EXPECT_EQ(read_lines(old_path).size(), 2u);                    // old.jsonl untouched (still 2 lines)
 }
+
+TEST(Arbiter, MergesKeywordAndSemanticMemoryDeduped) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY", "- shared fact\n- keyword only", "memory");
+  bb.post("RETRIEVED_MEMORY_SEMANTIC", "- shared fact\n- semantic only", "embedding_memory");
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(reqs.empty());
+  // find the injected system "Relevant memories:" block
+  std::string block;
+  for (const auto& m : reqs[0]["messages"])
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Relevant memories:", 0) == 0)
+      block = m["content"];
+  ASSERT_FALSE(block.empty());
+  // shared fact appears once; both unique lines present
+  EXPECT_NE(block.find("shared fact"), std::string::npos);
+  EXPECT_NE(block.find("keyword only"), std::string::npos);
+  EXPECT_NE(block.find("semantic only"), std::string::npos);
+  EXPECT_EQ(block.find("shared fact"), block.rfind("shared fact"));  // exactly once
+}
+TEST(Arbiter, SemanticAbsentIsUnchanged) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY", "- only keyword", "memory");
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  std::string block;
+  for (const auto& m : reqs[0]["messages"])
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Relevant memories:", 0) == 0)
+      block = m["content"];
+  EXPECT_EQ(block, "Relevant memories:\n- only keyword");  // identical to pre-embedding behavior
+}
