@@ -125,6 +125,26 @@ TEST(CapabilityPolicy, HardVetoesIPv6LinkLocalUnspecifiedAndMapped) {
   EXPECT_TRUE(CapabilityPolicy::is_private_host("::ffff:127.0.0.1"));
 }
 
+// C2b — hex-compressed IPv4-mapped IPv6 must hard-veto too (closes an SSRF bypass the dotted-tail
+// extraction missed): ::ffff:7f00:1 == 127.0.0.1 (loopback), ::ffff:a00:1 == 10.0.0.1 (RFC1918).
+// The blanket ::ffff:0:0/96 rule denies ANY mapped form, dotted or hex-compressed.
+TEST(CapabilityPolicy, HardVetoesHexCompressedIPv4MappedFetch) {
+  Blackboard bb; CapabilityPolicy p(make_scope());
+  for (const char* u : {"http://[::ffff:7f00:1]/", "http://[::ffff:a00:1]/"}) {
+    auto v = p.veto(bb, fetch(u));
+    EXPECT_TRUE(v.vetoed) << u; EXPECT_FALSE(v.needs_confirm) << u;
+  }
+}
+// C2c — direct is_private_host coverage for the hex-compressed mapped forms, and a guard that a
+// legitimate public hostname (no "::") is NOT a false positive of the blanket ::ffff: rule.
+TEST(CapabilityPolicy, ClassifiesHexCompressedMappedAsPrivateNoFalsePositive) {
+  EXPECT_TRUE (CapabilityPolicy::is_private_host("::ffff:7f00:1"));  // hex 127.0.0.1
+  EXPECT_TRUE (CapabilityPolicy::is_private_host("::ffff:a00:1"));   // hex 10.0.0.1
+  EXPECT_TRUE (CapabilityPolicy::is_private_host("::FFFF:7F00:1"));  // case-insensitive
+  EXPECT_FALSE(CapabilityPolicy::is_private_host("api.github.com")); // legit host -> public
+  EXPECT_FALSE(CapabilityPolicy::is_private_host("ffff.example.com"));
+}
+
 // C3 — empty/unparseable fetch host must FAIL CLOSED (hard-veto), never default-allow.
 TEST(CapabilityPolicy, FailsClosedOnEmptyOrUnparseableHost) {
   Blackboard bb; CapabilityPolicy p(make_scope());

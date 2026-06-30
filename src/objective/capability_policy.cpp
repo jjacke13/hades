@@ -9,7 +9,6 @@
 // numeric host (decimal/hex/octal) is treated as private. See the header for the remaining v2 gaps.
 
 #include "hades/objective/capability_policy.h"
-#include <algorithm>
 #include <array>
 #include <cctype>
 #include <vector>
@@ -161,6 +160,12 @@ bool CapabilityPolicy::is_private_host(const std::string& raw) {
     if (h.starts_with("fe8") || h.starts_with("fe9") ||
         h.starts_with("fea") || h.starts_with("feb")) return true;   // fe80::/10 link-local
     if (h.starts_with("fc") || h.starts_with("fd")) return true;     // fc00::/7 unique-local
+    // IPv4-mapped IPv6 (::ffff:0:0/96): ANY ::ffff:<addr> is a mapped IPv4 address, so fail closed
+    // on the WHOLE range. This denies mapped-private (the SSRF bypass) AND the rare mapped-public
+    // form — and crucially catches the HEX-COMPRESSED variants (::ffff:7f00:1 == 127.0.0.1,
+    // ::ffff:a00:1 == 10.0.0.1) that the dotted-tail extraction below misses. h is already
+    // lower-cased here, so ::FFFF: matches too. (A real hostname can't contain "::".)
+    if (h.starts_with("::ffff:") || h.starts_with("0:0:0:0:0:ffff:")) return true;
     if (auto pos = h.rfind("::ffff:"); pos != std::string::npos) {   // IPv4-mapped ::ffff:a.b.c.d
       std::string tail = h.substr(pos + 7);
       if (tail.find('.') != std::string::npos && is_private_ipv4(tail)) return true;
