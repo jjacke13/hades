@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `1e5f4b6`, **165/165 tests** (ASan+UBSan + **TSan** clean; +1 DISABLED regression test), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `ac635c9`, **169/169 tests** (ASan+UBSan + **TSan** clean; suite ~2.3s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -62,12 +62,23 @@ writer → no race even if calls overlap); **(3) idle timeout** — `pump()` ret
 stalled turn still fires). **LOAD-BEARING INVARIANT (documented at `kTurnTimeoutS`/`kCollectTimeoutS` +
 `http.h`):** the idle timeout (180s) MUST stay > max single in-flight poster (cpr 120s + tool 30s) — that
 is what guarantees no worker is alive when `run_until` abandons a turn, so no stale `LLM_RESPONSE` is
-produced. The epoch is **defense-in-depth**; it has a known dispatch-ordering hole (epoch bumps on
-`USER_MESSAGE` *dispatch*, so a stale response enqueued AHEAD of the next `USER_MESSAGE` would pass) that
-is **unreachable in the shipped binary** under that invariant — captured as a **DISABLED** regression test
-(`Arbiter.DISABLED_StaleResponseDispatchedBeforeNextUserMessageIsAccepted`). **REMAINING follow-up (couple
-to SSE / tool-offload — the work that breaks the invariant):** abandonment-epoch-bump (front-end signals
-turn abandonment / Arbiter invalidates) so the epoch is robust independent of timing; then enable that test.
+produced. The epoch was **defense-in-depth** with a dispatch-ordering hole (epoch bumped only on
+`USER_MESSAGE` *dispatch*) — **NOW CLOSED** (shipped 2026-06-30, `ac635c9`): see the Turn-abandonment
+section below.
+
+#### Turn-abandonment hardening (shipped 2026-06-30, `ac635c9`) — closes the epoch dispatch-ordering hole
+On `run_until` idle-timeout (a turn abandoned), the front-ends (both REPL loops + HTTP `collect_`) post a
+`TURN_ABANDONED` bus message **and pump it before reading the next user input**, and surface `[timed out]`.
+The Arbiter handles `TURN_ABANDONED` → `++turn_epoch_` + `clear_pending()`. So a stale post-abandonment
+`LLM_RESPONSE{old_epoch}` is dropped by the existing epoch guard and can never contaminate a SUBSEQUENT
+prompt — robust independent of timing (no longer reliant on the idle-timeout>poster invariant, though that
+still holds). Why no simpler fix: a slow-legit vs stale-after-abandon response are identical to the Arbiter;
+only the front-end knows a turn timed out, so an explicit abandonment signal is irreducible. The formerly-
+DISABLED test is now ACTIVE (`Arbiter.StaleResponseAfterAbandonmentIsDropped`). Test-only timeout seam
+(`set_turn_timeout_s`/`set_collect_timeout_s`; prod stays 180s). **Still deferred to tool-offload:**
+epoch-stamping `TOOL_RESULT` (tools run synchronously today → no stale tool result; noted in `arbiter.cpp`).
+Pieces: `src/arbiter/arbiter.cpp` (handler+`clear_pending`), `src/module/{chat,http_server}_module.cpp`
+(`abandon_turn_`), `docs/superpowers/*2026-06-30-turn-abandonment-epoch*`.
 
 ### Web UI (shipped 2026-06-29) — `--serve` browser front-end
 `hades <manifest> --serve [port]` runs `HttpServerModule`: serves static files from `web/` (mounted at
@@ -102,7 +113,7 @@ Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/conf
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (165/165)
+nix develop --command ctest --test-dir build                 # test (169/169, ~2.3s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -139,9 +150,11 @@ quoted/free-text values are documented v2 limits.) See `docs/superpowers/*2026-0
 **(3) DONE** (`1e5f4b6`) — real tool capability model — see the Tool-capability section below.
 **(4) DONE** — worker-offload (single-threaded deterministic bus + LLM call offloaded to an `Executor`;
 thread-safe `post()` + `run_until()`; opt-in; TSan-clean) + its **run_until follow-up** (turn-epoch,
-race-free budget, idle timeout) — see the Worker-offload section. **NEXT options:** SSE/tool-offload (+ the
-parked epoch dispatch-ordering hardening) · capability-model v2 (positive net allowlist, realpath/symlink
-path resolution, DNS-rebind/connect-time enforcement) · settings UI · embeddings · session resume · Bridge (parked).
+race-free budget, idle timeout) + **turn-abandonment hardening** (`TURN_ABANDONED` closes the epoch
+dispatch-ordering hole independent of timing — see the Worker-offload section). **NEXT options:**
+SSE/tool-offload (when tool-offload lands, extend the epoch+abandonment pattern to `TOOL_RESULT`) ·
+capability-model v2 (positive net allowlist, realpath/symlink path resolution, DNS-rebind/connect-time
+enforcement) · settings UI · embeddings · session resume · Bridge (parked).
 
 ## Tool-capability model (shipped 2026-06-30, `main` @ `1e5f4b6`) — `CapabilityPolicy` objective
 Replaces "blocklist-only" tool safety. A built-in **`capability_of(tool)` table** (the AUTHORITY — a tool
