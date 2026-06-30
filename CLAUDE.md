@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `e916084` (+ `feat/memory-embeddings`), **236/236 tests** (ASan+UBSan + **TSan** clean; suite ~2.6s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5`).
+`main` @ `20ba94c`, **247/247 tests** (ASan+UBSan + **TSan** clean; suite ~2.6s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -159,8 +159,10 @@ is the one-place add for it later. Seam also set for a future settings UI (`web/
 Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/config/prompt.cpp`
 (`assemble_system_prompt`=SOUL+USER, `read_memory_layer`=live core), `tools/{save_memory,pin_fact}_main.cpp`.
 
-### Memory embeddings (P1, shipped 2026-06-30, branch `feat/memory-embeddings`) — opt-in semantic recall
-A third, **opt-in** memory path that semantic-ranks the archival corpus instead of keyword-matching it.
+### Memory embeddings (P1+P2, shipped 2026-06-30, `main` @ `20ba94c`, 247/247) — opt-in semantic recall
+A third, **opt-in** memory path that semantic-ranks the corpus instead of keyword-matching it. **LIVE-VALIDATED**
+(Vaios, PPQ `openai/text-embedding-3-small`, 1536-dim: indexed 2 memories + 10 session turns → `EMBED_INDEX_DONE=true`,
+populated `.hades/embeddings/memory.vec.jsonl`).
 **Inert unless the manifest roster lists `Module = embedding_memory`** (omit → `Agent.embedding==nullptr`;
 dev.hades ships the block COMMENTED so it stays keyword-by-default + runnable without an embedder).
 - **`EmbeddingMemoryModule`** (`type()=="embedding_memory"`, `src/module/embedding_memory_module.cpp`):
@@ -179,16 +181,28 @@ dev.hades ships the block COMMENTED so it stays keyword-by-default + runnable wi
   `start_turn`); the **Executor is set before `on_attach`** so the index runs OFF the bus (executor now
   created before `wire_agent`). Config = `Embedding` block (`provider/command/endpoint/model/cache_dir/
   memory_store/top_n/min_similarity/batch_size/timeout_s`). The test `build_agent` overload leaves
-  `embedding` null → existing tests unaffected. **Deferred (P2):** session-file corpus + periodic reindex.
-Pieces: `src/module/embedding_memory_module.cpp`, `src/embedding/*`, `include/hades/embedding/*`,
-`tools/embed_reference.py`, `tests/test_embedding_{vec_math,memory_module,wiring}.cpp`, `test_{vector_cache,indexer,http_embedding_provider,subprocess_embedding_provider}.cpp`.
+  `embedding` null → existing tests unaffected.
+- **P2 (sessions + periodic, shipped):** the past-**session corpus** is indexed too (`extract_session_turns` →
+  per-turn `"U: …\nA: …"` units; `index_sessions`, `src="session"`), **live session EXCLUDED** by
+  canonical-path compare (`live_session_path_`, set BEFORE `on_attach` via `wire_agent`/`build_agent(session_path)`
+  → happens-before the index worker, race-free). A **periodic reindex timer** (`reindex_interval_s`, default
+  **86400**=daily; `0`=off) re-runs the incremental index; its `std::thread` is stop+notify+joined in the module
+  dtor (before bb dies); concurrent runs serialized by `index_mu_` (no double-append). `run_index_` is
+  try/catch-guarded (no `std::terminate`).
+Pieces: `src/module/embedding_memory_module.cpp`, `src/embedding/{vec_math,http_embedding_provider,persistent_child,
+subprocess_embedding_provider,vector_cache,indexer,session_turns}.cpp`, `include/hades/embedding/*`,
+`tools/embed_reference.py`, `tests/test_embedding_{vec_math,memory_module,wiring}.cpp`, `test_{vector_cache,indexer,session_turns,http_embedding_provider,subprocess_embedding_provider}.cpp`.
+**Deferred (v2, near-future per Vaios):** **switch the flat `.vec.jsonl` to sqlite + binary vectors (+ ANN index
+when the corpus grows)** — the `VectorCache` is the drop-in seam (module/Arbiter untouched). Today = flat
+append-only jsonl + brute-force cosine (fine at hundreds–thousands of records; loads whole cache/query). Also:
+`dimensions` request param (smaller/cheaper vectors); embed-cost metering (currently untracked by the budget objective).
 
 ## Build / run
 ```bash
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (204/204, ~2.5s)
+nix develop --command ctest --test-dir build                 # test (247/247, ~2.6s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -254,10 +268,11 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `tests/test_capability_{policy,wiring}.cpp`.
 
 ## NEXT (decided 2026-06-30)
-**~~1. `GET /history` web re-render~~ — DONE** (`main` @ `e916084`, 204/204, live-validated; see the GET /history section above).
-**1. Memory embeddings** — DISCUSS first (brainstorm): semantic recall over archival `save_memory`
-(`.hades/memory.jsonl`, behind the built `rank_memories` keyword seam) AND the session-file corpus
-(`.hades/sessions/*.jsonl`). Needs an embedding provider + vector store + retrieval. Not yet specced.
+**~~GET /history web re-render~~ — DONE** (`main` @ `e916084`, 204/204). **~~Memory embeddings~~ — DONE**
+(`main` @ `20ba94c`, 247/247, P1+P2, live-validated on PPQ; see the Memory-embeddings section above).
+**1. Memory embeddings v2 (near-future, Vaios):** switch the flat `.hades/embeddings/*.vec.jsonl` to **sqlite +
+binary vectors** (and an ANN index when the corpus grows) — drop-in behind the `VectorCache` seam. Optional: a
+`dimensions` request param (cheaper vectors), embed-cost metering.
 
 ## Other open work
 MCP tool discovery (MCP servers can be called but aren't announced to the LLM) · persona switch · prompt
@@ -298,3 +313,12 @@ agent↔agent Bridge (parked).
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - Interactive REPL uses readline only when stdin is a **real TTY**; piped/test input falls back to
   `std::getline` (keeps the injected-stream test seam). Arrow-key editing verified live 2026-06-29.
+- **Embedding `endpoint` must be the BASE url, NOT `.../embeddings`** — the HTTP provider appends `/embeddings`.
+  PPQ: `endpoint = https://api.ppq.ai/v1` (→ `…/v1/embeddings`). Setting `…/v1/embeddings` → `…/embeddings/embeddings`
+  → every embed fails → fail-soft (`EMBED_INDEX_DONE=false`, `RETRIEVED_MEMORY_SEMANTIC=""`, no cache file). Bit Vaios once.
+- **Embedding live-session exclusion is fixed at launch.** `/new` rotates the Arbiter's session but does NOT
+  re-point the embedding module's `live_session_path_` (set once, before `on_attach`, to avoid a cross-thread
+  write). So a periodic reindex after a `/new` may index the now-live post-`/new` session mid-write — parser-safe
+  (tolerant read skips a torn line; completed pairs are append-stable) and self-heals next launch. Accepted v1.
+- **Embedding cost is NOT metered** by the budget objective (`price_per_mtok` meters only the LLM). HTTP-provider
+  embed calls (e.g. PPQ) hit the key's balance unmetered; indexing is incremental + the query is 1 short embed/turn.
