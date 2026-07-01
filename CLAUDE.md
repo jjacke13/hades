@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-06-30)
-`main` @ `20ba94c`, **247/247 tests** (ASan+UBSan + **TSan** clean; suite ~2.6s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
+`main` @ `678a248`, **251/251 tests** (ASan+UBSan + **TSan** clean; suite ~2.6s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -149,8 +149,8 @@ is the one-place add for it later. Seam also set for a future settings UI (`web/
 ### Two memory layers (MemGPT-style, both agent-writable)
 - **Archival / searchable** — `save_memory` tool → `.hades/memory.jsonl` (append-only). MemoryModule
   (`type()=="memory"`) keyword-ranks it each turn (`rank_memories`, pure; **v2 seam = embeddings**) and
-  posts `RETRIEVED_MEMORY`; Arbiter injects it as an **ephemeral** `{role:system}` "Relevant memories:"
-  block before the last user msg. Config: `Memory { store=… top_n=… }`. **LIVE-VALIDATED** (save→restart→recall).
+  posts `RETRIEVED_MEMORY`; Arbiter injects it as an **ephemeral** `{role:system}` labeled memory block
+  before the last user msg (see Memory-injection framing below). Config: `Memory { store=… top_n=… }`. **LIVE-VALIDATED** (save→restart→recall).
 - **Core / always-on** — `pin_fact` tool → `memory/facts.md` (append-only, newlines stripped, parent dir
   created). The Arbiter **re-reads this file every turn** (`read_memory_layer`) and folds it into the
   **leading** `{role:system}` message (after static SOUL/USER) — live same-session. Config: Session
@@ -167,8 +167,9 @@ populated `.hades/embeddings/memory.vec.jsonl`).
 dev.hades ships the block COMMENTED so it stays keyword-by-default + runnable without an embedder).
 - **`EmbeddingMemoryModule`** (`type()=="embedding_memory"`, `src/module/embedding_memory_module.cpp`):
   on `USER_MESSAGE` embeds the query (warm provider), cosine-ranks the `VectorCache` above `min_similarity`,
-  posts `RETRIEVED_MEMORY_SEMANTIC`; the **Arbiter merges + dedups** it with the keyword `RETRIEVED_MEMORY`
-  into one injected block. Corpus indexed **incrementally** (`index_archival`, stable `memory#i` ids, batched).
+  then **splits hits by `src`** → posts `RETRIEVED_MEMORY_SEMANTIC` (archival fact hits) +
+  `RETRIEVED_SESSION_SEMANTIC` (past-session excerpts); the Arbiter injects **two labeled sub-blocks** (see
+  Memory-injection framing below). Corpus indexed **incrementally** (`index_archival`, stable `memory#i` ids, batched).
 - **Providers** (`src/embedding/`): **subprocess** (warm process, one JSON line in/out — see the reference
   embedder `tools/embed_reference.py`, sentence-transformers `all-MiniLM-L6-v2`) **or** **http**
   (OpenAI-compat `/embeddings` — recommended local backends **ollama** `nomic-embed-text` + **llama.cpp**
@@ -197,12 +198,26 @@ when the corpus grows)** — the `VectorCache` is the drop-in seam (module/Arbit
 append-only jsonl + brute-force cosine (fine at hundreds–thousands of records; loads whole cache/query). Also:
 `dimensions` request param (smaller/cheaper vectors); embed-cost metering (currently untracked by the budget objective).
 
+### Memory-injection framing (shipped 2026-07-01, `main` @ `678a248`, 251/251) — recall reads as the agent's own
+Fixes a live bug: the injected memory reached the prompt but the LLM discounted it ("this is our first exchange" /
+"you're quoting back a response"). Now the Arbiter injects **two labeled sub-blocks** instead of one bare
+`"Relevant memories:"` list: **"Facts from your memory (you saved these earlier; treat as reliable):"**
+(= `merge_dedup(RETRIEVED_MEMORY keyword + RETRIEVED_MEMORY_SEMANTIC)`) then **"Excerpts from earlier sessions with
+this same user … do NOT say this is a first exchange … may be out of date — re-verify current state before asserting
+a past action's result still holds:"** (= `RETRIEVED_SESSION_SEMANTIC`). Facts-first, `\n\n`-joined, both-empty → no
+block (backward-compat). To split cleanly, `VectorCache::query` now returns each hit's `src` and the module partitions
+its hits into the two keys (`src=="session"`→session, memory/unknown→facts). `prompts/soul.md` corrected (the stale
+"keyword-based, not semantic" line) + a standing paragraph telling the model the block IS its own recall (re-verify
+stale actions). Pieces: `src/arbiter/arbiter.cpp` (two-block inject), `src/module/embedding_memory_module.cpp` (2-key
+split), `src/embedding/vector_cache.{h,cpp}` (`ScoredMemory.src`), `prompts/soul.md`,
+`docs/superpowers/*2026-07-01-memory-injection-framing*`. **Live-smoke pending** (Vaios: re-ask a past-session topic).
+
 ## Build / run
 ```bash
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (247/247, ~2.6s)
+nix develop --command ctest --test-dir build                 # test (251/251, ~2.6s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
