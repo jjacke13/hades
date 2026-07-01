@@ -217,8 +217,40 @@ TEST(EmbeddingMemoryModule, RetrievesPastSessionTurnWhenIndexSessionsEnabled) {
   m.on_start(b, bb);                             // inline index (no executor) of archival + sessions
   m.on_attach(bb);
   std::string got;
+  std::string facts = "UNSET";
   bb.subscribe("RETRIEVED_SESSION_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
+  bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { facts = e.value.get<std::string>(); });
   bb.post("USER_MESSAGE", "tell me about alpha", "chat");
   bb.pump();
   EXPECT_NE(got.find("alpha is the first letter"), std::string::npos);  // the past session's turn -> SESSION key
+  EXPECT_EQ(facts, "");                                                 // session-only store -> fact key empty (no leak)
+}
+TEST(EmbeddingMemoryModule, RetrievesMixedFactAndSessionSplitsAcrossBothKeys) {
+  // The behavior the split exists for: one query returning BOTH a fact hit and a session hit, each
+  // landing on its own non-empty key. Archival store has an "alpha fact"; the sessions dir has an
+  // "alpha" turn; FakeProvider maps "alpha" -> (1,0) so both records + the query align (cosine 1).
+  namespace fs = std::filesystem;
+  std::string store = tmp("em_mix_store.jsonl"), cache = tmp("em_mix_cache");
+  { std::ofstream f(store, std::ios::trunc); f << "{\"text\":\"alpha fact\",\"ts\":1}\n"; }
+  std::string sdir = tmp("em_mix_sessions");
+  fs::remove_all(sdir);
+  fs::create_directories(sdir);
+  { std::ofstream f(sdir + "/past.jsonl", std::ios::trunc);
+    f << "{\"role\":\"user\",\"content\":\"alpha please\"}\n"
+         "{\"role\":\"assistant\",\"content\":\"alpha is first\"}\n"; }
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  Block b; b.section = "Embedding";
+  b.kv["memory_store"] = store; b.kv["cache_dir"] = cache; b.kv["min_similarity"] = "0.2";
+  b.kv["index_sessions"] = "true"; b.kv["sessions_dir"] = sdir;
+  Blackboard bb;
+  EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+  m.on_start(b, bb);
+  m.on_attach(bb);
+  std::string facts, sess;
+  bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { facts = e.value.get<std::string>(); });
+  bb.subscribe("RETRIEVED_SESSION_SEMANTIC", [&](const Entry& e) { sess = e.value.get<std::string>(); });
+  bb.post("USER_MESSAGE", "tell me about alpha", "chat");
+  bb.pump();
+  EXPECT_NE(facts.find("alpha fact"), std::string::npos);   // archival hit -> FACT key
+  EXPECT_NE(sess.find("alpha is first"), std::string::npos); // session hit -> SESSION key
 }
