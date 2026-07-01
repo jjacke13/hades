@@ -805,3 +805,25 @@ TEST(Arbiter, SessionExcerptsInjectedUnderConversationLabel) {
   EXPECT_NE(block.find("I fetched the page"), std::string::npos);             // session excerpt
   EXPECT_NE(block.find("re-verify current state"), std::string::npos);        // staleness caveat present
 }
+TEST(Arbiter, SessionExcerptsOnlyInjectedWithoutFacts) {
+  // Convos-only path: no facts, only session excerpts -> the block STARTS with the Conversations
+  // label (no leading Facts block, no stray leading "\n\n"), still inserted before the user message.
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("RETRIEVED_SESSION_SEMANTIC", "- U: spaceX?\nA: I fetched the page", "embedding_memory");
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  const auto& msgs = req["messages"];
+  int memIdx = -1, userIdx = -1;
+  for (int i = 0; i < static_cast<int>(msgs.size()); ++i) {
+    if (msgs[i].value("role", "") == "system" &&
+        msgs[i].value("content", "").rfind("Excerpts from earlier sessions", 0) == 0) memIdx = i;
+    if (msgs[i].value("role", "") == "user") userIdx = i;
+  }
+  ASSERT_GE(memIdx, 0); ASSERT_GE(userIdx, 0);
+  EXPECT_LT(memIdx, userIdx);                                                  // block precedes the user turn
+  const std::string block = msgs[memIdx]["content"].get<std::string>();
+  EXPECT_EQ(block.find("Facts from your memory"), std::string::npos);         // no facts sub-block
+  EXPECT_NE(block.find("I fetched the page"), std::string::npos);             // the session excerpt
+}
