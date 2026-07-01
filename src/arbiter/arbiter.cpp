@@ -191,15 +191,29 @@ void Arbiter::start_turn() {
     messages.push_back({{"role", "system"}, {"content", sys}});
   for (const auto& m : windowed_history_()) messages.push_back(m);
 
-  // Inject dynamically retrieved memory (keyword RETRIEVED_MEMORY + semantic RETRIEVED_MEMORY_SEMANTIC,
-  // merged + deduped) as an ephemeral {role:system} block immediately before the last user message.
-  // Recomputed each turn, never stored in history_. Semantic absent/empty -> identical to keyword-only.
-  std::string kw, sem;
+  // Inject retrieved memory as an ephemeral {role:system} block before the last user message, in TWO
+  // labeled sub-blocks so the LLM treats it as its OWN recall: saved FACTS (reliable) vs past-SESSION
+  // excerpts (its memory of earlier conversations with this user; may be stale). Both empty -> no block.
+  // Recomputed each turn, never stored in history_.
+  std::string kw, sem_facts, sem_convos;
   if (auto m = bb_->get("RETRIEVED_MEMORY"); m && m->value.is_string()) kw = m->value.get<std::string>();
-  if (auto m = bb_->get("RETRIEVED_MEMORY_SEMANTIC"); m && m->value.is_string()) sem = m->value.get<std::string>();
-  std::string merged = merge_memory_blocks(kw, sem);
-  if (!merged.empty()) {
-    nlohmann::json block = {{"role", "system"}, {"content", "Relevant memories:\n" + merged}};
+  if (auto m = bb_->get("RETRIEVED_MEMORY_SEMANTIC"); m && m->value.is_string()) sem_facts = m->value.get<std::string>();
+  if (auto m = bb_->get("RETRIEVED_SESSION_SEMANTIC"); m && m->value.is_string()) sem_convos = m->value.get<std::string>();
+  std::string facts = merge_memory_blocks(kw, sem_facts);   // dedup keyword + semantic facts
+  std::string content;
+  if (!facts.empty())
+    content += "Facts from your memory (you saved these earlier; treat as reliable):\n" + facts;
+  if (!sem_convos.empty()) {
+    if (!content.empty()) content += "\n\n";
+    content +=
+        "Excerpts from earlier sessions with this same user — your own memory of past conversations. "
+        "Treat them as things you and the user already discussed (do NOT say this is a first exchange, "
+        "and do NOT treat them as the user quoting you). They record what was SAID then and may be out "
+        "of date — re-verify current state (files, live data, tool results) before asserting a past "
+        "action's result still holds:\n" + sem_convos;
+  }
+  if (!content.empty()) {
+    nlohmann::json block = {{"role", "system"}, {"content", content}};
     int last_user = -1;
     for (int i = 0; i < static_cast<int>(messages.size()); ++i)
       if (messages[i].value("role", "") == "user") last_user = i;

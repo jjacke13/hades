@@ -142,7 +142,7 @@ TEST(Arbiter, InjectsRetrievedMemoryBeforeUserMessage) {
   int memIdx=-1, userIdx=-1;
   for (int i=0;i<static_cast<int>(msgs.size());++i){
     if (msgs[i].value("role","")=="system" &&
-        msgs[i].value("content","").rfind("Relevant memories:",0)==0) memIdx=i;
+        msgs[i].value("content","").rfind("Facts from your memory",0)==0) memIdx=i;
     if (msgs[i].value("role","")=="user") userIdx=i;
   }
   ASSERT_GE(memIdx,0); ASSERT_GE(userIdx,0);
@@ -150,15 +150,21 @@ TEST(Arbiter, InjectsRetrievedMemoryBeforeUserMessage) {
   EXPECT_NE(msgs[memIdx]["content"].get<std::string>().find("tea"), std::string::npos);
 }
 
-TEST(Arbiter, NoMemoryBlockWhenRetrievedEmpty) {
+TEST(Arbiter, NoBlockWhenAllMemoryEmpty) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
-  nlohmann::json req;
-  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
-  bb.post("RETRIEVED_MEMORY","","memory");
-  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
-  for (const auto& m : req["messages"])
-    EXPECT_FALSE(m.value("role","")=="system" &&
-                 m.value("content","").rfind("Relevant memories:",0)==0);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY", "", "memory");
+  bb.post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory");
+  bb.post("RETRIEVED_SESSION_SEMANTIC", "", "embedding_memory");
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(reqs.empty());
+  for (const auto& m : reqs[0]["messages"]) {
+    std::string c = m.value("content", "");
+    EXPECT_EQ(c.rfind("Facts from your memory", 0), std::string::npos);
+    EXPECT_EQ(c.rfind("Excerpts from earlier sessions", 0), std::string::npos);
+  }
 }
 
 TEST(Arbiter, MemoryBlockIsEphemeralNotInHistory) {
@@ -172,7 +178,7 @@ TEST(Arbiter, MemoryBlockIsEphemeralNotInHistory) {
   bb.post("USER_MESSAGE","second","chat"); bb.pump();           // turn 2
   bool leaked=false;
   for (const auto& m : reqs.back()["messages"])
-    if (m.value("role","")=="system" && m.value("content","").rfind("Relevant memories:",0)==0)
+    if (m.value("role","")=="system" && m.value("content","").rfind("Facts from your memory",0)==0)
       leaked=true;
   EXPECT_FALSE(leaked);   // prior turn's memory block did not persist into history_
 }
@@ -739,10 +745,10 @@ TEST(Arbiter, MergesKeywordAndSemanticMemoryDeduped) {
   bb.post("USER_MESSAGE", "hi", "chat");
   bb.pump();
   ASSERT_FALSE(reqs.empty());
-  // find the injected system "Relevant memories:" block
+  // find the injected system "Facts from your memory" block
   std::string block;
   for (const auto& m : reqs[0]["messages"])
-    if (m.value("role", "") == "system" && m.value("content", "").rfind("Relevant memories:", 0) == 0)
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Facts from your memory", 0) == 0)
       block = m["content"];
   ASSERT_FALSE(block.empty());
   // shared fact appears once; both unique lines present
@@ -760,9 +766,9 @@ TEST(Arbiter, SemanticAbsentIsUnchanged) {
   bb.pump();
   std::string block;
   for (const auto& m : reqs[0]["messages"])
-    if (m.value("role", "") == "system" && m.value("content", "").rfind("Relevant memories:", 0) == 0)
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Facts from your memory", 0) == 0)
       block = m["content"];
-  EXPECT_EQ(block, "Relevant memories:\n- only keyword");  // identical to pre-embedding behavior
+  EXPECT_EQ(block, "Facts from your memory (you saved these earlier; treat as reliable):\n- only keyword");
 }
 TEST(Arbiter, SemanticOnlyWithAbsentKeywordStillInjectsBlock) {
   // Valid path: embedding_memory present but keyword RETRIEVED_MEMORY absent -> the semantic block
@@ -776,7 +782,26 @@ TEST(Arbiter, SemanticOnlyWithAbsentKeywordStillInjectsBlock) {
   ASSERT_FALSE(reqs.empty());
   std::string block;
   for (const auto& m : reqs[0]["messages"])
-    if (m.value("role", "") == "system" && m.value("content", "").rfind("Relevant memories:", 0) == 0)
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Facts from your memory", 0) == 0)
       block = m["content"];
-  EXPECT_EQ(block, "Relevant memories:\n- embedding result");
+  EXPECT_EQ(block, "Facts from your memory (you saved these earlier; treat as reliable):\n- embedding result");
+}
+TEST(Arbiter, SessionExcerptsInjectedUnderConversationLabel) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.post("RETRIEVED_MEMORY", "- a saved fact", "memory");
+  bb.post("RETRIEVED_SESSION_SEMANTIC", "- U: spaceX?\nA: I fetched the page", "embedding_memory");
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(reqs.empty());
+  std::string block;
+  for (const auto& m : reqs[0]["messages"])
+    if (m.value("role", "") == "system" && m.value("content", "").rfind("Facts from your memory", 0) == 0)
+      block = m["content"];
+  ASSERT_FALSE(block.empty());
+  EXPECT_NE(block.find("- a saved fact"), std::string::npos);                 // facts block
+  EXPECT_NE(block.find("Excerpts from earlier sessions"), std::string::npos); // conversations label
+  EXPECT_NE(block.find("I fetched the page"), std::string::npos);             // session excerpt
+  EXPECT_NE(block.find("re-verify current state"), std::string::npos);        // staleness caveat present
 }
