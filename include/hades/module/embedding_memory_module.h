@@ -1,9 +1,11 @@
 // include/hades/module/embedding_memory_module.h — opt-in semantic-memory app (MOOS-app style).
 //
 // Mirrors MemoryModule but ranks by embeddings: on USER_MESSAGE it embeds the query (warm provider),
-// cosine-ranks the VectorCache above min_similarity, and posts RETRIEVED_MEMORY_SEMANTIC (the Arbiter
-// merges it with the keyword RETRIEVED_MEMORY). Corpus is indexed incrementally: on an Executor worker
-// when set (live), else inline (tests). Every embedder failure is fail-soft (empty result, no crash).
+// cosine-ranks the VectorCache above min_similarity, then SPLITS the hits by src and posts two keys —
+// RETRIEVED_MEMORY_SEMANTIC (archival fact hits) and RETRIEVED_SESSION_SEMANTIC (past-session excerpts).
+// The Arbiter injects them as two labeled sub-blocks (facts vs past conversations). Corpus is indexed
+// incrementally: on an Executor worker when set (live), else inline (tests). Every embedder failure is
+// fail-soft — BOTH keys posted "" on any error path (empty result, never crashes a turn).
 #pragma once
 #include <atomic>
 #include <condition_variable>
