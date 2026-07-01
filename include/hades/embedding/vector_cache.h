@@ -11,7 +11,7 @@
 #include <vector>
 namespace hades {
 struct CachedVec { std::string id; std::string src; std::string text; std::vector<float> vec; };
-struct ScoredMemory { std::string text; float score; };
+struct ScoredMemory { std::string text; float score; std::string src; };
 class VectorCache {
 public:
   VectorCache(std::string path, std::string model, int dim);

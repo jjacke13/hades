@@ -71,3 +71,17 @@ TEST(VectorCache, DegenerateZeroVectorDropped) {
   c.put({"z", "memory", "zero", {0.0f, 0.0f}});  // normalize fails -> dropped
   EXPECT_EQ(c.size(), 0u);
 }
+TEST(VectorCache, QueryCarriesSrc) {
+  std::string p = tmp("vc_src.jsonl");
+  std::remove(p.c_str());
+  VectorCache c(p, "echo", 2); ASSERT_TRUE(c.load());
+  c.put({"m0", "memory",  "a fact",     {1.0f, 0.0f}});
+  c.put({"s0", "session", "U: hi\nA: yo", {0.0f, 1.0f}});
+  auto fa = c.query({1.0f, 0.05f}, 5, 0.1f);   // closest to the memory record
+  ASSERT_FALSE(fa.empty());
+  EXPECT_EQ(fa[0].text, "a fact");
+  EXPECT_EQ(fa[0].src, "memory");
+  auto se = c.query({0.05f, 1.0f}, 5, 0.1f);   // closest to the session record
+  ASSERT_FALSE(se.empty());
+  EXPECT_EQ(se[0].src, "session");
+}

@@ -55,7 +55,7 @@ std::vector<ScoredMemory> VectorCache::query(std::vector<float> q, std::size_t t
   std::vector<ScoredMemory> scored;
   for (const auto& [id, r] : mem_) {
     float s = dot(q, r.vec);
-    if (s >= min_similarity) scored.push_back({r.text, s});
+    if (s >= min_similarity) scored.push_back({r.text, s, r.src});
   }
   std::sort(scored.begin(), scored.end(), [](const ScoredMemory& a, const ScoredMemory& b) { return a.score > b.score; });
   if (scored.size() > top_n) scored.resize(top_n);
