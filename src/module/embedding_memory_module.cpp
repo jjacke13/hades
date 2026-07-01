@@ -96,20 +96,30 @@ void EmbeddingMemoryModule::on_attach(Blackboard& bb) {
     // Whole handler in try/catch: this runs on the pump thread, so a throw here would unwind pump()
     // and kill the bus. The EmbeddingProvider contract is no-throw, but a misbehaving provider or
     // bad_alloc must still degrade to keyword-only (post "") — same fail-closed discipline as the
-    // Arbiter's objective veto() guard. The key is posted on EVERY path so it is never left stale.
+    // Arbiter's objective veto() guard. Both keys are posted on EVERY path so neither is left stale.
+    // Post both semantic keys on EVERY path (never leave a stale value from a prior turn).
+    auto none = [this] {
+      bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory");
+      bb_->post("RETRIEVED_SESSION_SEMANTIC", "", "embedding_memory");
+    };
     try {
-      if (!e.value.is_string() || !provider_) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }
+      if (!e.value.is_string() || !provider_) { none(); return; }
       EmbedResult q = provider_->embed({e.value.get<std::string>()});
-      if (!q.error.empty() || q.vectors.size() != 1) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }
+      if (!q.error.empty() || q.vectors.size() != 1) { none(); return; }
       VectorCache vc(cache_path(cache_dir_), q.model, q.dim);
-      if (!vc.load()) { bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory"); return; }  // mismatch -> keyword only
+      if (!vc.load()) { none(); return; }  // stamp mismatch -> keyword only
       auto top = vc.query(q.vectors[0], top_n_, min_similarity_);
-      std::string rendered;
-      for (const auto& r : top) rendered += "- " + r.text + "\n";
-      if (!rendered.empty() && rendered.back() == '\n') rendered.pop_back();
-      bb_->post("RETRIEVED_MEMORY_SEMANTIC", rendered, "embedding_memory");
+      std::string facts, convos;
+      for (const auto& r : top) {
+        std::string& dst = (r.src == "session") ? convos : facts;  // memory/unknown src -> facts
+        dst += "- " + r.text + "\n";
+      }
+      if (!facts.empty() && facts.back() == '\n') facts.pop_back();
+      if (!convos.empty() && convos.back() == '\n') convos.pop_back();
+      bb_->post("RETRIEVED_MEMORY_SEMANTIC", facts, "embedding_memory");
+      bb_->post("RETRIEVED_SESSION_SEMANTIC", convos, "embedding_memory");
     } catch (...) {
-      bb_->post("RETRIEVED_MEMORY_SEMANTIC", "", "embedding_memory");  // fail-soft: never crash a turn
+      none();  // fail-soft: never crash a turn
     }
   });
   if (executor_) executor_->submit([this] { run_index_(); });  // live: off the bus

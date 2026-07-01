@@ -67,11 +67,14 @@ TEST(EmbeddingMemoryModule, RetrievesSemanticMatchAndPosts) {
   m.on_start(cfg(store, cache), bb);            // inline index (no executor)
   m.on_attach(bb);
   std::string got;
+  std::string sess;
   bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
+  bb.subscribe("RETRIEVED_SESSION_SEMANTIC", [&](const Entry& e) { sess = e.value.get<std::string>(); });
   bb.post("USER_MESSAGE", "tell me about alpha", "chat");
   bb.pump();
   EXPECT_NE(got.find("alpha fact"), std::string::npos);
   EXPECT_EQ(got.find("beta fact"), std::string::npos);  // below floor for an alpha query
+  EXPECT_EQ(sess, "");                                   // archival-only store -> no session excerpts
 }
 TEST(EmbeddingMemoryModule, ProviderFailureIsSoftEmpty) {
   std::string store = tmp("em_store2.jsonl"), cache = tmp("em_cache2");
@@ -82,10 +85,13 @@ TEST(EmbeddingMemoryModule, ProviderFailureIsSoftEmpty) {
   m.on_start(cfg(store, cache), bb);
   m.on_attach(bb);
   std::string got = "UNSET";
+  std::string sess = "UNSET";
   bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
+  bb.subscribe("RETRIEVED_SESSION_SEMANTIC", [&](const Entry& e) { sess = e.value.get<std::string>(); });
   bb.post("USER_MESSAGE", "alpha?", "chat");
   bb.pump();                                    // must NOT crash
   EXPECT_EQ(got, "");                            // fail-soft: empty
+  EXPECT_EQ(sess, "");                           // fail-soft: both keys empty
 }
 TEST(EmbeddingMemoryModule, CacheStampMismatchAtQueryIsSoftEmpty) {
   // Defense-in-depth (path C): if the query's embedding model differs from the cache's stamp, the
@@ -99,10 +105,13 @@ TEST(EmbeddingMemoryModule, CacheStampMismatchAtQueryIsSoftEmpty) {
   m.on_start(cfg(store, cache), bb);
   m.on_attach(bb);
   std::string got = "UNSET";
+  std::string sess = "UNSET";
   bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
+  bb.subscribe("RETRIEVED_SESSION_SEMANTIC", [&](const Entry& e) { sess = e.value.get<std::string>(); });
   bb.post("USER_MESSAGE", "SHIFT please", "chat");
   bb.pump();
   EXPECT_EQ(got, "");                            // stamp mismatch -> fail-soft empty
+  EXPECT_EQ(sess, "");                           // stamp mismatch -> both keys empty
 }
 TEST(EmbeddingMemoryModule, ReindexIntervalParsedAndDefaulted) {
   // The config seam for the periodic reindex timer: absent -> daily default; "0" -> off; "5" -> 5s.
@@ -208,8 +217,8 @@ TEST(EmbeddingMemoryModule, RetrievesPastSessionTurnWhenIndexSessionsEnabled) {
   m.on_start(b, bb);                             // inline index (no executor) of archival + sessions
   m.on_attach(bb);
   std::string got;
-  bb.subscribe("RETRIEVED_MEMORY_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
+  bb.subscribe("RETRIEVED_SESSION_SEMANTIC", [&](const Entry& e) { got = e.value.get<std::string>(); });
   bb.post("USER_MESSAGE", "tell me about alpha", "chat");
   bb.pump();
-  EXPECT_NE(got.find("alpha is the first letter"), std::string::npos);  // the past session's turn
+  EXPECT_NE(got.find("alpha is the first letter"), std::string::npos);  // the past session's turn -> SESSION key
 }
