@@ -282,12 +282,21 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
 
-## NEXT (decided 2026-06-30)
-**~~GET /history web re-render~~ — DONE** (`main` @ `e916084`, 204/204). **~~Memory embeddings~~ — DONE**
-(`main` @ `20ba94c`, 247/247, P1+P2, live-validated on PPQ; see the Memory-embeddings section above).
-**1. Memory embeddings v2 (near-future, Vaios):** switch the flat `.hades/embeddings/*.vec.jsonl` to **sqlite +
-binary vectors** (and an ANN index when the corpus grows) — drop-in behind the `VectorCache` seam. Optional: a
-`dimensions` request param (cheaper vectors), embed-cost metering.
+## NEXT — **Memory system v2 (revisit SOON, decided 2026-07-01, Vaios)**
+Embeddings (P1+P2) + injection framing shipped + live. Vaios: "we'll have to revisit this memory system pretty
+soon." **Brainstorm-first — this is a rethink, not a bolt-on.** Consolidated work-list:
+1. **Storage:** switch the flat `.hades/embeddings/*.vec.jsonl` → **sqlite + binary vectors** (+ ANN index once the
+   corpus grows) — drop-in behind the `VectorCache` seam (module/Arbiter untouched). Today = flat jsonl + brute-force cosine.
+2. **Corpus quality (the real weakness — found live):** the agent **rarely saves facts** (core `facts.md` empty, ~3
+   archival records), so recall surfaces chit-chat + "I don't remember" turns. Options: a soul.md nudge to `save_memory`/
+   `pin_fact` more; OR **auto-extract** salient facts per turn (LLM-summarized) instead of relying on explicit tool calls.
+3. **Session-unit granularity:** each session unit embeds the **FULL assistant answer** (`"U:…\nA:<whole answer>"`) →
+   bloated/noisy injection. Truncate or **summarize** long turns before embedding.
+4. **Retrieval tuning:** `min_similarity=0.45` may be high for `text-embedding-3-small` (try 0.35); consider re-ranking.
+5. **Cheaper/metered:** `dimensions` request param (smaller vectors); **embed-cost metering** (currently untracked by
+   the budget objective — PPQ embeds hit the balance unmetered).
+6. **Freshness:** `/new` does NOT re-point `live_session_path_` (documented gotcha) — a proper session-lifecycle rethink.
+(GET /history — DONE `e916084`. Memory embeddings — DONE `20ba94c`. Memory-injection framing — DONE `678a248`.)
 
 ## Other open work
 MCP tool discovery (MCP servers can be called but aren't announced to the LLM) · persona switch · prompt
