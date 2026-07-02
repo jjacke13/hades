@@ -68,3 +68,18 @@ TEST(UseSkillTool, NonStringNameIsNotOkAndDoesNotCrash) {
   ASSERT_FALSE(j.is_discarded());
   EXPECT_FALSE(j.value("ok", true));
 }
+
+TEST(UseSkillTool, InvalidUtf8ContentDoesNotCrash) {
+  const std::string root = ::testing::TempDir() + "/use_skill_utf8_" + std::to_string(::getpid());
+  fs::remove_all(root);
+  fs::create_directories(root + "/binskill");
+  {
+    std::ofstream f(root + "/binskill/SKILL.md", std::ios::binary);
+    f << "---\ndescription: d\n---\nbody \xC3\x28 \xFF\xFE trailing";   // invalid UTF-8 sequences
+  }
+  nlohmann::json call{{"call", "use_skill"}, {"args", {{"name", "binskill"}}}};
+  ProcResult r = run_subprocess({USE_SKILL_BIN, root}, call.dump(), 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_FALSE(j.is_discarded());          // ONE clean JSON line came out (no crash, no silence)
+  EXPECT_TRUE(j.value("ok", false));       // read succeeded; bad bytes replaced with U+FFFD
+}

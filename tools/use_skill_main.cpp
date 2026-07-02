@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
   } else {
     out = {{"ok", false}, {"result", {{"error", "unknown call: " + call}}}};
   }
-  std::cout << out.dump() << std::endl;
+  // replace-handler dump: raw SKILL.md bytes may be invalid UTF-8 — degrade to U+FFFD, never throw
+  std::cout << out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << std::endl;
   return 0;
 }
