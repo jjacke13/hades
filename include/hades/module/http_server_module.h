@@ -13,6 +13,7 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "hades/module.h"
+#include "hades/turn_gate.h"
 
 // Forward-declared so the public header does NOT pull in the heavy <httplib.h> for
 // every translation unit; the .cpp (and the serve test) include the real header.
@@ -68,6 +69,10 @@ public:
   // without binding a socket; defined in the .cpp (which owns <httplib.h>).
   static void configure_server_(httplib::Server& srv, double idle_s);
 
+  // Shared whole-turn serializer (see turn_gate.h). Null (tests / single front-end) -> the
+  // module-local fallback gate, byte-identical to the old private mu_ behavior.
+  void set_turn_gate(TurnGate* g) { gate_ = g; }
+
 private:
   nlohmann::json collect_();  // after a post, pump the turn and read the captured result
   // run_until idle timeout in seconds: the test/manifest override if set (>0), else the
@@ -76,7 +81,9 @@ private:
   double effective_collect_timeout_s() const;
 
   Blackboard* bb_ = nullptr;
-  std::mutex mu_;
+  std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
+  TurnGate* gate_ = nullptr;   // shared across front-ends when set (wiring)
+  TurnGate  local_gate_;       // fallback so an un-wired module still serializes its own turns
   std::string last_reply_;
   bool got_reply_ = false;
   nlohmann::json pending_confirm_;  // null when no confirm is outstanding

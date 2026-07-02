@@ -2,7 +2,7 @@
 //
 // on_attach subscribes to ASSISTANT_MESSAGE (captures the reply) and CONFIRM_REQUEST
 // (captures a pending gate). handle_message/handle_confirm post the triggering event
-// and pump the turn to completion under mu_, then report reply-or-needs_confirm.
+// and pump the turn to completion under turn_mu_(), then report reply-or-needs_confirm.
 // listen() exposes POST /chat, POST /confirm, GET /health. See the header.
 
 #include "hades/module/http_server_module.h"
@@ -86,7 +86,7 @@ nlohmann::json HttpServerModule::collect_() {
   if (!done) {
     // Idle timeout: the turn is abandoned. Signal it (the Arbiter bumps its turn epoch on
     // TURN_ABANDONED, dropping any late worker response for this turn) and pump so that
-    // happens promptly; still under mu_, so the bus stays serialized. Then report the timeout.
+    // happens promptly; still under turn_mu_(), so the bus stays serialized. Then report the timeout.
     bb_->post("TURN_ABANDONED", nlohmann::json::object(), "serve");
     bb_->pump();
     return {{"reply", "[timed out]"}};  // hung worker -> don't block forever
@@ -100,13 +100,13 @@ nlohmann::json HttpServerModule::collect_() {
 }
 
 nlohmann::json HttpServerModule::history_json() const {
-  // Disk read only; no shared mutable state -> no mu_. A concurrent Arbiter append that leaves a
+  // Disk read only; no shared mutable state -> no turn_mu_(). A concurrent Arbiter append that leaves a
   // half-written final line is skipped by read_session_jsonl's tolerant parse.
   return {{"history", read_session_jsonl(session_path_)}};
 }
 
 nlohmann::json HttpServerModule::handle_message(const std::string& text) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<std::mutex> lk(turn_mu_());
   got_reply_ = false;
   last_reply_.clear();
   pending_confirm_ = nullptr;
@@ -115,7 +115,7 @@ nlohmann::json HttpServerModule::handle_message(const std::string& text) {
 }
 
 nlohmann::json HttpServerModule::handle_confirm(const std::string& id, bool approved) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<std::mutex> lk(turn_mu_());
   got_reply_ = false;
   last_reply_.clear();
   pending_confirm_ = nullptr;
