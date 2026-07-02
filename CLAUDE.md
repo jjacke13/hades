@@ -28,13 +28,14 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-06-30)
-`main` @ `678a248`, **251/251 tests** (ASan+UBSan + **TSan** clean; suite ~2.6s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
-Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **7 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory pin_fact`, self-describing) · **tool capability
+## Current state (2026-07-02)
+`feat/skills` (off `main` @ `678a248`), **284/284 tests** (ASan+UBSan + **TSan** clean; suite ~3.0s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
+Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **9 tools**
+(`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
-**two memory layers** (core + archival, see below) · layered **system prompt** (SOUL/USER static +
+**two memory layers** (core + archival, see below) · a **skills system** (loadable instruction packs, see below) ·
+layered **system prompt** (SOUL/USER static +
 live core MEMORY) · two front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
 labels) and **HTTP `--serve`** (browser web UI + JSON API, see below) · **worker-offload concurrency**
 (see below) · **manifest parser fails LOUD** on packed multi-kv lines (see below).
@@ -212,18 +213,44 @@ stale actions). Pieces: `src/arbiter/arbiter.cpp` (two-block inject), `src/modul
 split), `src/embedding/vector_cache.{h,cpp}` (`ScoredMemory.src`), `prompts/soul.md`,
 `docs/superpowers/*2026-07-01-memory-injection-framing*`. **Live-smoke pending** (Vaios: re-ask a past-session topic).
 
+### Skills system (shipped 2026-07-02) — loadable instruction packs (à la Claude Code skills)
+A **skill** = a `<skills_dir>/<name>/SKILL.md` (YAML front-matter `description:` + body instructions; may bundle
+scripts). **Inert unless the manifest roster lists `Module = skills`** (dev.hades ships it); omit → `Agent.skills==nullptr`,
+zero coupling (the test `build_agent` overload without the module is unaffected). Flow:
+- **`SkillsModule`** (`type()=="skills"`, `src/module/skills_module.cpp`): scans the dir (`scan_skills_dir`,
+  `src/skills/scan.*`), posts a one-line-per-skill roster on **`SKILLS_ANNOUNCE`** — **event-driven, no per-turn scan**:
+  once at `on_attach` (post updates the latest-value map immediately, so the first `start_turn` sees it) and
+  **rescans only on a successful `save_skill`** (tracks pending `TOOL_REQUEST{tool=save_skill}` ids → re-announces on
+  its `TOOL_RESULT{ok:true}`). Config: `Skills { dir = skills }` (default `skills`).
+- **Arbiter fold** (`src/arbiter/arbiter.cpp`): `bb_->get("SKILLS_ANNOUNCE")` (latest-value) folded into the **leading
+  `{role:system}` message** (after SOUL/USER + live core MEMORY) as an "Available skills" list — so the LLM knows the
+  library each turn without a scan.
+- **Two native tools** (isolated subprocesses, self-describing): **`use_skill`** (`tools/use_skill_main.cpp`) loads
+  `<dir>/<name>/SKILL.md`; **`save_skill`** (`tools/save_skill_main.cpp`) writes it (**atomic** temp-file+rename so a
+  concurrent scan never sees a torn file; newlines→spaces so one skill = one announce line). Both gate the **name** to
+  `[A-Za-z0-9_-]{1,64}` (`scan.h`) — no path separators/dots → no traversal outside the dir. The **skills dir is fixed by
+  argv** (wiring appends the resolved dir, single source of truth — the LLM can't redirect it).
+- **Capability model:** `capability_of` maps `use_skill→SkillRead`, `save_skill→SkillWrite`, both **allow** by default
+  (kept as distinct enums so a future policy can confirm-gate `SkillWrite`).
+- **`skills/` is git-tracked** (like `memory/facts.md`): the agent authors skills at runtime → working-tree churn to
+  review/commit as curated standing skills (or gitignore it).
+Pieces: `src/module/skills_module.cpp`, `src/skills/scan.cpp`, `include/hades/skills/scan.h`, `tools/{use_skill,save_skill}_main.cpp`,
+`app/agent_wiring.cpp` (roster factory + `Skills` block + dir argv), `src/objective/capability_policy.cpp`,
+`tests/test_skills_*.cpp`. Spec/plan: `docs/superpowers/specs/2026-07-02-skills-system-design.md`,
+`docs/superpowers/plans/2026-07-02-skills-system.md`.
+
 ## Build / run
 ```bash
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (251/251, ~2.6s)
+nix develop --command ctest --test-dir build                 # test (284/284, ~3.0s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
 ```
-Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact}` (tools),
+Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
 **readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
@@ -262,7 +289,7 @@ enforcement) · settings UI · embeddings (over the session-files corpus too) ·
 
 ## Tool-capability model (shipped 2026-06-30, `main` @ `1e5f4b6`) — `CapabilityPolicy` objective
 Replaces "blocklist-only" tool safety. A built-in **`capability_of(tool)` table** (the AUTHORITY — a tool
-cannot grant itself permission; NOT read from its `describe`) maps the 7 tools to capabilities
+cannot grant itself permission; NOT read from its `describe`) maps the 9 tools to capabilities
 (`FsRead/FsWrite/Net/Exec/MemoryAppend/Unknown`). `CapabilityPolicy : Objective` reads **scopes from the
 manifest** (`Objective = capability_policy { fs_read_allow / fs_deny / block_private_net / confirm_unscoped }`,
 MULTI-LINE per the (2) parser footgun) and gates at the Arbiter veto seam: **hard-veto** fs_read of a denied
@@ -283,11 +310,11 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `tests/test_capability_{policy,wiring}.cpp`.
 
 ## NEXT (decided 2026-07-01, Vaios) — in order
-**1. Skills** — a skills system for the hades agent (loadable capability/instruction packs the agent can
-discover + invoke, à la Claude Code skills). Nothing specced — **brainstorm-first**: what a hades "skill" IS
-(prompt pack? tool bundle? manifest fragment?), storage/discovery (a `skills/` dir? announced in the system
-prompt? a `Skill` block in the manifest?), how the LLM invokes one, MOOS framing (closest analog: a loadable
-behavior/mission module). Relates to the parked "persona switch" idea.
+**1. Skills — DONE (shipped 2026-07-02, `feat/skills`).** A skills system for the hades agent: loadable
+instruction packs (`<skills_dir>/<name>/SKILL.md`) the agent discovers via the leading-system-message "Available
+skills" roster (SkillsModule `SKILLS_ANNOUNCE` fold) and invokes with `use_skill`, authoring new ones with
+`save_skill`. `Skills { dir = skills }` block; `Module = skills` (opt-in). See the **Skills system** subsection under
+Current state. (Relates to the parked "persona switch" idea — a persona could ship as a skill.)
 **2. Chat-app communication** — talk to the agent via other apps (Telegram/Signal/WhatsApp/Discord/Matrix…).
 Architecturally = **new front-end Module(s)** alongside ChatModule/HttpServerModule (same pattern: post
 USER_MESSAGE → run_until → reply), likely long-polling/webhook per app; per-app auth/token via env var
@@ -346,6 +373,8 @@ agent↔agent Bridge (parked).
   `POST /chat`+`/confirm` (don't strip it client-side). `/.hades/` and runtime stores are gitignored.
 - Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
+- `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so
+  agent-written `skills/<name>/SKILL.md` show as working-tree churn to review/commit (or gitignore it).
 - Interactive REPL uses readline only when stdin is a **real TTY**; piped/test input falls back to
   `std::getline` (keeps the injected-stream test seam). Arrow-key editing verified live 2026-06-29.
 - **Embedding `endpoint` must be the BASE url, NOT `.../embeddings`** — the HTTP provider appends `/embeddings`.

@@ -3,7 +3,7 @@ Session
 {
   provider       = openai_compat
   endpoint       = https://api.ppq.ai/v1
-  model          = claude-haiku-4.5
+  model          = gpt-5.5
   api_key_env    = HADES_API_KEY
   price_per_mtok = 5.0
   system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
@@ -20,6 +20,7 @@ Module = memory
 Module = chat
 Module = arbiter
 Module = serve
+Module = skills
 Tool = fs         { native = ./build/hades-fs-read }
 Tool = shell      { native = ./build/hades-shell }
 Tool = write_file { native = ./build/hades-write-file }
@@ -27,10 +28,16 @@ Tool = list_dir   { native = ./build/hades-list-dir }
 Tool = http_fetch { native = ./build/hades-http-fetch }
 Tool = save_memory { native = ./build/hades-save-memory }
 Tool = pin_fact    { native = ./build/hades-pin-fact }
+Tool = use_skill  { native = ./build/hades-use-skill }
+Tool = save_skill { native = ./build/hades-save-skill }
 Memory
 {
   store = .hades/memory.jsonl
   top_n = 5
+}
+Skills
+{
+  dir = skills
 }
 Arbiter { policy = v1 }
 Objective = stay_on_budget   { hard_cap_usd = 1.0 }
@@ -70,7 +77,7 @@ Embedding {
   index_sessions     = true
   top_n              = 3
   min_similarity     = 0.45
-  reindex_interval_s = 86400
+  reindex_interval_s = 40
   batch_size         = 32
   timeout_s          = 120
 }
