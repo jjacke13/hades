@@ -152,6 +152,8 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "http_fetch")                              return Capability::Net;
   if (tool == "shell")                                   return Capability::Exec;
   if (tool == "save_memory" || tool == "pin_fact")       return Capability::MemoryAppend;
+  if (tool == "use_skill")                               return Capability::SkillRead;
+  if (tool == "save_skill")                              return Capability::SkillWrite;
   return Capability::Unknown;
 }
 
@@ -235,6 +237,15 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
           return deny("net fetch to a denied host: " + host);
       return allow();
     }
+    case Capability::SkillRead:
+    case Capability::SkillWrite:
+      // The agent's own skills library: the directory is fixed by wiring argv (never chosen by
+      // the LLM) and the skill name is strictly gated in the tools. pin_fact precedent —
+      // unconfirmed writes to the agent's own files; a saved skill is WEAKER than a pin (its
+      // body only enters context on an explicit use_skill). Distinct capabilities (not
+      // MemoryAppend) keep the table honest so a future policy can confirm-gate SkillWrite
+      // without code changes.
+      return allow();
     case Capability::Unknown:
     default:
       return confirm("unknown tool '" + a.tool + "': capability undeclared");

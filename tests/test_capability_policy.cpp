@@ -233,3 +233,22 @@ TEST(CapabilityPolicy, TrailingDotHostStillClassifiedPrivate) {
   EXPECT_TRUE(CapabilityPolicy::is_private_host("localhost."));
   EXPECT_TRUE(CapabilityPolicy::is_private_host("127.0.0.1."));
 }
+
+TEST(CapabilityPolicy, SkillToolsHaveDistinctCapabilities) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("use_skill"), Capability::SkillRead);
+  EXPECT_EQ(CapabilityPolicy::capability_of("save_skill"), Capability::SkillWrite);
+}
+
+TEST(CapabilityPolicy, SkillToolsAreAllowedWithoutConfirm) {
+  CapabilityScope sc;              // defaults: confirm_unscoped = true — proves these are NOT
+  CapabilityPolicy p(sc);          // falling through to the Unknown->confirm path
+  Blackboard bb;
+  Action use{Action::Kind::ToolCall};
+  use.tool = "use_skill";
+  use.args = {{"name", "greet"}};
+  EXPECT_FALSE(p.veto(bb, use).vetoed);
+  Action save{Action::Kind::ToolCall};
+  save.tool = "save_skill";
+  save.args = {{"name", "greet"}, {"description", "d"}, {"body", "b"}};
+  EXPECT_FALSE(p.veto(bb, save).vetoed);
+}
