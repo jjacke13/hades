@@ -1,6 +1,7 @@
 // src/skills/scan.cpp — skills dir scan + frontmatter parse (pure, tolerant, never throws)
 #include "hades/skills/scan.h"
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
