@@ -238,6 +238,17 @@ Pieces: `src/module/skills_module.cpp`, `src/skills/scan.cpp`, `include/hades/sk
 `app/agent_wiring.cpp` (roster factory + `Skills` block + dir argv), `src/objective/capability_policy.cpp`,
 `tests/test_skills_*.cpp`. Spec/plan: `docs/superpowers/specs/2026-07-02-skills-system-design.md`,
 `docs/superpowers/plans/2026-07-02-skills-system.md`.
+**Skills v2 idea-list (Vaios 2026-07-02: v1 stays AS-IS short/mid-term — these are parked, not planned):**
+1. `delete_skill` / rename tooling (today: user deletes the dir by hand).
+2. Relevance hints — embedding module suggests "skill X may apply" alongside memory retrieval.
+3. Per-skill capability scopes; **confirm-gate `SkillWrite`** by policy (enum split already supports it, zero code).
+4. Skill-declared first-class tools (dynamic tool registration when a skill loads).
+5. Announce pagination/grouping once the library grows past dozens of skills.
+6. From the final review (recorded, non-blocking): symlink-follow in the tools (lexical-not-realpath — same
+   documented v1 gap as capability_policy); `avoid_destructive` pattern-scans save_skill BODIES → a skill
+   documenting `rm -rf` confirm-gates on save (safe, maybe desirable; exclude skill tools from the arg-scan if
+   annoying); `pending_saves_` id leak if tool-offload ever breaks the request→result invariant; possible move
+   of `skills/` under `.hades/` (one-line `Skills { dir }` change, no code — Vaios may relocate later).
 
 ## Build / run
 ```bash
