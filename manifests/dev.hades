@@ -59,9 +59,8 @@ Serve
   port    = 8080
   webroot = web
 }
-# --- Opt-in semantic memory (uncomment + point `command` at an embedder to enable) ---
-# Keeps dev keyword-by-default: leave `Module = embedding_memory` commented to run without an
-# embedder. Local backend options for `command`/`endpoint`:
+# --- Opt-in semantic memory (ENABLED below via PPQ; comment `Module = embedding_memory` to
+# fall back to keyword-only memory without an embedder). Backend options for `command`/`endpoint`:
 #   - sentence-transformers: provider = subprocess ; command = python3 ./tools/embed_reference.py
 #   - ollama:    `ollama pull nomic-embed-text`; provider = http ; endpoint = http://localhost:11434/v1 ; model = nomic-embed-text
 #   - llama.cpp: `llama-server --embedding`;       provider = http ; endpoint = http://localhost:8080/v1 (OpenAI-compat /embeddings)
@@ -77,7 +76,7 @@ Embedding {
   index_sessions     = true
   top_n              = 3
   min_similarity     = 0.45
-  reindex_interval_s = 40
+  reindex_interval_s = 86400   # daily batch reindex (0 = off)
   batch_size         = 32
   timeout_s          = 120
 }
