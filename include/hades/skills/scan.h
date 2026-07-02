@@ -6,7 +6,6 @@
 // the standalone tool binaries (use_skill/save_skill) share the exact same security-critical
 // validation without linking hades_core.
 #pragma once
-#include <cctype>
 #include <string>
 #include <vector>
 #include "hades/config.h"
@@ -19,10 +18,15 @@ struct SkillInfo {
 
 // Strict skill-name gate: 1..64 chars of [A-Za-z0-9_-]. Anything else (path separators, dots,
 // whitespace, empty) is rejected — a traversal name would be an arbitrary read/write escape.
+// The range check is deliberately explicit ASCII (NOT std::isalnum): security-critical and shared
+// by future tool binaries, it must be locale-INDEPENDENT.
 inline bool valid_skill_name(const std::string& n) {
   if (n.empty() || n.size() > 64) return false;
-  for (char c : n)
-    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) return false;
+  for (char c : n) {
+    const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '_' || c == '-';
+    if (!ok) return false;
+  }
   return true;
 }
 

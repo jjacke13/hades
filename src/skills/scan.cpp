@@ -36,13 +36,15 @@ std::vector<SkillInfo> scan_skills_dir(const std::string& dir) {
     if (ec) break;                                          // unreadable continuation: keep what we have
     std::error_code dec;
     if (!it->is_directory(dec) || dec) continue;
+    const std::string name = it->path().filename().string();
+    if (!valid_skill_name(name)) continue;   // announce only what use_skill can load
     std::ifstream f(it->path() / "SKILL.md");
     if (!f) continue;                                       // not a skill dir
     std::stringstream s;
     s << f.rdbuf();
     std::string desc = parse_skill_description(s.str());
     if (desc.empty()) continue;                             // unparseable skill: skip, never crash
-    out.push_back({it->path().filename().string(), std::move(desc)});
+    out.push_back({name, std::move(desc)});
   }
   std::sort(out.begin(), out.end(),
             [](const SkillInfo& a, const SkillInfo& b) { return a.name < b.name; });

@@ -37,6 +37,7 @@ TEST(SkillsScan, ValidSkillNameGate) {
   EXPECT_FALSE(valid_skill_name("a\\b"));
   EXPECT_FALSE(valid_skill_name("a b"));
   EXPECT_FALSE(valid_skill_name("dot.name"));
+  EXPECT_TRUE(valid_skill_name(std::string(64, 'a')));    // inclusive upper bound
   EXPECT_FALSE(valid_skill_name(std::string(65, 'a')));   // length cap 64
 }
 
@@ -47,6 +48,7 @@ TEST(SkillsScan, ScansSortedAndSkipsBadEntries) {
   write_skill(root, "alpha", "---\ndescription: first\n---\na");
   write_skill(root, "broken", "no frontmatter");            // skipped: unparseable
   fs::create_directories(root + "/empty-dir");              // skipped: no SKILL.md
+  write_skill(root, "bad.name", "---\ndescription: valid md\n---\nx");  // skipped: name gate
   auto v = scan_skills_dir(root);
   ASSERT_EQ(v.size(), 2u);
   EXPECT_EQ(v[0].name, "alpha");
