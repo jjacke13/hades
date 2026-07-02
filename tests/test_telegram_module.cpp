@@ -71,10 +71,10 @@ struct Rig {
 
 TEST(TelegramModule, AllowedMessageDrivesTurnAndReplies) {
   Rig r;
-  r.api->batches.push_back({msg(1, 42, -9, "hi")});
+  r.api->batches.push_back({msg(1, 42, 42, "hi")});   // DM: chat_id == from_id
   EXPECT_TRUE(r.mod->poll_once());
   ASSERT_EQ(r.api->sent.size(), 1u);
-  EXPECT_EQ(r.api->sent[0].first, -9);
+  EXPECT_EQ(r.api->sent[0].first, 42);
   EXPECT_EQ(r.api->sent[0].second, "echo:hi");
 }
 
@@ -86,6 +86,16 @@ TEST(TelegramModule, NonAllowedSenderSilentlyIgnored) {
   r.mod->poll_once();
   EXPECT_FALSE(user_msg);                 // never reached the agent
   EXPECT_TRUE(r.api->sent.empty());       // and got no reply (don't reveal the bot is alive)
+}
+
+TEST(TelegramModule, GroupChatMessageIgnoredEvenFromAllowedUser) {
+  Rig r;
+  bool user_msg = false;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { user_msg = true; });
+  r.api->batches.push_back({msg(1, 42, -100999, "hi from a group")});   // chat_id != from_id
+  r.mod->poll_once();
+  EXPECT_FALSE(user_msg);
+  EXPECT_TRUE(r.api->sent.empty());   // no reply into the group
 }
 
 TEST(TelegramModule, StartupBacklogIsDrainedAndDiscarded) {
@@ -108,7 +118,7 @@ TEST(TelegramModule, StartupBacklogIsDrainedAndDiscarded) {
   mod->poll_once();                        // drain pass: consumes until empty, DISCARDS all
   EXPECT_FALSE(user_msg);
   EXPECT_TRUE(api->sent.empty());
-  api->batches.push_back({msg(3, 42, -9, "fresh")});
+  api->batches.push_back({msg(3, 42, 42, "fresh")});   // DM: chat_id == from_id
   mod->poll_once();                        // now live
   EXPECT_TRUE(user_msg);
 }
@@ -118,7 +128,7 @@ TEST(TelegramModule, LongReplyIsSplitAt4096) {
   r.bb.subscribe("USER_MESSAGE", [&](const Entry&) {
     r.bb.post("ASSISTANT_MESSAGE", std::string(5000, 'x'), "t");
   });
-  r.api->batches.push_back({msg(1, 42, -9, "big")});
+  r.api->batches.push_back({msg(1, 42, 42, "big")});   // DM: chat_id == from_id
   r.mod->poll_once();
   ASSERT_EQ(r.api->sent.size(), 2u);
   EXPECT_EQ(r.api->sent[0].second.size(), 4096u);
@@ -135,12 +145,12 @@ TEST(TelegramModule, ConfirmFlowApproveViaInlineKeyboard) {
     if (e.value.value("approved", false))
       r.bb.post("ASSISTANT_MESSAGE", "ran it", "t");
   });
-  r.api->batches.push_back({msg(1, 42, -9, "wipe build dir")});
+  r.api->batches.push_back({msg(1, 42, 42, "wipe build dir")});   // DM: chat_id == from_id
   r.mod->poll_once();
   ASSERT_EQ(r.api->confirms.size(), 1u);          // buttons sent
   EXPECT_EQ(r.api->confirms[0], "c1");
   EXPECT_TRUE(r.api->sent.empty());               // no reply yet — gated
-  r.api->batches.push_back({cb(2, 42, -9, "cbq9", "approve:c1")});
+  r.api->batches.push_back({cb(2, 42, 42, "cbq9", "approve:c1")});
   r.mod->poll_once();
   ASSERT_EQ(r.api->answered.size(), 1u);          // spinner dismissed
   EXPECT_EQ(r.api->answered[0], "cbq9");
@@ -170,7 +180,7 @@ TEST(TelegramModule, ApiErrorSurvivesAndReportsFailure) {
   Rig r;
   r.api->throw_next = true;
   EXPECT_FALSE(r.mod->poll_once());               // error surfaced, no crash
-  r.api->batches.push_back({msg(1, 42, -9, "still alive")});
+  r.api->batches.push_back({msg(1, 42, 42, "still alive")});   // DM: chat_id == from_id
   EXPECT_TRUE(r.mod->poll_once());                // next batch works
   EXPECT_EQ(r.api->sent.size(), 1u);
 }

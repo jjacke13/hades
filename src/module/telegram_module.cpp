@@ -148,6 +148,9 @@ bool TelegramModule::poll_once() {
     for (const auto& u : updates) {
       offset_ = std::max(offset_, u.update_id + 1);
       if (!allow_.count(u.from_id)) continue;      // silently drop non-allowed senders
+      // v1 is PRIVATE-CHAT-ONLY: in a group, non-allowlisted members could read replies and
+      // see confirm buttons. A DM always has chat_id == from_id; anything else is dropped.
+      if (u.kind == "message" && u.chat_id != u.from_id) continue;
       if (u.kind == "message" && !u.text.empty()) handle_text_(u);
       else if (u.kind == "callback") handle_callback_(u);
     }

@@ -7,6 +7,7 @@
 // is REQUIRED (MalConfig without it) and non-allowed senders are silently dropped; the bot
 // token comes from an env var (token_env) and never appears in the manifest. The startup
 // backlog is drained AND DISCARDED so commands queued while the agent was down never replay.
+// v1 is private-chat-only: group-chat messages are dropped (replies would be group-readable).
 // The poll thread is started EXPLICITLY (start_polling, from hades_main) — never by on_attach —
 // and is stop+joined in the dtor (before the Blackboard dies; embedding-timer precedent).
 #pragma once

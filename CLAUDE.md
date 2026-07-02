@@ -157,7 +157,9 @@ a request / blocked on stdin) holds **nothing**. Injected into chat/serve/telegr
 `on_attach` in `wire_agent`. **Turn-owner guard:** the module captures `ASSISTANT_MESSAGE`/`CONFIRM_REQUEST`
 only while `my_turn_` (symmetric to ChatModule's stdin guard) — a REPL/web reply is not sent to Telegram.
 **Security:** `allow_users` (numeric ids) is **REQUIRED** — `on_start` throws `MalConfig` without it (an open
-bot = anyone who finds it can drive your agent); non-allowed senders are **silently dropped**. Token via
+bot = anyone who finds it can drive your agent); non-allowed senders are **silently dropped**. **v1 is
+private-chat-only** (`chat_id == from_id` enforced; group messages dropped — replies would be group-readable).
+Token via
 `token_env` (default `TELEGRAM_BOT_TOKEN`) **only**, never in the manifest; `hades_main` **redacts** it in
 `session.log` (best-effort resolve of the same env var). Keep it in a **gitignored `.env`** you `source`.
 **Backlog discard:** the first `poll_once` drains-and-discards the startup backlog (`offset` advanced past it)
@@ -414,7 +416,8 @@ agent↔agent Bridge (parked).
   `POST /chat`+`/confirm` (don't strip it client-side). `/.hades/` and runtime stores are gitignored.
 - **Telegram** (`Module = telegram`): `allow_users` (numeric ids) is **REQUIRED** — `on_start` throws
   `MalConfig` without it (an open bot lets anyone drive the agent); non-allowed senders are silently
-  dropped. Bot token via `token_env` (default `TELEGRAM_BOT_TOKEN`) env var **only** — never in the
+  dropped. **Private-chat-only (v1):** `chat_id == from_id` enforced; group messages are dropped (replies
+  would be group-readable). Bot token via `token_env` (default `TELEGRAM_BOT_TOKEN`) env var **only** — never in the
   manifest; redacted in `session.log`; keep it in a **gitignored `.env`** you `source`. The poll thread is
   started by `hades_main` AFTER wiring (`start_polling()`), NOT in `on_attach` (tests never spawn a thread);
   the dtor's join can wait up to one `poll_timeout_s` cycle for `getUpdates` to return (default 50s → shorten
