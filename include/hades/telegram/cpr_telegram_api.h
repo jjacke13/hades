@@ -7,6 +7,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 #include "hades/telegram/api.h"
 namespace hades {
 class CprTelegramApi : public TelegramApi {
