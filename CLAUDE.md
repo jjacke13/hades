@@ -282,9 +282,20 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
 
-## NEXT — **Memory system v2 (revisit SOON, decided 2026-07-01, Vaios)**
-Embeddings (P1+P2) + injection framing shipped + live. Vaios: "we'll have to revisit this memory system pretty
-soon." **Brainstorm-first — this is a rethink, not a bolt-on.** Consolidated work-list:
+## NEXT (decided 2026-07-01, Vaios) — in order
+**1. Skills** — a skills system for the hades agent (loadable capability/instruction packs the agent can
+discover + invoke, à la Claude Code skills). Nothing specced — **brainstorm-first**: what a hades "skill" IS
+(prompt pack? tool bundle? manifest fragment?), storage/discovery (a `skills/` dir? announced in the system
+prompt? a `Skill` block in the manifest?), how the LLM invokes one, MOOS framing (closest analog: a loadable
+behavior/mission module). Relates to the parked "persona switch" idea.
+**2. Chat-app communication** — talk to the agent via other apps (Telegram/Signal/WhatsApp/Discord/Matrix…).
+Architecturally = **new front-end Module(s)** alongside ChatModule/HttpServerModule (same pattern: post
+USER_MESSAGE → run_until → reply), likely long-polling/webhook per app; per-app auth/token via env var
+(never in the manifest); confirm-gating must work over the chat app (Approve/Deny). **Brainstorm-first**:
+which app first (Telegram bot API is the easiest: pure HTTPS long-poll, no LAN exposure), one generic
+"bridge" module vs per-app modules, message threading vs the single-session model.
+**3. Memory system v2 (revisit SOON)** — embeddings (P1+P2) + injection framing shipped + live. Vaios:
+"we'll have to revisit this memory system pretty soon." **Brainstorm-first — a rethink, not a bolt-on.** Work-list:
 1. **Storage:** switch the flat `.hades/embeddings/*.vec.jsonl` → **sqlite + binary vectors** (+ ANN index once the
    corpus grows) — drop-in behind the `VectorCache` seam (module/Arbiter untouched). Today = flat jsonl + brute-force cosine.
 2. **Corpus quality (the real weakness — found live):** the agent **rarely saves facts** (core `facts.md` empty, ~3
