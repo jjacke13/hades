@@ -23,14 +23,20 @@ void SkillsModule::on_attach(Blackboard& bb) {
   post_announce_();
   bb.subscribe("TOOL_REQUEST", [this](const Entry& e) {
     if (!e.value.is_object()) return;
-    if (e.value.value("tool", "") != "save_skill") return;
-    const std::string id = e.value.value("id", "");
-    if (!id.empty()) pending_saves_.insert(id);
+    auto t = e.value.find("tool");
+    if (t == e.value.end() || !t->is_string() || t->get<std::string>() != "save_skill") return;
+    auto id = e.value.find("id");
+    if (id == e.value.end() || !id->is_string()) return;
+    const std::string s = id->get<std::string>();
+    if (!s.empty()) pending_saves_.insert(s);
   });
   bb.subscribe("TOOL_RESULT", [this](const Entry& e) {
     if (!e.value.is_object()) return;
-    if (pending_saves_.erase(e.value.value("id", "")) == 0) return;   // not a save_skill result
-    if (e.value.value("ok", false)) post_announce_();
+    auto id = e.value.find("id");
+    if (id == e.value.end() || !id->is_string()) return;
+    if (pending_saves_.erase(id->get<std::string>()) == 0) return;   // not a save_skill result
+    auto ok = e.value.find("ok");
+    if (ok != e.value.end() && ok->is_boolean() && ok->get<bool>()) post_announce_();
   });
 }
 }  // namespace hades

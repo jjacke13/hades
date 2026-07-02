@@ -90,5 +90,10 @@ TEST(SkillsModule, MalformedBusPayloadsDoNotCrash) {
   bb.post("TOOL_REQUEST", "not an object", "x");
   bb.post("TOOL_RESULT", 42, "x");
   bb.pump();   // must not throw
+  bb.post("TOOL_REQUEST", {{"id", "w1"}, {"tool", 42}, {"args", {}}}, "x");           // non-string tool
+  bb.post("TOOL_REQUEST", {{"id", 7}, {"tool", "save_skill"}, {"args", {}}}, "x");    // non-string id
+  bb.post("TOOL_REQUEST", {{"id", "w2"}, {"tool", "save_skill"}, {"args", {}}}, "x"); // tracked...
+  bb.post("TOOL_RESULT", {{"id", "w2"}, {"ok", "true"}, {"content", {}}}, "x");       // ...non-bool ok
+  bb.pump();   // none of these may throw; the string "true" is NOT ok==true -> no rescan
   SUCCEED();
 }
