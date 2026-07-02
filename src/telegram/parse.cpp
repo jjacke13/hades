@@ -12,7 +12,9 @@ long long num(const nlohmann::json& j, const char* key) {
 ParsedUpdates parse_updates(const std::string& body) {
   ParsedUpdates out;
   auto j = nlohmann::json::parse(body, nullptr, false);
-  if (j.is_discarded() || !j.is_object() || !j.value("ok", false)) return out;
+  if (j.is_discarded() || !j.is_object()) return out;
+  auto ok_it = j.find("ok");
+  if (ok_it == j.end() || !ok_it->is_boolean() || !ok_it->get<bool>()) return out;
   auto res = j.find("result");
   if (res == j.end() || !res->is_array()) return out;
   out.ok = true;

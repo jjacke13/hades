@@ -46,6 +46,8 @@ TEST(TelegramParse, SkipsNonTextAndMalformedEntries) {
 TEST(TelegramParse, BadBodyIsNotOkAndNeverThrows) {
   EXPECT_FALSE(parse_updates("not json").ok);
   EXPECT_FALSE(parse_updates(R"({"ok":false})").ok);
+  EXPECT_FALSE(parse_updates(R"({"ok":"true","result":[]})").ok);   // non-bool ok: no throw
+  EXPECT_FALSE(parse_updates(R"({"ok":1,"result":[]})").ok);
   EXPECT_FALSE(parse_updates("").ok);
 }
 
