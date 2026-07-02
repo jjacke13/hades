@@ -20,6 +20,8 @@
 #include "hades/module/memory_module.h"
 #include "hades/module/embedding_memory_module.h"
 #include "hades/module/skills_module.h"
+#include "hades/module/telegram_module.h"
+#include "hades/turn_gate.h"
 #include "hades/arbiter.h"
 namespace hades {
 class Blackboard;
@@ -29,6 +31,9 @@ class Blackboard;
 // the blackboard's pump() activity. Modules are declared in reverse teardown
 // order (last-declared is destroyed first); the holder is move-only.
 struct Agent {
+  // Shared whole-turn serializer. FIRST member => destroyed LAST — it must outlive every
+  // front-end module that holds a pointer to it (members destruct in reverse order).
+  TurnGate gate;
   std::unique_ptr<LLMModule>    llm;
   std::unique_ptr<ToolRunner>   tools;
   std::unique_ptr<Arbiter>      arbiter;
@@ -53,6 +58,11 @@ struct Agent {
   // (hades_main also declares the Blackboard BEFORE the Agent, so the workers
   // join before the bus dies too — see the comment there.)
   std::unique_ptr<Executor> executor;
+  // Telegram front-end. LAST member => destroyed FIRST: its dtor stop+joins the poll thread,
+  // and an in-flight telegram-driven turn must finish (or hit the idle ceiling) while the
+  // executor and every module it touches are still alive. Do NOT move below-declared members
+  // above it. (executor stays after the plain modules for the same reason — see its comment.)
+  std::unique_ptr<TelegramModule> telegram;
 };
 
 // Build the full agent graph onto `bb`, injecting `llm` as the provider. Each

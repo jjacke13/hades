@@ -104,6 +104,14 @@ int main(int argc, char** argv) {
 
     Eventlog eventlog("session.log");
     eventlog.add_redaction(key);
+    // Redact the Telegram bot token too (it is embedded in every Bot API URL). Best-effort:
+    // resolve the same env var the module will use; if unset, the module throws MalConfig later.
+    {
+      const auto tg = manifest.of("Telegram");
+      std::string tg_env = "TELEGRAM_BOT_TOKEN";
+      if (!tg.empty() && tg.front().kv.count("token_env")) tg_env = tg.front().kv.at("token_env");
+      if (const char* tg_token = std::getenv(tg_env.c_str())) eventlog.add_redaction(tg_token);
+    }
 
     // LOAD-BEARING declaration order: `bb` BEFORE `agent`, so at scope exit `agent`
     // (and the Executor it owns, its last member) is destroyed FIRST and `bb` LAST.
@@ -141,13 +149,23 @@ int main(int argc, char** argv) {
     if (agent.serve) agent.serve->set_session_path(session_path);
     if (resume) agent.arbiter->load_history();
 
+    // Telegram front-end: start the poll loop AFTER the full graph is wired (never inside
+    // wire_agent — no surprise threads in tests). Runs alongside whichever blocking front-end
+    // (REPL / --serve) drives the main thread; turns are serialized by the shared TurnGate.
+    if (agent.telegram) agent.telegram->start_polling();
+
     if (serve) {
       if (!agent.serve) { std::cerr << "hades: no `serve` module in the manifest Module roster\n"; return 1; }
       const ServeConfig cfg = resolve_serve_config(manifest, cli_port);
       agent.serve->listen(cfg.host, cfg.port, cfg.webroot);  // blocks until killed
-    } else {
-      if (!agent.chat) { std::cerr << "hades: no `chat` module in the manifest Module roster\n"; return 1; }
+    } else if (agent.chat) {
       agent.chat->run_repl(std::cin, std::cout);
+    } else if (agent.telegram) {
+      std::cerr << "hades: telegram-only roster — polling (Ctrl-C to exit)\n";
+      agent.telegram->wait();                                 // blocks on the poll thread
+    } else {
+      std::cerr << "hades: no `chat` module in the manifest Module roster\n";
+      return 1;
     }
     // Agent's RAII teardown (reverse-declared) releases the modules; tool
     // subprocesses are short-lived and reaped synchronously per call.

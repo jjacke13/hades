@@ -90,7 +90,8 @@ void wire_agent(Agent& a,
                 std::string model,
                 const Block& embedding = Block{},
                 const std::string& session_path = "",
-                const Block& skills_cfg = Block{}) {
+                const Block& skills_cfg = Block{},
+                const Block& telegram_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -194,13 +195,28 @@ void wire_agent(Agent& a,
     a.arbiter->on_attach(bb);
   }
 
-  // 4) Chat last: it is the user-facing surface and only needs attach (its REPL
-  //    is driven by the caller).
-  if (a.chat) a.chat->on_attach(bb);
+  // 4) Chat: the user-facing surface. Inject the shared TurnGate BEFORE on_attach so its
+  //    REPL serializes turns against the other front-ends. Its REPL is driven by the caller.
+  if (a.chat) {
+    a.chat->set_turn_gate(&a.gate);
+    a.chat->on_attach(bb);
+  }
 
-  // 5) HTTP front-end: attach its capture subscriptions; only drives the agent if
-  //    the binary calls serve->listen() (--serve mode). Inert otherwise.
-  if (a.serve) a.serve->on_attach(bb);
+  // 5) HTTP front-end: same shared gate BEFORE on_attach; only drives the agent if the
+  //    binary calls serve->listen() (--serve mode). Inert otherwise.
+  if (a.serve) {
+    a.serve->set_turn_gate(&a.gate);
+    a.serve->on_attach(bb);
+  }
+
+  // 6) Telegram front-end: config (MalConfig on missing allow_users / token env) + captures.
+  //    The poll thread is NOT started here — hades_main calls start_polling() explicitly, so
+  //    tests and non-interactive builds never spawn a surprise thread.
+  if (a.telegram) {
+    a.telegram->set_turn_gate(&a.gate);
+    a.telegram->on_start(telegram_cfg, bb);
+    a.telegram->on_attach(bb);
+  }
 }
 
 }  // namespace
@@ -278,6 +294,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
   launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
+  launcher.register_factory("telegram",    []{ return std::make_unique<TelegramModule>(); });
   launcher.instantiate(m);   // MalConfig on unknown Module type
 
   Agent a;
@@ -289,6 +306,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.arbiter = take_as<Arbiter>(launcher, "arbiter");
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
+  a.telegram = take_as<TelegramModule>(launcher, "telegram");
 
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
@@ -296,6 +314,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block embedding = embed_blocks.empty() ? Block{} : embed_blocks.front();
   const auto skills_blocks = m.of("Skills");
   const Block skills_cfg = skills_blocks.empty() ? Block{} : skills_blocks.front();
+  const auto tg_blocks = m.of("Telegram");
+  const Block telegram_cfg = tg_blocks.empty() ? Block{} : tg_blocks.front();
 
   // Live path only: own a small worker pool and offload the blocking LLM call onto it so
   // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
@@ -313,13 +333,14 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // Pass the resolved live-session path through so wire_agent sets it on the embedding module
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
-             skills_cfg);
+             skills_cfg, telegram_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
   // a roster may omit chat and/or serve. Tests still set small values through the same seam.
   if (a.chat)  a.chat->set_turn_timeout_s(turn_idle_timeout_s);
   if (a.serve) a.serve->set_collect_timeout_s(turn_idle_timeout_s);
+  if (a.telegram) a.telegram->set_turn_timeout_s(turn_idle_timeout_s);
   return a;
 }
 

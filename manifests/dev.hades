@@ -80,3 +80,14 @@ Embedding {
   batch_size         = 32
   timeout_s          = 120
 }
+
+# --- Telegram front-end (uncomment, set YOUR numeric user id, export TELEGRAM_BOT_TOKEN) ---
+# Get an id: message @userinfobot. Non-listed senders are silently ignored. Token via env ONLY
+# (keep it in a gitignored .env you `source`); it is redacted in session.log.
+# Module = telegram
+# Telegram
+# {
+#   token_env      = TELEGRAM_BOT_TOKEN
+#   allow_users    = 123456789
+#   poll_timeout_s = 50
+# }

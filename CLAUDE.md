@@ -29,15 +29,16 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-02)
-`feat/skills` (off `main` @ `678a248`), **284/284 tests** (ASan+UBSan + **TSan** clean; suite ~3.0s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
+`feat/telegram` (off `main` @ `678a248`), **305/305 tests** (ASan+UBSan + **TSan** clean; suite ~3.4s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **9 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 **two memory layers** (core + archival, see below) · a **skills system** (loadable instruction packs, see below) ·
 layered **system prompt** (SOUL/USER static +
-live core MEMORY) · two front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
-labels) and **HTTP `--serve`** (browser web UI + JSON API, see below) · **worker-offload concurrency**
+live core MEMORY) · three front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
+labels), **HTTP `--serve`** (browser web UI + JSON API, see below), and a **Telegram bot** (long-poll,
+allowlisted, see below) — all serialized by one shared **TurnGate** · **worker-offload concurrency**
 (see below) · **manifest parser fails LOUD** on packed multi-kv lines (see below).
 
 ### Worker-offload (shipped 2026-06-29) — bus stays single-threaded, blocking LLM call offloaded
@@ -144,6 +145,31 @@ it without a preflight we never grant), blocking a visited website from driving 
 static GET exempt. **No password auth by design** (user's private networking) — the `authorize()` seam
 is the one-place add for it later. Seam also set for a future settings UI (`web/settings.html` +
 `GET/POST /manifest` — deferred). SSE/WS streaming still deferred (replies arrive whole).
+
+### Telegram front-end (shipped 2026-07-03) — long-poll bot, allowlisted, shares the TurnGate
+`Module = telegram` + a `Telegram { token_env allow_users poll_timeout_s }` block adds a third front-end:
+`TelegramModule` long-polls the Bot API (`getUpdates`) on **its own thread** and drives whole turns exactly
+like the REPL/HTTP surfaces — lock the shared **TurnGate** → post `USER_MESSAGE` → `run_until(reply|confirm)`
+→ `sendMessage` (split at 4096). **Concurrency model:** all three front-ends now serialize through ONE
+`TurnGate` (`include/hades/turn_gate.h`, Agent's **FIRST** member → destroyed LAST), so the Telegram poll
+thread + a `--serve` request + the REPL never pump the bus at once; an idle surface (long-polling / awaiting
+a request / blocked on stdin) holds **nothing**. Injected into chat/serve/telegram **before** their
+`on_attach` in `wire_agent`. **Turn-owner guard:** the module captures `ASSISTANT_MESSAGE`/`CONFIRM_REQUEST`
+only while `my_turn_` (symmetric to ChatModule's stdin guard) — a REPL/web reply is not sent to Telegram.
+**Security:** `allow_users` (numeric ids) is **REQUIRED** — `on_start` throws `MalConfig` without it (an open
+bot = anyone who finds it can drive your agent); non-allowed senders are **silently dropped**. Token via
+`token_env` (default `TELEGRAM_BOT_TOKEN`) **only**, never in the manifest; `hades_main` **redacts** it in
+`session.log` (best-effort resolve of the same env var). Keep it in a **gitignored `.env`** you `source`.
+**Backlog discard:** the first `poll_once` drains-and-discards the startup backlog (`offset` advanced past it)
+so a command queued while the agent was down never replays. **Confirm-gated** actions become an
+inline-keyboard `[Approve]/[Deny]` message → `callback_query` → `CONFIRM_RESPONSE`. **Threading/lifecycle:**
+the poll thread is started **explicitly** by `hades_main` (`start_polling()`, AFTER the graph is wired — never
+in `on_attach`, so tests spawn no thread) and stop+joined in the dtor; `Agent::telegram` is the **LAST**
+member → destroyed FIRST, so its dtor finishes any in-flight telegram turn while the Executor + every module
+it touches are still alive (see the member comment). A telegram-only roster (no chat/serve) makes `hades_main`
+block on `wait()`. Pieces: `src/module/telegram_module.cpp`, `include/hades/{module/telegram_module.h,
+turn_gate.h,telegram/*}`, `src/telegram/*`, `app/{agent_wiring,hades_main}.*`, `tests/test_telegram_*.cpp`,
+`tests/test_turn_gate.cpp`. **Live-smoke pending** (Vaios: bot from @BotFather + your id from @userinfobot).
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 
@@ -326,12 +352,13 @@ instruction packs (`<skills_dir>/<name>/SKILL.md`) the agent discovers via the l
 skills" roster (SkillsModule `SKILLS_ANNOUNCE` fold) and invokes with `use_skill`, authoring new ones with
 `save_skill`. `Skills { dir = skills }` block; `Module = skills` (opt-in). See the **Skills system** subsection under
 Current state. (Relates to the parked "persona switch" idea — a persona could ship as a skill.)
-**2. Chat-app communication** — talk to the agent via other apps (Telegram/Signal/WhatsApp/Discord/Matrix…).
-Architecturally = **new front-end Module(s)** alongside ChatModule/HttpServerModule (same pattern: post
-USER_MESSAGE → run_until → reply), likely long-polling/webhook per app; per-app auth/token via env var
-(never in the manifest); confirm-gating must work over the chat app (Approve/Deny). **Brainstorm-first**:
-which app first (Telegram bot API is the easiest: pure HTTPS long-poll, no LAN exposure), one generic
-"bridge" module vs per-app modules, message threading vs the single-session model.
+**2. Chat-app communication — DONE for Telegram (shipped 2026-07-03, `feat/telegram`).** `TelegramModule` is the
+first per-app front-end: long-poll `getUpdates`, allowlisted, shared TurnGate, inline-keyboard confirms, token
+via env + redacted. See the **Telegram front-end** subsection under Current state. Pattern proven for the next
+apps (Signal/WhatsApp/Discord/Matrix): a new front-end Module posting USER_MESSAGE → run_until → reply, per-app
+token via env var, confirm-gating over the app. **Still open (v2):** persistent `offset` (in-memory today →
+backlog re-drained each launch is fine, but a crash mid-turn loses the update id), one generic "bridge" module
+vs per-app modules, message threading vs the single-session model, webhook (vs long-poll) transport.
 **3. Memory system v2 (revisit SOON)** — embeddings (P1+P2) + injection framing shipped + live. Vaios:
 "we'll have to revisit this memory system pretty soon." **Brainstorm-first — a rethink, not a bolt-on.** Work-list:
 1. **Storage:** switch the flat `.hades/embeddings/*.vec.jsonl` → **sqlite + binary vectors** (+ ANN index once the
@@ -362,9 +389,12 @@ agent↔agent Bridge (parked).
 - API key: env var only, redacted in the Eventlog; never put it in the manifest.
 - Single-threaded **dispatch** — subscriber handlers run ONLY on the pump thread (the determinism
   invariant). `post()` is thread-safe (workers call it); the blocking LLM call is offloaded to an
-  `Executor` worker when set. HTTP server still serializes whole turns under one mutex. **Teardown order
-  is load-bearing:** `Executor` joined before modules+Blackboard (Agent's `executor` is the last member;
-  `bb` declared before `agent` in `hades_main`).
+  `Executor` worker when set. HTTP server still serializes whole turns under one mutex. All three
+  front-ends (REPL/serve/telegram) serialize whole turns through one shared **TurnGate** (Agent's FIRST
+  member → destroyed LAST). **Teardown order is load-bearing:** `Agent::telegram` is now the **LAST**
+  member (destroyed FIRST → its dtor stop+joins the poll thread so any in-flight telegram turn finishes
+  while the Executor + modules are still alive); `executor` sits just before it (joined before the plain
+  modules+Blackboard); `bb` declared before `agent` in `hades_main`. Do NOT reorder.
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
   `=` wins, rest swallowed). Use **multi-line blocks only** (like `Session`/`Memory`/`Serve`/`capability_policy`).
   As of feature (2) this **now fails LOUD** — a packed line → `kMultiKvWarning` → `enforce_manifest` throws
@@ -382,6 +412,15 @@ agent↔agent Bridge (parked).
 - Web UI: `webroot` is **cwd-relative** (default `web/`) → run `--serve` from the repo root (warns if the
   dir is missing). The page sends an `X-Hades` header; the `authorize()` CSRF seam requires it on
   `POST /chat`+`/confirm` (don't strip it client-side). `/.hades/` and runtime stores are gitignored.
+- **Telegram** (`Module = telegram`): `allow_users` (numeric ids) is **REQUIRED** — `on_start` throws
+  `MalConfig` without it (an open bot lets anyone drive the agent); non-allowed senders are silently
+  dropped. Bot token via `token_env` (default `TELEGRAM_BOT_TOKEN`) env var **only** — never in the
+  manifest; redacted in `session.log`; keep it in a **gitignored `.env`** you `source`. The poll thread is
+  started by `hades_main` AFTER wiring (`start_polling()`), NOT in `on_attach` (tests never spawn a thread);
+  the dtor's join can wait up to one `poll_timeout_s` cycle for `getUpdates` to return (default 50s → shorten
+  it if `/quit` feels slow). First `poll_once` drains-and-DISCARDS the startup backlog (offset in-memory, v1)
+  → a command queued while the agent was down never replays. Telegram-only roster (no chat/serve) → `hades_main`
+  blocks on `wait()`.
 - Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so

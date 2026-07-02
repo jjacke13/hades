@@ -14,3 +14,5 @@ compile_commands.json
 # runtime
 /session.log
 /.hades/
+# secrets you `source` (HADES_API_KEY / TELEGRAM_BOT_TOKEN) — never commit
+.env
