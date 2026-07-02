@@ -6,7 +6,9 @@
 
 #pragma once
 #include <iosfwd>
+#include <mutex>
 #include "hades/module.h"
+#include "hades/turn_gate.h"
 namespace hades {
 class Blackboard;
 class ChatModule : public Module {
@@ -24,6 +26,8 @@ public:
   // The effective run_until idle ceiling (override if set, else the default). Exposed so
   // wiring/tests can observe the configured value without driving a full turn.
   double idle_timeout_s() const { return effective_timeout_(); }
+  // Shared whole-turn serializer (null -> module-local fallback; single-front-end behavior).
+  void set_turn_gate(TurnGate* g) { gate_ = g; }
 private:
   // Interactive REPL backed by GNU readline (line editing: arrows, history,
   // Ctrl-A/E, reverse i-search). Used only when stdin is a real TTY; otherwise
@@ -56,5 +60,12 @@ private:
   // run_until idle-timeout override (seconds). 0 = use the production default
   // (kTurnTimeoutS in chat_module.cpp); set_turn_timeout_s gives tests a small value.
   double turn_timeout_override_s_ = 0.0;
+  std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
+  TurnGate* gate_ = nullptr;
+  TurnGate  local_gate_;
+  // True only while THIS module holds the gate and is driving its own turn. The
+  // CONFIRM_REQUEST handler must not read y/N from stdin for another front-end's turn
+  // (it runs on whichever thread is pumping — for a Telegram turn, the poll thread).
+  bool my_turn_ = false;
 };
 }  // namespace hades
