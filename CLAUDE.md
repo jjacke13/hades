@@ -347,7 +347,7 @@ agent↔agent Bridge (parked).
   `Launcher.instantiate` (MalConfig on unknown type) → `take_as` into the Agent → `wire_agent` (null-guarded,
   dependency order). Omit a module → it's absent (`agent.X==nullptr`); binary errors if `llm`/`arbiter`/the
   requested front-end is missing. Cross-wiring (Arbiter←tools/objectives/model/prompt) stays explicit in
-  `wire_agent`. dev.hades roster = llm/tool_runner/memory/chat/arbiter/serve.
+  `wire_agent`. dev.hades roster = llm/tool_runner/memory/chat/arbiter/serve/skills/embedding_memory.
 - API key: env var only, redacted in the Eventlog; never put it in the manifest.
 - Single-threaded **dispatch** — subscriber handlers run ONLY on the pump thread (the determinism
   invariant). `post()` is thread-safe (workers call it); the blocking LLM call is offloaded to an
