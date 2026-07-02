@@ -138,10 +138,13 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
     {
       std::lock_guard<std::mutex> lk(turn_mu_());   // one turn at a time across ALL front-ends
       my_turn_ = true;
+      // RAII reset declared AFTER the lock: runs BEFORE the mutex releases on EVERY exit path —
+      // a handler throw propagating out of run_until must not leave my_turn_ true with the gate
+      // free (a later foreign turn would then wrongly read this REPL's stdin).
+      struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
       turn_done_ = false;
       bb_->post("USER_MESSAGE", line, "chat");
       if (!bb_->run_until([this] { return turn_done_; }, effective_timeout_())) abandon_turn_();
-      my_turn_ = false;
     }
   }
 }
@@ -178,10 +181,13 @@ void ChatModule::run_repl_readline() {
     {
       std::lock_guard<std::mutex> lk(turn_mu_());   // one turn at a time across ALL front-ends
       my_turn_ = true;
+      // RAII reset declared AFTER the lock: runs BEFORE the mutex releases on EVERY exit path —
+      // a handler throw propagating out of run_until must not leave my_turn_ true with the gate
+      // free (a later foreign turn would then wrongly read this REPL's stdin).
+      struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
       turn_done_ = false;
       bb_->post("USER_MESSAGE", line, "chat");
       if (!bb_->run_until([this] { return turn_done_; }, effective_timeout_())) abandon_turn_();
-      my_turn_ = false;
     }
   }
 }
