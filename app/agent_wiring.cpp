@@ -21,6 +21,7 @@
 #include "hades/objective/capability_policy.h"
 #include "hades/objective/stay_on_budget.h"
 #include "hades/prompt.h"  // assemble_system_prompt
+#include "hades/skills/scan.h"  // resolve_skills_dir
 #include "hades/module/memory_module.h"
 #include "hades/timeouts.h"  // kDefaultLlmTimeoutS / kDefaultTurnIdleTimeoutS
 namespace hades {
@@ -88,7 +89,8 @@ void wire_agent(Agent& a,
                 const Block& memory,
                 std::string model,
                 const Block& embedding = Block{},
-                const std::string& session_path = "") {
+                const std::string& session_path = "",
+                const Block& skills_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -105,6 +107,11 @@ void wire_agent(Agent& a,
   reject_ws(store_path, "memory store");
   if (!core_path.empty()) reject_ws(core_path, "memory_file");
 
+  // Skills dir: same single-source-of-truth pattern as the memory paths — the module scans the
+  // SAME dir the tools' argv points at. Resolved once here; whitespace would split the argv.
+  const std::string skills_dir = resolve_skills_dir(skills_cfg);
+  reject_ws(skills_dir, "skills dir");
+
   // pin_fact writes the core-memory file the Arbiter folds in each turn; without a
   // configured memory_file the two would target different files (silent drift), so
   // require it explicitly when the pin_fact tool is present.
@@ -120,6 +127,8 @@ void wire_agent(Agent& a,
       t.kv["native"] = t.kv["native"] + " " + store_path;
     else if (t.name == "pin_fact" && t.kv.count("native") && !core_path.empty())
       t.kv["native"] = t.kv["native"] + " " + core_path;
+    else if ((t.name == "use_skill" || t.name == "save_skill") && t.kv.count("native"))
+      t.kv["native"] = t.kv["native"] + " " + skills_dir;
     tools_resolved.push_back(std::move(t));
   }
 
@@ -163,6 +172,14 @@ void wire_agent(Agent& a,
     a.embedding->set_live_session_path(session_path);  // BEFORE on_attach -> happens-before the worker
     if (a.executor) a.embedding->set_executor(a.executor.get());
     a.embedding->on_attach(bb);  // subscribes USER_MESSAGE before the Arbiter does; submits the worker
+  }
+
+  // 2d) SkillsModule: posts SKILLS_ANNOUNCE at attach. The Arbiter reads it via get()
+  //     (latest-value updates on post, before any pump), so ordering vs the Arbiter is not
+  //     load-bearing — kept before it for consistency with the other posting modules.
+  if (a.skills) {
+    a.skills->on_start(skills_cfg, bb);
+    a.skills->on_attach(bb);
   }
 
   // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
@@ -257,6 +274,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   launcher.register_factory("memory",      []{ return std::make_unique<MemoryModule>(); });
   launcher.register_factory("embedding_memory",
                             []{ return std::make_unique<EmbeddingMemoryModule>(); });
+  launcher.register_factory("skills",      []{ return std::make_unique<SkillsModule>(); });
   launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
   launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
@@ -267,6 +285,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.tools   = take_as<ToolRunner>(launcher, "tool_runner");
   a.memory  = take_as<MemoryModule>(launcher, "memory");
   a.embedding = take_as<EmbeddingMemoryModule>(launcher, "embedding_memory");
+  a.skills  = take_as<SkillsModule>(launcher, "skills");
   a.arbiter = take_as<Arbiter>(launcher, "arbiter");
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
@@ -275,6 +294,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
   const auto embed_blocks = m.of("Embedding");
   const Block embedding = embed_blocks.empty() ? Block{} : embed_blocks.front();
+  const auto skills_blocks = m.of("Skills");
+  const Block skills_cfg = skills_blocks.empty() ? Block{} : skills_blocks.front();
 
   // Live path only: own a small worker pool and offload the blocking LLM call onto it so
   // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
@@ -291,7 +312,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
 
   // Pass the resolved live-session path through so wire_agent sets it on the embedding module
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
-  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path);
+  wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
+             skills_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
