@@ -59,6 +59,12 @@ A tiny shared turn serializer: `struct TurnGate { std::mutex mu; };`. Owned by `
   guarantee now rests on the shared gate instead of "one front-end per process".
 - Known cosmetic effect (accepted): a Telegram-driven turn's `ASSISTANT_MESSAGE` also prints in
   an open REPL (subscribers run on the pumping thread) — cross-front-end echo.
+- **Turn-owner guard (`my_turn_`):** each front-end sets a flag while it holds the gate and is
+  driving its own turn, and its `CONFIRM_REQUEST` / reply-capture handlers act ONLY when the
+  flag is set. Without this, an open REPL would try to read y/N **from stdin** for a
+  Telegram-driven turn's confirm (handler runs on the pumping = Telegram thread), and the
+  Telegram module would try to send buttons for a REPL-driven confirm. Echo printing stays
+  unguarded (harmless, see above); confirm handling and reply capture are guarded.
 
 ### 2. `TelegramApi` seam (new, `include/hades/telegram/api.h`)
 
