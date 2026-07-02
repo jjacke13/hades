@@ -187,6 +187,16 @@ void Arbiter::start_turn() {
       sys += core;
     }
   }
+  // Skills roster: fold the SkillsModule's SKILLS_ANNOUNCE (latest-value; posted at attach,
+  // refreshed after a successful save_skill) into the same leading system message. Key absent,
+  // non-string, or empty -> no block (a roster without the skills module costs nothing).
+  if (auto sk = bb_->get("SKILLS_ANNOUNCE"); sk && sk->value.is_string()) {
+    const std::string ann = sk->value.get<std::string>();
+    if (!ann.empty()) {
+      if (!sys.empty()) sys += "\n\n";
+      sys += ann;
+    }
+  }
   if (!sys.empty())
     messages.push_back({{"role", "system"}, {"content", sys}});
   for (const auto& m : windowed_history_()) messages.push_back(m);

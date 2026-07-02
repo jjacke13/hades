@@ -827,3 +827,51 @@ TEST(Arbiter, SessionExcerptsOnlyInjectedWithoutFacts) {
   EXPECT_EQ(block.find("Facts from your memory"), std::string::npos);         // no facts sub-block
   EXPECT_NE(block.find("I fetched the page"), std::string::npos);             // the session excerpt
 }
+TEST(Arbiter, SkillsAnnounceFoldedIntoLeadingSystemMessage) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL TEXT");
+  a.on_attach(bb);
+  bb.post("SKILLS_ANNOUNCE",
+          "Available skills (call use_skill with a name to load its full instructions):\n"
+          "- greet: how to greet", "skills");
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(req.is_null());
+  const auto& msgs = req["messages"];
+  ASSERT_EQ(msgs[0]["role"], "system");
+  const std::string sys = msgs[0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("SOUL TEXT"), std::string::npos);
+  EXPECT_NE(sys.find("- greet: how to greet"), std::string::npos);
+  EXPECT_LT(sys.find("SOUL TEXT"), sys.find("Available skills"));   // announce after SOUL
+}
+
+TEST(Arbiter, EmptyOrMissingSkillsAnnounceInjectsNothing) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL TEXT");
+  a.on_attach(bb);
+  bb.post("SKILLS_ANNOUNCE", "", "skills");   // module present, empty library
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_EQ(sys.find("Available skills"), std::string::npos);
+  EXPECT_EQ(sys, "SOUL TEXT");   // nothing appended for the empty announce
+}
+
+TEST(Arbiter, NonStringSkillsAnnounceIsIgnored) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL TEXT");
+  a.on_attach(bb);
+  bb.post("SKILLS_ANNOUNCE", 42, "skills");   // malformed: must not throw, must not inject
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  EXPECT_EQ(req["messages"][0]["content"].get<std::string>(), "SOUL TEXT");
+}
