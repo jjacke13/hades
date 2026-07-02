@@ -198,14 +198,14 @@ void wire_agent(Agent& a,
   // 4) Chat: the user-facing surface. Inject the shared TurnGate BEFORE on_attach so its
   //    REPL serializes turns against the other front-ends. Its REPL is driven by the caller.
   if (a.chat) {
-    a.chat->set_turn_gate(&a.gate);
+    a.chat->set_turn_gate(a.gate.get());
     a.chat->on_attach(bb);
   }
 
   // 5) HTTP front-end: same shared gate BEFORE on_attach; only drives the agent if the
   //    binary calls serve->listen() (--serve mode). Inert otherwise.
   if (a.serve) {
-    a.serve->set_turn_gate(&a.gate);
+    a.serve->set_turn_gate(a.gate.get());
     a.serve->on_attach(bb);
   }
 
@@ -213,7 +213,7 @@ void wire_agent(Agent& a,
   //    The poll thread is NOT started here — hades_main calls start_polling() explicitly, so
   //    tests and non-interactive builds never spawn a surprise thread.
   if (a.telegram) {
-    a.telegram->set_turn_gate(&a.gate);
+    a.telegram->set_turn_gate(a.gate.get());
     a.telegram->on_start(telegram_cfg, bb);
     a.telegram->on_attach(bb);
   }

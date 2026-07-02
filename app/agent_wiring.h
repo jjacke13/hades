@@ -32,8 +32,11 @@ class Blackboard;
 // order (last-declared is destroyed first); the holder is move-only.
 struct Agent {
   // Shared whole-turn serializer. FIRST member => destroyed LAST — it must outlive every
-  // front-end module that holds a pointer to it (members destruct in reverse order).
-  TurnGate gate;
+  // front-end module that holds a pointer to it. Heap-allocated for ADDRESS STABILITY:
+  // build_agent returns Agent by value and named-return elision is not standard-guaranteed,
+  // so the pointee (not the member) is what modules point at — a real move just moves the
+  // unique_ptr, the TurnGate never changes address.
+  std::unique_ptr<TurnGate> gate = std::make_unique<TurnGate>();
   std::unique_ptr<LLMModule>    llm;
   std::unique_ptr<ToolRunner>   tools;
   std::unique_ptr<Arbiter>      arbiter;

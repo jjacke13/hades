@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
       const auto tg = manifest.of("Telegram");
       std::string tg_env = "TELEGRAM_BOT_TOKEN";
       if (!tg.empty() && tg.front().kv.count("token_env")) tg_env = tg.front().kv.at("token_env");
-      if (const char* tg_token = std::getenv(tg_env.c_str())) eventlog.add_redaction(tg_token);
+      if (const char* tg_token = std::getenv(tg_env.c_str()); tg_token && *tg_token) eventlog.add_redaction(tg_token);
     }
 
     // LOAD-BEARING declaration order: `bb` BEFORE `agent`, so at scope exit `agent`
