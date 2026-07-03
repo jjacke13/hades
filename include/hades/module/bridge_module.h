@@ -10,7 +10,6 @@
 // rostered Peer — either failure returns an indistinguishable "forbidden". The socket layer
 // (Task 4) is a thin shell over the socket-free handle_ask/handle_share seams below.
 #pragma once
-#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
@@ -94,9 +93,16 @@ class BridgeModule : public Module {
   std::string last_reply_;
   bool denied_confirm_ = false;            // a confirm was auto-denied during MY turn
 
-  std::unique_ptr<BridgeHttp> http_;
-  Executor* executor_ = nullptr;   // push jobs run here when set (inline otherwise — tests)
-  void push_share_(const std::string& key, const nlohmann::json& value);
+  // shared_ptr (not unique): a share-push job copies this handle so the seam stays ALIVE if the
+  // job drains AFTER ~BridgeModule. The injection ctor takes a unique_ptr and converts on
+  // assignment. Real path: on_start makes a CprBridgeHttp.
+  std::shared_ptr<BridgeHttp> http_;
+  // Push jobs run here when set (inline otherwise — tests). TEARDOWN GUARANTEE: a submitted push
+  // job captures ONLY values — a raw Blackboard* (outlives the executor drain) plus copies of
+  // name/secret/peers and the http shared_ptr — never `this`. So a job draining during Executor
+  // teardown (the Agent destroys `bridge` BEFORE `executor`, and ~Executor drains queued jobs)
+  // touches nothing owned by the destroyed module. See run_share_push in the .cpp.
+  Executor* executor_ = nullptr;
 
   std::unique_ptr<httplib::Server> srv_;   // dtor lives in the .cpp (complete type there)
   std::thread listen_thread_;

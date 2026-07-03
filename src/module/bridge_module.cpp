@@ -2,7 +2,6 @@
 #include "hades/module/bridge_module.h"
 #include <httplib.h>
 #include <cstdlib>
-#include <iostream>
 #include <sstream>
 #include "hades/blackboard.h"
 #include "hades/bridge/protocol.h"
@@ -11,6 +10,41 @@
 #include "hades/launcher.h"    // MalConfig
 #include "hades/timeouts.h"    // kDefaultTurnIdleTimeoutS, kDefaultAskTimeoutS
 namespace hades {
+namespace {
+// The outbound share push, as a SELF-CONTAINED job: it owns everything it touches by value/copy
+// and captures NO BridgeModule. This is the teardown fix (final-review Important) — the push is
+// offloaded to the Executor, and ~Executor DRAINS queued jobs, but the Agent destroys the bridge
+// BEFORE the executor. A job that dereferenced a Bridge*  (name_/peers_/http_/bb_) would then run
+// on a freed module. Precedent: the LLM offload worker in llm_module.cpp captures only what it
+// needs, never `this`.
+//   `bb` is a raw Blackboard*: SAFE because hades_main declares the Blackboard BEFORE the Agent
+//   (and every test declares bb before the module), so the bus outlives the executor drain.
+//   `http` is a shared_ptr copy that keeps the seam alive independent of the module's lifetime.
+// Best-effort: a peer being down must never disturb the agent (status 0 = transport failure; any
+// non-2xx counts as failed). This runs on the pump thread on the inline path (no executor), which
+// must NEVER throw — so the WHOLE body (incl. build_share().dump()) is under an outer try/catch;
+// the per-peer catch stays so one failing peer never stops the rest. BRIDGE_ERROR is observable.
+void run_share_push(Blackboard* bb, std::shared_ptr<BridgeHttp> http, const std::string& name,
+                    const std::string& secret,
+                    const std::map<std::string, std::string>& peers, const std::string& key,
+                    const nlohmann::json& value) {
+  try {
+    const std::string body = build_share(name, key, value).dump();
+    for (const auto& [peer, url] : peers) {
+      try {
+        auto [status, resp] = http->post_json(url + "/share", body, secret, 10.0);
+        if (status < 200 || status >= 300)
+          bb->post("BRIDGE_ERROR", "share push to " + peer + " failed (status " +
+                                       std::to_string(status) + ")", "bridge");
+      } catch (...) {
+        bb->post("BRIDGE_ERROR", "share push to " + peer + " failed (exception)", "bridge");
+      }
+    }
+  } catch (...) {
+    bb->post("BRIDGE_ERROR", "share push failed (exception building payload)", "bridge");
+  }
+}
+}  // namespace
 
 // Out-of-line (the header only forward-declares httplib::Server; a member unique_ptr to it
 // needs the complete type at the point of construction — this TU includes <httplib.h>).
@@ -111,7 +145,7 @@ void BridgeModule::on_start(const Block& cfg, Blackboard&) {
       throw MalConfig("bridge secret env var not set or empty: " + env);
     secret_ = sec;
   }
-  if (!http_) http_ = std::make_unique<CprBridgeHttp>();
+  if (!http_) http_ = std::make_shared<CprBridgeHttp>();
 }
 
 void BridgeModule::on_attach(Blackboard& bb) {
@@ -140,9 +174,19 @@ void BridgeModule::on_attach(Blackboard& bb) {
   // is set; without one (tests) they run inline and stay deterministic. Fire-and-forget.
   for (const auto& key : share_out_) {
     bb.subscribe(key, [this, key](const Entry& e) {
-      // Capture by value: the worker must not touch `e` after the handler returns.
+      // This handler runs on the PUMP thread while the module is alive (like every subscription),
+      // so reading the members here is safe. It snapshots them into a job that captures NO `this`
+      // (see run_share_push): the job may drain on an Executor worker AFTER ~BridgeModule, so it
+      // must own everything it touches. bb_ is a raw ptr (the Blackboard outlives the drain);
+      // peers_ is a small per-push map copy; http_ shared_ptr copy keeps the seam alive.
+      Blackboard* bb = bb_;
+      std::shared_ptr<BridgeHttp> http = http_;
+      std::string name = name_, secret = secret_;
+      std::map<std::string, std::string> peers = peers_;
       const nlohmann::json value = e.value;
-      auto job = [this, key, value] { push_share_(key, value); };
+      auto job = [bb, http, name, secret, peers, key, value] {
+        run_share_push(bb, http, name, secret, peers, key, value);
+      };
       if (executor_) executor_->submit(job);
       else job();
     });
@@ -201,26 +245,4 @@ nlohmann::json BridgeModule::health_json() const {
   return {{"name", name_}, {"v", kBridgeProtocolV}};
 }
 
-void BridgeModule::push_share_(const std::string& key, const nlohmann::json& value) {
-  // Best-effort: a peer being down must never disturb the agent. status 0 = transport failure;
-  // any non-2xx counts as failed too. BRIDGE_ERROR is observable in hades-scope and tests.
-  // GUARANTEE: on the inline path this runs on the pump thread directly from the subscription
-  // handler, which must NEVER throw — so the WHOLE body (incl. build_share().dump()) is under an
-  // outer try/catch. The per-peer catch stays so one failing peer never stops the rest.
-  try {
-    const std::string body = build_share(name_, key, value).dump();
-    for (const auto& [peer, url] : peers_) {
-      try {
-        auto [status, resp] = http_->post_json(url + "/share", body, secret_, 10.0);
-        if (status < 200 || status >= 300)
-          bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (status " +
-                                        std::to_string(status) + ")", "bridge");
-      } catch (...) {
-        bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (exception)", "bridge");
-      }
-    }
-  } catch (...) {
-    bb_->post("BRIDGE_ERROR", "share push failed (exception building payload)", "bridge");
-  }
-}
 }  // namespace hades

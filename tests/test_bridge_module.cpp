@@ -1,12 +1,16 @@
 // tests/test_bridge_module.cpp — BridgeModule inbound: auth, allowlist, ask turns, shares
 #include <gtest/gtest.h>
 #include <cpr/cpr.h>
+#include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include "hades/blackboard.h"
 #include "hades/bridge/http.h"
 #include "hades/bridge/protocol.h"
+#include "hades/executor.h"
 #include "hades/launcher.h"          // MalConfig
 #include "hades/module/bridge_module.h"
 using namespace hades;
@@ -203,6 +207,50 @@ TEST(BridgeModule, ShareOutPushesToAllPeersOnChange) {
   EXPECT_EQ(sent.from, "worker1");
   EXPECT_EQ(sent.key, "STATUS");
   EXPECT_EQ(sent.value.get<std::string>(), "sunny");
+}
+
+namespace {
+// A deliberately slow seam: sleeps in post_json so a submitted push job is STILL running when
+// the module is destroyed. Records into EXTERNAL counters (owned by the test, outlive the http
+// object) so the assertion is valid after the job's shared_ptr copy releases the object. The
+// mutex guards the worker-thread write (TSan lane runs this too).
+struct SlowMutexHttp : BridgeHttp {
+  std::mutex* mu;
+  int* calls;
+  SlowMutexHttp(std::mutex* m, int* c) : mu(m), calls(c) {}
+  std::pair<int, std::string> post_json(const std::string&, const std::string&,
+                                        const std::string&, double) override {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // job in-flight at ~BridgeModule
+    std::lock_guard<std::mutex> lk(*mu);
+    ++*calls;
+    return {200, R"({"ok":true})"};
+  }
+};
+}  // namespace
+
+// Regression (final-review Important): the offloaded share-push job must survive ~BridgeModule.
+// ~Executor DRAINS queued jobs, and the Agent destroys the bridge BEFORE the executor — so a job
+// that dereferenced the module would use-after-free. The job captures only values, so it runs
+// clean on a freed module. Order mirrors the Agent: Blackboard, then Executor, then the module.
+TEST(BridgeModule, SharePushJobSurvivesModuleTeardown) {
+  std::mutex hmu;
+  int calls = 0;
+  Blackboard bb;                                   // declared first -> outlives the drain
+  {
+    Executor ex(2);                                // before the module -> destroyed AFTER it
+    {
+      BridgeModule m(std::make_unique<SlowMutexHttp>(&hmu, &calls), "s3cret");
+      Block cfg; cfg.kv["name"] = "worker1"; cfg.kv["share_out"] = "STATUS";
+      m.on_start(cfg, bb);
+      m.set_peers({{"front", "http://10.0.0.1:9090"}});
+      m.set_executor(&ex);
+      m.on_attach(bb);
+      bb.post("STATUS", "sunny", "t");
+      bb.pump();                                   // handler snapshots + submits the slow job
+    }                                              // ~BridgeModule while the job sleeps in post_json
+  }                                                // ~Executor drains + joins the in-flight job
+  std::lock_guard<std::mutex> lk(hmu);
+  EXPECT_EQ(calls, 1);                             // push was attempted, no crash on the freed module
 }
 
 TEST(BridgeModule, UnlistedKeyIsNotPushed) {
