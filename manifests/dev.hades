@@ -84,10 +84,28 @@ Embedding {
 # --- Telegram front-end (uncomment, set YOUR numeric user id, export TELEGRAM_BOT_TOKEN) ---
 # Get an id: message @userinfobot. Non-listed senders are silently ignored. Private chats only (v1): group messages are ignored. Token via env ONLY
 # (keep it in a gitignored .env you `source`); it is redacted in session.log.
-# Module = telegram
-# Telegram
+ Module = telegram
+ Telegram
+ {
+   token_env      = TELEGRAM_BOT_TOKEN
+   allow_users    = 123456789
+   poll_timeout_s = 50
+ }
+
+# --- Bridge: multi-agent (uncomment on EACH agent; set name/port/peers; export HADES_BRIDGE_SECRET
+# in the same gitignored .env as the other secrets — same secret on every fleet member, v1) ---
+# A peer request drives a normal turn through THIS agent's own objectives; confirm-gated actions
+# are AUTO-DENIED for peers. Shares arrive as PEER.<name>.<key>. host 0.0.0.0 for LAN.
+# Module = bridge
+# Bridge
 # {
-#   token_env      = TELEGRAM_BOT_TOKEN
-#   allow_users    = 123456789
-#   poll_timeout_s = 50
+#   name          = hades1
+#   host          = 127.0.0.1
+#   port          = 9090
+#   secret_env    = HADES_BRIDGE_SECRET
+#   share_out     =
+#   max_hops      = 1
+#   ask_timeout_s = 180
 # }
+# Peer = hades2 { url = http://127.0.0.1:9091 }
+# Tool = ask_agent { native = ./build/hades-ask-agent }

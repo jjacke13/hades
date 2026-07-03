@@ -28,8 +28,8 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-07-02)
-`feat/telegram` (off `main` @ `678a248`), **305/305 tests** (ASan+UBSan + **TSan** clean; suite ~3.4s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
+## Current state (2026-07-03)
+`feat/bridge` (off `main` @ `2e6548f`), **350/350 tests** (ASan+UBSan + **TSan** clean; suite ~3.4s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **9 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
@@ -38,7 +38,8 @@ destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 layered **system prompt** (SOUL/USER static +
 live core MEMORY) · three front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
 labels), **HTTP `--serve`** (browser web UI + JSON API, see below), and a **Telegram bot** (long-poll,
-allowlisted, see below) — all serialized by one shared **TurnGate** · **worker-offload concurrency**
+allowlisted, see below) — all serialized by one shared **TurnGate** · an **agent↔agent Bridge**
+(multi-agent: peer `ask_agent` + inbound `/ask` `/share`, see below) · **worker-offload concurrency**
 (see below) · **manifest parser fails LOUD** on packed multi-kv lines (see below).
 
 ### Worker-offload (shipped 2026-06-29) — bus stays single-threaded, blocking LLM call offloaded
@@ -278,6 +279,49 @@ Pieces: `src/module/skills_module.cpp`, `src/skills/scan.cpp`, `include/hades/sk
    annoying); `pending_saves_` id leak if tool-offload ever breaks the request→result invariant; possible move
    of `skills/` under `.hades/` (one-line `Skills { dir }` change, no code — Vaios may relocate later).
 
+### Bridge / multi-agent (shipped 2026-07-03, `feat/bridge`) — agent↔agent, pShare-style
+Un-parks the Bridge. 1 agent = 1 community (Blackboard+Arbiter+modules); a **BridgeModule** gives it a small
+HTTP surface so peers can ask it questions and push it shared variables. **Inert unless the manifest rosters
+`Module = bridge`** (omit → `Agent.bridge==nullptr`, zero coupling; the test `build_agent` overload is
+unaffected). dev.hades ships the block **COMMENTED** (a single-agent default has no peer — uncommenting on
+each machine is the deploy story).
+- **Inbound** (`BridgeModule`, `type()=="bridge"`, `src/module/bridge_module.cpp`): an httplib listener on its
+  **own thread** exposes **`POST /ask`** and **`POST /share`**. Both are **auth-gated** (shared `secret_env`
+  header) + **peer-allowlisted** (`from` must be a configured `Peer` name) → **403** otherwise (bad secret,
+  unknown peer, malformed body all map to 403). `/ask` drives a **normal turn** through THIS agent (lock the
+  shared **TurnGate** → post `USER_MESSAGE` prefixed `(from peer agent "name")` → `run_until` → reply); the turn
+  passes **this agent's own objectives/gates** (a peer's request is not privileged). `/share` stores the payload
+  under **`PEER.<from>.<key>`** (fixed v1 rename-on-arrival, collision-proof — a peer can never inject a local
+  bus key; no turn, thread-safe `post()`).
+- **Confirm auto-deny:** a confirm-band action inside a peer-driven turn is **auto-denied** with an explanatory
+  note appended to the reply (peers cannot approve confirmation prompts — a worker's risky powers come from its
+  OWN manifest allow-scopes, set at deploy). `denied_confirm_` tracked per MY turn.
+- **Outbound / delegation:** the **`ask_agent`** native tool (`tools/ask_agent_main.cpp`, isolated subprocess,
+  self-describing — its **description names the known peers** so the LLM sees who it can delegate to) POSTs
+  `/ask` to a peer and returns the reply as the tool result. Per-tool **`timeout_s`** override in the `Tool`
+  block (default from `include/hades/timeouts.h`).
+- **Loop protection:** **`PeerLoopGuard`** objective (`src/objective/peer_loop_guard.cpp`) **hard-vetoes
+  `ask_agent`** whenever the current turn's **`TURN_ORIGIN`** is `peer:<name>` — so an agent answering a peer
+  can't forward the request onward (v1 `max_hops = 1`; the wire `hops` field is the multi-hop v2 seam). Convention:
+  every front-end posts `TURN_ORIGIN` at turn start — `human` (chat/serve/telegram), `peer:<name>` (bridge).
+  Auto-registered in `wire_agent` when the bridge is present.
+- **Security:** the bridge secret is via **`secret_env`** (default `HADES_BRIDGE_SECRET`) **only**, never in the
+  manifest; `hades_main` **redacts** it in `session.log`. `host` default `127.0.0.1` (set `0.0.0.0` for LAN);
+  **`port = 0` → ephemeral bind** (tests use it so parallel runs never collide).
+- **Wiring/teardown:** `Agent.bridge` sits just before `telegram` in the member list → **destroyed order is
+  `…executor, bridge, telegram`** (telegram first, then bridge — its dtor stops+joins the listener thread while
+  the Executor + modules it touches are still alive), all after the plain modules. The listener is started by
+  `hades_main` after wiring (like telegram), not in `on_attach` (tests spawn no thread). Config: `Bridge
+  { name host port secret_env share_out max_hops ask_timeout_s }` + one `Peer = <name> { url }` per peer.
+Pieces: `src/module/bridge_module.cpp`, `src/bridge/{protocol,cpr_bridge_http}.cpp`, `src/objective/peer_loop_guard.cpp`,
+`include/hades/{bridge/*,module/bridge_module.h,objective/peer_loop_guard.h}`, `tools/ask_agent_main.cpp`,
+`app/{agent_wiring,hades_main}.*`, `tests/test_{bridge_module,bridge_protocol,bridge_wiring,ask_agent_tool,peer_loop_guard}.cpp`.
+Spec/plan: `docs/superpowers/specs/2026-07-03-bridge-multi-agent-design.md`, `docs/superpowers/plans/2026-07-03-bridge-multi-agent.md`.
+**v2 seams (recorded, not built):** per-peer secrets · per-peer share lists · per-peer confirm policy (propagate
+to the asker's human) · per-key rename (full pShare) · `max_hops > 1` (wire field already present) · transport
+behind a small interface (queue/webhook) · discovery (static roster now, registry/mDNS later) · inbound share
+whitelist · peer presence via `/health` polling · ask offload (with tool-offload, un-freezing the asker during a peer turn).
+
 ## Build / run
 ```bash
 export HADES_API_KEY=<key>                                   # key never in the manifest
@@ -289,7 +333,7 @@ nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
 ```
-Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill}` (tools),
+Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill,ask-agent}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
 **readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
@@ -348,18 +392,21 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
 
-## NEXT (decided 2026-07-03, Vaios): MULTI-AGENT OPERATION + agent↔agent communication
-**Brainstorm-first — nothing specced.** Un-parks the Bridge. The recorded framing (see the MOOS-IvP table +
-Personas paragraph up top): 1 agent = 1 community (Blackboard+Arbiter+modules); more agents = replicate the
-community; bridge them pShare/pMOOSBridge-style. The three levels already sketched: (1) separate manifests
-[possible today — N processes], (2) `/persona` switch, (3) a `Community` struct ×N in ONE process + router +
-Bridge module [real multi-agent]. Open questions for the brainstorm: processes-with-Bridge vs in-process
-Community×N; what crosses the bridge (selected bus keys? messages as USER_MESSAGE into the peer? shared
-memory stores?); addressing/naming agents; does an agent appear to its peer as a TOOL, a FRONT-END, or a
-bus-peer (pShare forwards variables — the honest MOOS answer); safety (does a peer's request pass the
-receiving agent's own objectives/confirm gates — it must); transport (same TurnGate model? localhost HTTP
-reusing --serve? a queue?). Prior art in-repo: HttpServerModule IS already an agent-to-anything JSON API;
-TelegramModule proved the front-end-module pattern; TurnGate proved multi-surface serialization.
+## MULTI-AGENT OPERATION — Bridge v1 SHIPPED (2026-07-03, `feat/bridge`)
+Un-parked and shipped. 1 agent = 1 community (Blackboard+Arbiter+modules); peers bridge pShare-style. The v1
+answer to the old open questions: **processes-with-Bridge** (each agent a normal hades process, `Module = bridge`
+adds an HTTP surface); the bridge carries **two kinds of traffic** — a peer **`/ask`** (drives a real
+USER_MESSAGE turn on the receiver, gated by ITS objectives — peers are NOT privileged, confirm-band auto-denied)
+and a peer **`/share`** (a variable pushed in as `PEER.<from>.<key>`, pShare-style); an agent appears to its peer
+as a **TOOL** (`ask_agent`, whose description names the known peers). Loop protection = **`PeerLoopGuard`** +
+the **`TURN_ORIGIN`** convention (`peer:<name>` turns can't call `ask_agent` → v1 `max_hops = 1`). Transport reuses
+the TurnGate serialization model (peer turns lock the same gate as chat/serve/telegram). Full details: the
+**Bridge / multi-agent** subsection under Current state. **v2 seams (recorded, not built):** per-peer secrets ·
+per-peer share lists · per-peer confirm policy (propagate to the asker's human) · per-key rename (full pShare) ·
+`max_hops > 1` (wire field present) · transport behind a small interface (queue/webhook) · discovery (static
+roster now, registry/mDNS later) · inbound share whitelist · peer presence via `/health` polling · ask offload
+(with tool-offload, un-freezing the asker during a peer turn). Still open beyond the bridge: the in-process
+`Community` ×N + router variant (level 3) and a `/persona` switch (level 2) remain sketches, not built.
 
 ## DONE (the 2026-07-01 list — all shipped)
 **1. Skills — DONE (shipped 2026-07-02, `feat/skills`).** A skills system for the hades agent: loadable
@@ -438,6 +485,16 @@ persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate
   it if `/quit` feels slow). First `poll_once` drains-and-DISCARDS the startup backlog (offset in-memory, v1)
   → a command queued while the agent was down never replays. Telegram-only roster (no chat/serve) → `hades_main`
   blocks on `wait()`.
+- **Bridge** (`Module = bridge`): the `Bridge` block is the agent's **identity** (its `name` is embedded in bus
+  keys + the `peer:<name>` TURN_ORIGIN) — it's meaningful even without peers, but `ask_agent` needs both
+  `Bridge.name` AND ≥1 `Peer` block to delegate anywhere. The shared **`secret_env`** (default
+  `HADES_BRIDGE_SECRET`) is **REQUIRED** when the module is rostered — never in the manifest; redacted in
+  `session.log`; keep it in the gitignored `.env` (same secret on every fleet member, v1). Inbound `/ask` and
+  `/share` are auth + peer-allowlist gated → **403** on bad secret / unknown `from` / malformed body. **TURN_ORIGIN
+  convention:** every front-end MUST post `TURN_ORIGIN` at turn start (`human` for chat/serve/telegram,
+  `peer:<name>` for bridge) — `PeerLoopGuard` reads it to hard-veto `ask_agent` on peer-origin turns (no forward =
+  no loop; v1 `max_hops = 1`). `port = 0` → ephemeral bind; listener thread started by `hades_main` after wiring
+  (like telegram), NOT in `on_attach`.
 - Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so
