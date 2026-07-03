@@ -1,6 +1,7 @@
 // tests/test_ask_agent_tool.cpp — drive the hades-ask-agent binary against a stub peer
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <httplib.h>
@@ -15,23 +16,35 @@ struct StubPeer {
   httplib::Server srv;
   int port = 0;
   std::thread th;
-  std::string seen_secret, seen_body;
-  std::string reply_body = R"({"ok":true,"reply":"42 GB free"})";  // overridable per test
   StubPeer() {
     srv.Post("/ask", [this](const httplib::Request& req, httplib::Response& res) {
-      seen_secret = req.get_header_value("X-Hades-Bridge");
-      seen_body = req.body;
-      if (seen_secret != "s3cret") {
+      const std::string secret = req.get_header_value("X-Hades-Bridge");
+      std::string reply;
+      {  // mu: seen_*/reply_body cross the server thread <-> test thread boundary
+        std::lock_guard<std::mutex> l(mu);
+        seen_secret = secret;
+        seen_body = req.body;
+        reply = reply_body;
+      }
+      if (secret != "s3cret") {
         res.status = 403;
         res.set_content(R"({"ok":false,"error":"forbidden"})", "application/json");
         return;
       }
-      res.set_content(reply_body, "application/json");
+      res.set_content(reply, "application/json");
     });
     port = srv.bind_to_any_port("127.0.0.1");
     th = std::thread([this] { srv.listen_after_bind(); });
   }
   ~StubPeer() { srv.stop(); th.join(); }
+  std::string secret() { std::lock_guard<std::mutex> l(mu); return seen_secret; }
+  std::string body() { std::lock_guard<std::mutex> l(mu); return seen_body; }
+  void set_reply(std::string b) { std::lock_guard<std::mutex> l(mu); reply_body = std::move(b); }
+
+ private:
+  std::mutex mu;
+  std::string seen_secret, seen_body;
+  std::string reply_body = R"({"ok":true,"reply":"42 GB free"})";  // overridable per test
 };
 
 nlohmann::json run_tool(const std::vector<std::string>& argv, const std::string& stdin_line) {
@@ -63,8 +76,8 @@ TEST(AskAgentTool, AsksPeerAndReturnsReply) {
                     call("worker1", "disk space?"));
   ASSERT_TRUE(j.value("ok", false)) << j.dump();
   EXPECT_EQ(j["result"].value("reply", ""), "42 GB free");
-  EXPECT_EQ(peer.seen_secret, "s3cret");
-  auto sent = parse_ask(peer.seen_body);
+  EXPECT_EQ(peer.secret(), "s3cret");
+  auto sent = parse_ask(peer.body());
   ASSERT_TRUE(sent.ok);
   EXPECT_EQ(sent.from, "front");
   EXPECT_EQ(sent.hops, 0);
@@ -107,7 +120,7 @@ TEST(AskAgentTool, MalformedPeerResponseFailsClosed) {
                            R"({"ok":"true"})",             // ok is a string, not a bool
                            "not json"}) {                  // not JSON at all
     StubPeer peer;
-    peer.reply_body = body;
+    peer.set_reply(body);
     auto j = run_tool({ASK_AGENT_BIN, "front", "HADES_TEST_ASK_SECRET", "10",
                        "worker1=http://127.0.0.1:" + std::to_string(peer.port)},
                       call("worker1", "disk space?"));

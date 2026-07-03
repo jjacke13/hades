@@ -1,6 +1,6 @@
 // tests/test_bridge_module.cpp — BridgeModule inbound: auth, allowlist, ask turns, shares
 #include <gtest/gtest.h>
-#include <httplib.h>
+#include <cpr/cpr.h>
 #include <map>
 #include <memory>
 #include <string>
@@ -242,38 +242,36 @@ TEST(BridgeModule, RealSocketAskShareHealthAnd403) {
   Rig r;                                          // echo agent, secret s3cret, peer front
   const int port = r.mod->start_listening();      // port_ default 9090? Rig sets none -> use 0
   ASSERT_GT(port, 0);
-  httplib::Client cli("127.0.0.1", port);
+  // cpr, not httplib::Client: under TSan glibc 2.42 getaddrinfo spawns a helper thread libtsan
+  // can't intercept -> SEGV in the sanitizer allocator. cpr's path is the TSan-safe one (per e2e).
+  const std::string base = "http://127.0.0.1:" + std::to_string(port);
+  const cpr::Header json_secret{{"Content-Type", "application/json"}, {"X-Hades-Bridge", "s3cret"}};
 
   // /health with auth
-  auto h = cli.Get("/health", httplib::Headers{{"X-Hades-Bridge", "s3cret"}});
-  ASSERT_TRUE(h);
-  EXPECT_EQ(h->status, 200);
-  EXPECT_NE(h->body.find("worker1"), std::string::npos);
+  auto h = cpr::Get(cpr::Url{base + "/health"}, cpr::Header{{"X-Hades-Bridge", "s3cret"}});
+  EXPECT_EQ(h.status_code, 200);
+  EXPECT_NE(h.text.find("worker1"), std::string::npos);
   // /health without auth -> 403
-  auto h403 = cli.Get("/health");
-  ASSERT_TRUE(h403);
-  EXPECT_EQ(h403->status, 403);
+  auto h403 = cpr::Get(cpr::Url{base + "/health"});
+  EXPECT_EQ(h403.status_code, 403);
 
   // /ask end-to-end over the socket
-  auto a = cli.Post("/ask", httplib::Headers{{"X-Hades-Bridge", "s3cret"}},
-                    build_ask("front", 0, "ping").dump(), "application/json");
-  ASSERT_TRUE(a);
-  EXPECT_EQ(a->status, 200);
-  auto aj = nlohmann::json::parse(a->body, nullptr, false);
+  auto a = cpr::Post(cpr::Url{base + "/ask"}, cpr::Body{build_ask("front", 0, "ping").dump()},
+                     json_secret);
+  EXPECT_EQ(a.status_code, 200);
+  auto aj = nlohmann::json::parse(a.text, nullptr, false);
   ASSERT_TRUE(aj.value("ok", false));
   EXPECT_NE(aj.value("reply", "").find("ping"), std::string::npos);
 
   // /ask with a bad secret -> 403
-  auto f = cli.Post("/ask", httplib::Headers{{"X-Hades-Bridge", "wrong"}},
-                    build_ask("front", 0, "ping").dump(), "application/json");
-  ASSERT_TRUE(f);
-  EXPECT_EQ(f->status, 403);
+  auto f = cpr::Post(cpr::Url{base + "/ask"}, cpr::Body{build_ask("front", 0, "ping").dump()},
+                     cpr::Header{{"Content-Type", "application/json"}, {"X-Hades-Bridge", "wrong"}});
+  EXPECT_EQ(f.status_code, 403);
 
   // /share over the socket
-  auto s = cli.Post("/share", httplib::Headers{{"X-Hades-Bridge", "s3cret"}},
-                    build_share("front", "STATUS", "wet").dump(), "application/json");
-  ASSERT_TRUE(s);
-  EXPECT_EQ(s->status, 200);
+  auto s = cpr::Post(cpr::Url{base + "/share"},
+                     cpr::Body{build_share("front", "STATUS", "wet").dump()}, json_secret);
+  EXPECT_EQ(s.status_code, 200);
   auto e = r.bb.get("PEER.front.STATUS");
   ASSERT_TRUE(e.has_value());
   EXPECT_EQ(e->value.get<std::string>(), "wet");
