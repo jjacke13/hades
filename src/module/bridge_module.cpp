@@ -140,16 +140,23 @@ nlohmann::json BridgeModule::health_json() const {
 void BridgeModule::push_share_(const std::string& key, const nlohmann::json& value) {
   // Best-effort: a peer being down must never disturb the agent. status 0 = transport failure;
   // any non-2xx counts as failed too. BRIDGE_ERROR is observable in hades-scope and tests.
-  const std::string body = build_share(name_, key, value).dump();
-  for (const auto& [peer, url] : peers_) {
-    try {
-      auto [status, resp] = http_->post_json(url + "/share", body, secret_, 10.0);
-      if (status < 200 || status >= 300)
-        bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (status " +
-                                      std::to_string(status) + ")", "bridge");
-    } catch (...) {
-      bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (exception)", "bridge");
+  // GUARANTEE: on the inline path this runs on the pump thread directly from the subscription
+  // handler, which must NEVER throw — so the WHOLE body (incl. build_share().dump()) is under an
+  // outer try/catch. The per-peer catch stays so one failing peer never stops the rest.
+  try {
+    const std::string body = build_share(name_, key, value).dump();
+    for (const auto& [peer, url] : peers_) {
+      try {
+        auto [status, resp] = http_->post_json(url + "/share", body, secret_, 10.0);
+        if (status < 200 || status >= 300)
+          bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (status " +
+                                        std::to_string(status) + ")", "bridge");
+      } catch (...) {
+        bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (exception)", "bridge");
+      }
     }
+  } catch (...) {
+    bb_->post("BRIDGE_ERROR", "share push failed (exception building payload)", "bridge");
   }
 }
 }  // namespace hades
