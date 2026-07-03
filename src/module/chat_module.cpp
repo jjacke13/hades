@@ -143,6 +143,7 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
       // free (a later foreign turn would then wrongly read this REPL's stdin).
       struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
       turn_done_ = false;
+      bb_->post("TURN_ORIGIN", "human", "chat");
       bb_->post("USER_MESSAGE", line, "chat");
       if (!bb_->run_until([this] { return turn_done_; }, effective_timeout_())) abandon_turn_();
     }
@@ -186,6 +187,7 @@ void ChatModule::run_repl_readline() {
       // free (a later foreign turn would then wrongly read this REPL's stdin).
       struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
       turn_done_ = false;
+      bb_->post("TURN_ORIGIN", "human", "chat");
       bb_->post("USER_MESSAGE", line, "chat");
       if (!bb_->run_until([this] { return turn_done_; }, effective_timeout_())) abandon_turn_();
     }

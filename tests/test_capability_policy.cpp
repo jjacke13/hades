@@ -252,3 +252,15 @@ TEST(CapabilityPolicy, SkillToolsAreAllowedWithoutConfirm) {
   save.args = {{"name", "greet"}, {"description", "d"}, {"body", "b"}};
   EXPECT_FALSE(p.veto(bb, save).vetoed);
 }
+
+TEST(CapabilityPolicy, AskAgentHasPeerAskCapabilityAndIsAllowed) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("ask_agent"), Capability::PeerAsk);
+  CapabilityScope sc;                            // defaults: confirm_unscoped = true — proves
+  CapabilityPolicy p(sc);                        // this is NOT the Unknown->confirm path
+  Blackboard bb;
+  Action a;
+  a.kind = Action::Kind::ToolCall;
+  a.tool = "ask_agent";
+  a.args = {{"peer", "front"}, {"message", "hi"}};
+  EXPECT_FALSE(p.veto(bb, a).vetoed);
+}

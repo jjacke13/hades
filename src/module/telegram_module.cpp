@@ -91,6 +91,7 @@ void TelegramModule::drive_turn_(long long chat_id, const nlohmann::json& post_v
   got_reply_ = false;
   last_reply_.clear();
   pending_confirm_ = nullptr;
+  bb_->post("TURN_ORIGIN", "human", "telegram");
   bb_->post(key, post_value, "telegram");
   const bool done = bb_->run_until(
       [this] { return got_reply_ || !pending_confirm_.is_null(); }, effective_timeout_());

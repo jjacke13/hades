@@ -110,6 +110,7 @@ nlohmann::json HttpServerModule::handle_message(const std::string& text) {
   got_reply_ = false;
   last_reply_.clear();
   pending_confirm_ = nullptr;
+  bb_->post("TURN_ORIGIN", "human", "http");
   bb_->post("USER_MESSAGE", text, "http");
   return collect_();
 }

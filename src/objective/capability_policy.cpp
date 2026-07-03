@@ -154,6 +154,7 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "save_memory" || tool == "pin_fact")       return Capability::MemoryAppend;
   if (tool == "use_skill")                               return Capability::SkillRead;
   if (tool == "save_skill")                              return Capability::SkillWrite;
+  if (tool == "ask_agent")                               return Capability::PeerAsk;
   return Capability::Unknown;
 }
 
@@ -245,6 +246,12 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
       // body only enters context on an explicit use_skill). Distinct capabilities (not
       // MemoryAppend) keep the table honest so a future policy can confirm-gate SkillWrite
       // without code changes.
+      return allow();
+    case Capability::PeerAsk:
+      // Delegation to a rostered peer agent: the roster/urls are fixed by wiring argv (never
+      // chosen by the LLM) and the RECEIVING agent's own objectives/confirm gates evaluate
+      // whatever the request causes — those are the real protection. Distinct capability so a
+      // future policy can confirm-gate outbound asks with zero code (SkillWrite precedent).
       return allow();
     case Capability::Unknown:
     default:
