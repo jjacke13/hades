@@ -21,6 +21,7 @@
 #include "hades/module/embedding_memory_module.h"
 #include "hades/module/skills_module.h"
 #include "hades/module/telegram_module.h"
+#include "hades/module/bridge_module.h"
 #include "hades/turn_gate.h"
 #include "hades/arbiter.h"
 namespace hades {
@@ -61,6 +62,11 @@ struct Agent {
   // (hades_main also declares the Blackboard BEFORE the Agent, so the workers
   // join before the bus dies too — see the comment there.)
   std::unique_ptr<Executor> executor;
+  // Agent↔agent bridge (listener thread + share push). Declared AFTER executor and BEFORE
+  // telegram: destroyed second (after telegram, before executor), so its dtor stop+joins the
+  // listener while the Executor and every module an in-flight /ask turn touches are still
+  // alive. Do NOT reorder (see the executor/telegram comments).
+  std::unique_ptr<BridgeModule> bridge;
   // Telegram front-end. LAST member => destroyed FIRST: its dtor stop+joins the poll thread,
   // and an in-flight telegram-driven turn must finish (or hit the idle ceiling) while the
   // executor and every module it touches are still alive. Do NOT move below-declared members

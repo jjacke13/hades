@@ -19,7 +19,9 @@
 #include "hades/llm/openai_compat_provider.h"
 #include "hades/objective/avoid_destructive.h"
 #include "hades/objective/capability_policy.h"
+#include "hades/objective/peer_loop_guard.h"
 #include "hades/objective/stay_on_budget.h"
+#include "hades/bridge/protocol.h"  // valid_peer_name
 #include "hades/prompt.h"  // assemble_system_prompt
 #include "hades/skills/scan.h"  // resolve_skills_dir
 #include "hades/module/memory_module.h"
@@ -91,7 +93,9 @@ void wire_agent(Agent& a,
                 const Block& embedding = Block{},
                 const std::string& session_path = "",
                 const Block& skills_cfg = Block{},
-                const Block& telegram_cfg = Block{}) {
+                const Block& telegram_cfg = Block{},
+                const Block& bridge_cfg = Block{},
+                const std::vector<Block>& peer_blocks = {}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -113,6 +117,36 @@ void wire_agent(Agent& a,
   const std::string skills_dir = resolve_skills_dir(skills_cfg);
   reject_ws(skills_dir, "skills dir");
 
+  // Bridge identity + peer roster. The Bridge BLOCK is the agent's bridge identity (name/
+  // secret/timeout) — needed by the ask_agent tool even without the listener module; the
+  // bridge MODULE is only the inbound listener. Fail fast on a mis-wiring, BEFORE any
+  // on_start side effects.
+  std::map<std::string, std::string> peers;
+  for (const auto& p : peer_blocks) {
+    if (!valid_peer_name(p.name))
+      throw MalConfig("Peer block has an invalid name: " + p.name);
+    if (!p.kv.count("url") || p.kv.at("url").empty())
+      throw MalConfig("Peer " + p.name + " requires a url");
+    reject_ws(p.kv.at("url"), "peer url");
+    if (!peers.emplace(p.name, p.kv.at("url")).second)
+      throw MalConfig("duplicate Peer block: " + p.name);
+  }
+  const std::string bridge_name =
+      bridge_cfg.kv.count("name") ? bridge_cfg.kv.at("name") : "";
+  const std::string bridge_secret_env =
+      bridge_cfg.kv.count("secret_env") ? bridge_cfg.kv.at("secret_env") : "HADES_BRIDGE_SECRET";
+  double ask_timeout_s = kDefaultAskTimeoutS;
+  if (bridge_cfg.kv.count("ask_timeout_s"))
+    set_pos_double_on_string(bridge_cfg.kv.at("ask_timeout_s"), ask_timeout_s);
+  bool has_ask_agent = false;
+  for (const auto& t : tools) if (t.name == "ask_agent") has_ask_agent = true;
+  if (has_ask_agent) {
+    if (peers.empty())
+      throw MalConfig("ask_agent tool requires at least one Peer block (nobody to call)");
+    if (!valid_peer_name(bridge_name))
+      throw MalConfig("ask_agent tool requires Bridge { name } (the agent's own peer name)");
+  }
+
   // pin_fact writes the core-memory file the Arbiter folds in each turn; without a
   // configured memory_file the two would target different files (silent drift), so
   // require it explicitly when the pin_fact tool is present.
@@ -130,6 +164,17 @@ void wire_agent(Agent& a,
       t.kv["native"] = t.kv["native"] + " " + core_path;
     else if ((t.name == "use_skill" || t.name == "save_skill") && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + skills_dir;
+    else if (t.name == "ask_agent" && t.kv.count("native")) {
+      // argv: <own_name> <secret_env> <timeout_s> <name=url>... (peers sorted — std::map).
+      auto fmt = [](double d) { std::ostringstream o; o << d; return o.str(); };
+      std::string argv_tail = " " + bridge_name + " " + bridge_secret_env + " " +
+                              fmt(ask_timeout_s);
+      for (const auto& [pname, purl] : peers) argv_tail += " " + pname + "=" + purl;
+      t.kv["native"] = t.kv["native"] + argv_tail;
+      // ToolRunner cap ABOVE the tool's inner HTTP timeout: the tool reports its own timeout
+      // error instead of being killed mid-write (single source: Bridge.ask_timeout_s).
+      t.kv["timeout_s"] = fmt(ask_timeout_s + 10);
+    }
     tools_resolved.push_back(std::move(t));
   }
 
@@ -190,6 +235,10 @@ void wire_agent(Agent& a,
     a.arbiter->set_model(std::move(model));
     a.arbiter->set_system_prompt(assemble_system_prompt(session));  // SOUL/USER/MEMORY (empty Block -> "")
     a.arbiter->set_memory_path(core_path);  // live core memory (memory_file), re-read each turn
+    // The bridge brings its OWN safety behavior (not manifest-optional): a peer-driven turn
+    // must never ask_agent onward — the A<->B mutual-wait deadlock. Registered FIRST so its
+    // hard veto short-circuits before any manifest objective.
+    if (a.bridge) a.arbiter->add_objective(std::make_unique<PeerLoopGuard>());
     for (const auto& ob : objectives)
       if (auto o = make_objective(ob)) a.arbiter->add_objective(std::move(o));
     a.arbiter->on_attach(bb);
@@ -207,6 +256,19 @@ void wire_agent(Agent& a,
   if (a.serve) {
     a.serve->set_turn_gate(a.gate.get());
     a.serve->on_attach(bb);
+  }
+
+  // 5b) Bridge: inbound peer front-end + outbound share push. Gate BEFORE on_attach (it
+  //     drives whole turns like the other front-ends); peers BEFORE on_attach (the allowlist
+  //     must exist before any request can arrive — the listener itself starts later, in
+  //     hades_main); executor for the share-push offload. on_start throws MalConfig on a
+  //     missing name / unset secret env.
+  if (a.bridge) {
+    a.bridge->set_turn_gate(a.gate.get());
+    a.bridge->on_start(bridge_cfg, bb);
+    a.bridge->set_peers(peers);
+    if (a.executor) a.bridge->set_executor(a.executor.get());
+    a.bridge->on_attach(bb);
   }
 
   // 6) Telegram front-end: config (MalConfig on missing allow_users / token env) + captures.
@@ -295,6 +357,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
   launcher.register_factory("telegram",    []{ return std::make_unique<TelegramModule>(); });
+  launcher.register_factory("bridge",      []{ return std::make_unique<BridgeModule>(); });
   launcher.instantiate(m);   // MalConfig on unknown Module type
 
   Agent a;
@@ -307,6 +370,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
   a.telegram = take_as<TelegramModule>(launcher, "telegram");
+  a.bridge  = take_as<BridgeModule>(launcher, "bridge");
 
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
@@ -316,6 +380,9 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block skills_cfg = skills_blocks.empty() ? Block{} : skills_blocks.front();
   const auto tg_blocks = m.of("Telegram");
   const Block telegram_cfg = tg_blocks.empty() ? Block{} : tg_blocks.front();
+  const auto bridge_blocks = m.of("Bridge");
+  const Block bridge_cfg = bridge_blocks.empty() ? Block{} : bridge_blocks.front();
+  const auto peer_blocks = m.of("Peer");
 
   // Live path only: own a small worker pool and offload the blocking LLM call onto it so
   // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
@@ -333,7 +400,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // Pass the resolved live-session path through so wire_agent sets it on the embedding module
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
-             skills_cfg, telegram_cfg);
+             skills_cfg, telegram_cfg, bridge_cfg, peer_blocks);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
@@ -341,6 +408,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   if (a.chat)  a.chat->set_turn_timeout_s(turn_idle_timeout_s);
   if (a.serve) a.serve->set_collect_timeout_s(turn_idle_timeout_s);
   if (a.telegram) a.telegram->set_turn_timeout_s(turn_idle_timeout_s);
+  if (a.bridge) a.bridge->set_turn_timeout_s(turn_idle_timeout_s);
   return a;
 }
 

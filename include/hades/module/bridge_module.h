@@ -34,12 +34,13 @@ class Executor;
 
 class BridgeModule : public Module {
  public:
-  // Test injection: a non-empty secret skips the on_start env-var resolution.
-  explicit BridgeModule(std::string secret_for_test = "") : secret_(std::move(secret_for_test)) {}
+  // Test injection: a non-empty secret skips the on_start env-var resolution. Defined
+  // out-of-line in the .cpp (like the dtor) because a member is unique_ptr<httplib::Server>
+  // (incomplete here) — an inline body would force <httplib.h> onto every TU that constructs a
+  // BridgeModule (e.g. the agent-wiring factory).
+  explicit BridgeModule(std::string secret_for_test = "");
   // Test injection of the outbound HTTP seam (real path: on_start creates CprBridgeHttp).
-  // Delegating ctor: no initializer-order coupling to the member declaration order.
-  explicit BridgeModule(std::unique_ptr<BridgeHttp> http, std::string secret_for_test = "")
-      : BridgeModule(std::move(secret_for_test)) { http_ = std::move(http); }
+  explicit BridgeModule(std::unique_ptr<BridgeHttp> http, std::string secret_for_test = "");
   void set_executor(Executor* ex) { executor_ = ex; }
   ~BridgeModule() override;   // stop + join the listener thread
   std::string type() const override { return "bridge"; }

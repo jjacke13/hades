@@ -112,6 +112,15 @@ int main(int argc, char** argv) {
       if (!tg.empty() && tg.front().kv.count("token_env")) tg_env = tg.front().kv.at("token_env");
       if (const char* tg_token = std::getenv(tg_env.c_str()); tg_token && *tg_token) eventlog.add_redaction(tg_token);
     }
+    // Redact the bridge shared secret too (it travels in every bridge request header).
+    // Best-effort: resolve the same env var the module/tool will use.
+    {
+      const auto br = manifest.of("Bridge");
+      std::string br_env = "HADES_BRIDGE_SECRET";
+      if (!br.empty() && br.front().kv.count("secret_env")) br_env = br.front().kv.at("secret_env");
+      if (const char* br_secret = std::getenv(br_env.c_str()); br_secret && *br_secret)
+        eventlog.add_redaction(br_secret);
+    }
 
     // LOAD-BEARING declaration order: `bb` BEFORE `agent`, so at scope exit `agent`
     // (and the Executor it owns, its last member) is destroyed FIRST and `bb` LAST.
@@ -154,6 +163,15 @@ int main(int argc, char** argv) {
     // (REPL / --serve) drives the main thread; turns are serialized by the shared TurnGate.
     if (agent.telegram) agent.telegram->start_polling();
 
+    // Bridge listener: started AFTER the full graph is wired (same rule as the telegram poll
+    // thread — no surprise threads in tests). Peer turns serialize through the shared TurnGate.
+    if (agent.bridge) {
+      const int p = agent.bridge->start_listening();
+      if (p < 0) { std::cerr << "hades: bridge failed to bind its port\n"; return 1; }
+      std::cerr << "hades: bridge \"" << agent.bridge->name() << "\" listening on port "
+                << p << "\n";
+    }
+
     if (serve) {
       if (!agent.serve) { std::cerr << "hades: no `serve` module in the manifest Module roster\n"; return 1; }
       const ServeConfig cfg = resolve_serve_config(manifest, cli_port);
@@ -163,6 +181,9 @@ int main(int argc, char** argv) {
     } else if (agent.telegram) {
       std::cerr << "hades: telegram-only roster — polling (Ctrl-C to exit)\n";
       agent.telegram->wait();                                 // blocks on the poll thread
+    } else if (agent.bridge) {
+      std::cerr << "hades: bridge-only roster — serving peers (Ctrl-C to exit)\n";
+      agent.bridge->wait();                                  // blocks on the listener thread
     } else {
       std::cerr << "hades: no `chat` module in the manifest Module roster\n";
       return 1;

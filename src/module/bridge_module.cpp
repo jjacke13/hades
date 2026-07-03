@@ -12,6 +12,14 @@
 #include "hades/timeouts.h"    // kDefaultTurnIdleTimeoutS, kDefaultAskTimeoutS
 namespace hades {
 
+// Out-of-line (the header only forward-declares httplib::Server; a member unique_ptr to it
+// needs the complete type at the point of construction — this TU includes <httplib.h>).
+BridgeModule::BridgeModule(std::string secret_for_test) : secret_(std::move(secret_for_test)) {}
+BridgeModule::BridgeModule(std::unique_ptr<BridgeHttp> http, std::string secret_for_test)
+    : BridgeModule(std::move(secret_for_test)) {   // delegate: no member-order coupling
+  http_ = std::move(http);
+}
+
 double BridgeModule::effective_timeout_() const {
   return turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kDefaultTurnIdleTimeoutS;
 }

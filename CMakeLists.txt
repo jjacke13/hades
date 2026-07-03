@@ -165,6 +165,7 @@ target_sources(hades_tests PRIVATE tests/test_pantler_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_embedding_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_skills_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_telegram_wiring.cpp)
+target_sources(hades_tests PRIVATE tests/test_bridge_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_webui.cpp)
 target_compile_definitions(hades_tests PRIVATE
   WEB_INDEX="${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
