@@ -64,3 +64,19 @@ TEST(ToolRunner, NativeFsReadMissingFileReportsNotOk) {
   EXPECT_FALSE(ok);
   EXPECT_NE(err.find("cannot open"), std::string::npos);
 }
+
+TEST(ToolRegistry, PerToolTimeoutParsedFromBlock) {
+  ToolRegistry reg;
+  Block b;
+  b.name = "slow_tool";
+  b.kv["native"] = "/bin/true";
+  b.kv["timeout_s"] = "190";
+  reg.add_from_block(b);
+  ASSERT_EQ(reg.entries().size(), 1u);
+  EXPECT_DOUBLE_EQ(reg.entries()[0].timeout_s, 190.0);
+  Block d;
+  d.name = "default_tool";
+  d.kv["native"] = "/bin/true";
+  reg.add_from_block(d);
+  EXPECT_DOUBLE_EQ(reg.entries()[1].timeout_s, 0.0);   // 0 -> runner default
+}

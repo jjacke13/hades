@@ -17,6 +17,7 @@ struct ToolEntry {
   std::string name;     // the Tool block name (config-side handle)
   std::string kind;     // "native" | "mcp"
   std::string command;  // argv string (split on whitespace at spawn time)
+  double timeout_s = 0.0;  // per-tool subprocess cap; 0 -> the ToolRunner default (30s)
 };
 
 // Registry of configured tools. The describe/spec cache for native tools is

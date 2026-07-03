@@ -20,10 +20,14 @@ static std::vector<std::string> split_ws(const std::string& s) {
 }
 
 void ToolRegistry::add_from_block(const Block& b) {
-  if (b.kv.count("native"))
-    tools_.push_back({b.name, "native", b.kv.at("native")});
-  else if (b.kv.count("mcp"))
-    tools_.push_back({b.name, "mcp", b.kv.at("mcp")});
+  ToolEntry e;
+  e.name = b.name;
+  if (b.kv.count("native")) { e.kind = "native"; e.command = b.kv.at("native"); }
+  else if (b.kv.count("mcp")) { e.kind = "mcp"; e.command = b.kv.at("mcp"); }
+  else return;                         // unchanged behavior: a block with neither is ignored
+  if (b.kv.count("timeout_s"))
+    set_pos_double_on_string(b.kv.at("timeout_s"), e.timeout_s);
+  tools_.push_back(std::move(e));
 }
 
 const std::vector<ToolEntry>& ToolRegistry::entries() const { return tools_; }

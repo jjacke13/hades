@@ -49,11 +49,15 @@ void ToolRunner::on_attach(Blackboard& bb) {
     nlohmann::json content;
     bool ok = false;
 
+    // Per-tool override (Tool block timeout_s, e.g. ask_agent's long peer-call window);
+    // 0 -> the runner-wide default.
+    const double timeout = (te && te->timeout_s > 0.0) ? te->timeout_s : timeout_s_;
+
     if (!te) {
       content = {{"error", "unknown tool: " + name}};
     } else if (te->kind == "native") {
       nlohmann::json call{{"call", name}, {"args", args}};
-      auto r = run_subprocess(split_ws(te->command), call.dump(), timeout_s_);
+      auto r = run_subprocess(split_ws(te->command), call.dump(), timeout);
       if (r.timed_out) {
         content = {{"error", "tool timed out: " + name}};
       } else {
@@ -66,7 +70,7 @@ void ToolRunner::on_attach(Blackboard& bb) {
         }
       }
     } else {  // mcp
-      content = mcp_call(te->command, name, args, timeout_s_);
+      content = mcp_call(te->command, name, args, timeout);
       ok = content.is_object() && !content.contains("error");
     }
 
