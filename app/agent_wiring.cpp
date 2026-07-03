@@ -135,6 +135,7 @@ void wire_agent(Agent& a,
       bridge_cfg.kv.count("name") ? bridge_cfg.kv.at("name") : "";
   const std::string bridge_secret_env =
       bridge_cfg.kv.count("secret_env") ? bridge_cfg.kv.at("secret_env") : "HADES_BRIDGE_SECRET";
+  reject_ws(bridge_secret_env, "bridge secret_env");
   double ask_timeout_s = kDefaultAskTimeoutS;
   if (bridge_cfg.kv.count("ask_timeout_s"))
     set_pos_double_on_string(bridge_cfg.kv.at("ask_timeout_s"), ask_timeout_s);
