@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
         cpr::Response r = cpr::Post(
             cpr::Url{peers.at(peer) + "/ask"}, cpr::Body{body},
             cpr::Header{{"Content-Type", "application/json"}, {"X-Hades-Bridge", secret}},
-            cpr::Timeout{static_cast<long>(timeout_s * 1000)}, cpr::Redirect{false});
+            cpr::Timeout{static_cast<int>(timeout_s * 1000)}, cpr::Redirect{false});
         auto resp = nlohmann::json::parse(r.text, nullptr, false);
         // Typed-guarded reads: a key present with a MISMATCHED type must not throw (.value()
         // throws type_error.302 in that case). find() returns end() on a non-object too.
