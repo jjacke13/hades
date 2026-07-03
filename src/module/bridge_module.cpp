@@ -1,6 +1,8 @@
 // src/module/bridge_module.cpp — inbound bridge: auth, allowlist, peer turns, share ingest
 #include "hades/module/bridge_module.h"
+#include <httplib.h>
 #include <cstdlib>
+#include <iostream>
 #include <sstream>
 #include "hades/blackboard.h"
 #include "hades/bridge/protocol.h"
@@ -14,6 +16,58 @@ double BridgeModule::effective_timeout_() const {
   return turn_timeout_override_s_ > 0.0 ? turn_timeout_override_s_ : kDefaultTurnIdleTimeoutS;
 }
 
+BridgeModule::~BridgeModule() {
+  if (srv_) srv_->stop();                          // wakes the listen() thread
+  if (listen_thread_.joinable()) listen_thread_.join();
+}
+
+int BridgeModule::start_listening() {
+  if (listen_thread_.joinable()) return port_;     // idempotent
+  srv_ = std::make_unique<httplib::Server>();
+  // Socket timeouts above the turn idle ceiling so a long-but-legit /ask is never cut off
+  // mid-turn (HttpServerModule::configure_server_ rationale).
+  const time_t secs = static_cast<time_t>(effective_timeout_()) + 60;
+  srv_->set_read_timeout(secs, 0);
+  srv_->set_write_timeout(secs, 0);
+
+  // Routes are thin shells over the socket-free handlers; a "forbidden" result maps to 403.
+  auto respond = [](httplib::Response& res, const nlohmann::json& out) {
+    if (out.value("error", "") == "forbidden") res.status = 403;
+    res.set_content(out.dump(), "application/json");
+  };
+  srv_->Post("/ask", [this, respond](const httplib::Request& req, httplib::Response& res) {
+    respond(res, handle_ask(req.body, req.get_header_value("X-Hades-Bridge")));
+  });
+  srv_->Post("/share", [this, respond](const httplib::Request& req, httplib::Response& res) {
+    respond(res, handle_share(req.body, req.get_header_value("X-Hades-Bridge")));
+  });
+  srv_->Get("/health", [this, respond](const httplib::Request& req, httplib::Response& res) {
+    // Auth on /health too (spec): liveness is fleet-internal, not public.
+    if (req.get_header_value("X-Hades-Bridge") != secret_) {
+      respond(res, {{"ok", false}, {"error", "forbidden"}});
+      return;
+    }
+    respond(res, health_json());
+  });
+
+  // Bind BEFORE spawning the thread so the caller learns the real port synchronously
+  // (port 0 -> ephemeral; tests use this so parallel runs never collide).
+  if (port_ == 0) {
+    const int bound = srv_->bind_to_any_port(host_);
+    if (bound <= 0) { srv_.reset(); return -1; }
+    port_ = bound;
+  } else if (!srv_->bind_to_port(host_, port_)) {
+    srv_.reset();
+    return -1;
+  }
+  listen_thread_ = std::thread([this] { srv_->listen_after_bind(); });
+  return port_;
+}
+
+void BridgeModule::wait() {
+  if (listen_thread_.joinable()) listen_thread_.join();
+}
+
 void BridgeModule::on_start(const Block& cfg, Blackboard&) {
   // The agent's bridge identity. REQUIRED: it is the `from` peers verify us by, half of the
   // TURN_ORIGIN value, and the PEER.<name>. prefix on the receiving side. Fail fast + loud.
@@ -22,8 +76,10 @@ void BridgeModule::on_start(const Block& cfg, Blackboard&) {
   name_ = cfg.kv.at("name");
   if (cfg.kv.count("host")) host_ = cfg.kv.at("host");
   if (cfg.kv.count("port")) {
-    double p = 0.0;
-    if (set_pos_double_on_string(cfg.kv.at("port"), p)) port_ = static_cast<int>(p);
+    // Explicit branch, not set_pos_double_on_string: port 0 (bind-any-ephemeral) is a legal
+    // value the positive-only helper would reject.
+    try { port_ = std::stoi(cfg.kv.at("port")); } catch (const std::exception&) {}
+    if (port_ < 0 || port_ > 65535) port_ = 9090;
   }
   if (cfg.kv.count("max_hops")) {
     double h = 0.0;

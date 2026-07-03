@@ -1,5 +1,6 @@
 // tests/test_bridge_module.cpp — BridgeModule inbound: auth, allowlist, ask turns, shares
 #include <gtest/gtest.h>
+#include <httplib.h>
 #include <map>
 #include <memory>
 #include <string>
@@ -20,6 +21,7 @@ struct Rig {
     mod = std::make_unique<BridgeModule>("s3cret");
     Block cfg;
     cfg.kv["name"] = "worker1";
+    cfg.kv["port"] = "0";                         // ephemeral -> parallel test runs never collide
     mod->on_start(cfg, bb);
     mod->set_peers({{"front", "http://127.0.0.1:1"}});
     mod->on_attach(bb);
@@ -234,4 +236,45 @@ TEST(BridgeModule, FailedPushPostsBridgeErrorAndDoesNotThrow) {
   bb.pump();
   bb.pump();                                     // dispatch the BRIDGE_ERROR posted inline
   EXPECT_NE(err.find("front"), std::string::npos);
+}
+
+TEST(BridgeModule, RealSocketAskShareHealthAnd403) {
+  Rig r;                                          // echo agent, secret s3cret, peer front
+  const int port = r.mod->start_listening();      // port_ default 9090? Rig sets none -> use 0
+  ASSERT_GT(port, 0);
+  httplib::Client cli("127.0.0.1", port);
+
+  // /health with auth
+  auto h = cli.Get("/health", httplib::Headers{{"X-Hades-Bridge", "s3cret"}});
+  ASSERT_TRUE(h);
+  EXPECT_EQ(h->status, 200);
+  EXPECT_NE(h->body.find("worker1"), std::string::npos);
+  // /health without auth -> 403
+  auto h403 = cli.Get("/health");
+  ASSERT_TRUE(h403);
+  EXPECT_EQ(h403->status, 403);
+
+  // /ask end-to-end over the socket
+  auto a = cli.Post("/ask", httplib::Headers{{"X-Hades-Bridge", "s3cret"}},
+                    build_ask("front", 0, "ping").dump(), "application/json");
+  ASSERT_TRUE(a);
+  EXPECT_EQ(a->status, 200);
+  auto aj = nlohmann::json::parse(a->body, nullptr, false);
+  ASSERT_TRUE(aj.value("ok", false));
+  EXPECT_NE(aj.value("reply", "").find("ping"), std::string::npos);
+
+  // /ask with a bad secret -> 403
+  auto f = cli.Post("/ask", httplib::Headers{{"X-Hades-Bridge", "wrong"}},
+                    build_ask("front", 0, "ping").dump(), "application/json");
+  ASSERT_TRUE(f);
+  EXPECT_EQ(f->status, 403);
+
+  // /share over the socket
+  auto s = cli.Post("/share", httplib::Headers{{"X-Hades-Bridge", "s3cret"}},
+                    build_share("front", "STATUS", "wet").dump(), "application/json");
+  ASSERT_TRUE(s);
+  EXPECT_EQ(s->status, 200);
+  auto e = r.bb.get("PEER.front.STATUS");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.get<std::string>(), "wet");
 }

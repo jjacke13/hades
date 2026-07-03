@@ -10,14 +10,24 @@
 // rostered Peer — either failure returns an indistinguishable "forbidden". The socket layer
 // (Task 4) is a thin shell over the socket-free handle_ask/handle_share seams below.
 #pragma once
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "hades/bridge/http.h"
 #include "hades/module.h"
 #include "hades/turn_gate.h"
+
+// Forward-declared so this public header does NOT pull in the heavy <httplib.h> for every
+// TU that includes it; the .cpp (and the socket test) include the real header. The dtor
+// must therefore live in the .cpp where httplib::Server is a complete type.
+namespace httplib {
+class Server;
+}
+
 namespace hades {
 class Blackboard;
 class Executor;
@@ -31,9 +41,17 @@ class BridgeModule : public Module {
   explicit BridgeModule(std::unique_ptr<BridgeHttp> http, std::string secret_for_test = "")
       : BridgeModule(std::move(secret_for_test)) { http_ = std::move(http); }
   void set_executor(Executor* ex) { executor_ = ex; }
+  ~BridgeModule() override;   // stop + join the listener thread
   std::string type() const override { return "bridge"; }
   void on_start(const Block& cfg, Blackboard& bb) override;
   void on_attach(Blackboard& bb) override;
+
+  // Bind (port 0 -> any free port) and serve on a background thread. Called by hades_main
+  // AFTER the graph is wired (never by on_attach — tests spawn no thread unless they ask).
+  // Returns the bound port, or -1 on bind failure. Idempotent.
+  int start_listening();
+  int port() const { return port_; }
+  void wait();                // join (bridge-only roster blocks here; Ctrl-C exits)
 
   void set_peers(std::map<std::string, std::string> peers) { peers_ = std::move(peers); }
   void set_turn_gate(TurnGate* g) { gate_ = g; }
@@ -78,5 +96,8 @@ class BridgeModule : public Module {
   std::unique_ptr<BridgeHttp> http_;
   Executor* executor_ = nullptr;   // push jobs run here when set (inline otherwise — tests)
   void push_share_(const std::string& key, const nlohmann::json& value);
+
+  std::unique_ptr<httplib::Server> srv_;   // dtor lives in the .cpp (complete type there)
+  std::thread listen_thread_;
 };
 }  // namespace hades
