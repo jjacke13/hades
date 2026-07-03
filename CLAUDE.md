@@ -171,7 +171,7 @@ member → destroyed FIRST, so its dtor finishes any in-flight telegram turn whi
 it touches are still alive (see the member comment). A telegram-only roster (no chat/serve) makes `hades_main`
 block on `wait()`. Pieces: `src/module/telegram_module.cpp`, `include/hades/{module/telegram_module.h,
 turn_gate.h,telegram/*}`, `src/telegram/*`, `app/{agent_wiring,hades_main}.*`, `tests/test_telegram_*.cpp`,
-`tests/test_turn_gate.cpp`. **Live-smoke pending** (Vaios: bot from @BotFather + your id from @userinfobot).
+`tests/test_turn_gate.cpp`. **LIVE-VALIDATED 2026-07-03** (Vaios: real bot, phone→reply working).
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 
@@ -348,7 +348,20 @@ hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
 
-## NEXT (decided 2026-07-01, Vaios) — in order
+## NEXT (decided 2026-07-03, Vaios): MULTI-AGENT OPERATION + agent↔agent communication
+**Brainstorm-first — nothing specced.** Un-parks the Bridge. The recorded framing (see the MOOS-IvP table +
+Personas paragraph up top): 1 agent = 1 community (Blackboard+Arbiter+modules); more agents = replicate the
+community; bridge them pShare/pMOOSBridge-style. The three levels already sketched: (1) separate manifests
+[possible today — N processes], (2) `/persona` switch, (3) a `Community` struct ×N in ONE process + router +
+Bridge module [real multi-agent]. Open questions for the brainstorm: processes-with-Bridge vs in-process
+Community×N; what crosses the bridge (selected bus keys? messages as USER_MESSAGE into the peer? shared
+memory stores?); addressing/naming agents; does an agent appear to its peer as a TOOL, a FRONT-END, or a
+bus-peer (pShare forwards variables — the honest MOOS answer); safety (does a peer's request pass the
+receiving agent's own objectives/confirm gates — it must); transport (same TurnGate model? localhost HTTP
+reusing --serve? a queue?). Prior art in-repo: HttpServerModule IS already an agent-to-anything JSON API;
+TelegramModule proved the front-end-module pattern; TurnGate proved multi-surface serialization.
+
+## DONE (the 2026-07-01 list — all shipped)
 **1. Skills — DONE (shipped 2026-07-02, `feat/skills`).** A skills system for the hades agent: loadable
 instruction packs (`<skills_dir>/<name>/SKILL.md`) the agent discovers via the leading-system-message "Available
 skills" roster (SkillsModule `SKILLS_ANNOUNCE` fold) and invokes with `use_skill`, authoring new ones with
@@ -377,9 +390,10 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 (GET /history — DONE `e916084`. Memory embeddings — DONE `20ba94c`. Memory-injection framing — DONE `678a248`.)
 
 ## Other open work
-MCP tool discovery (MCP servers can be called but aren't announced to the LLM) · persona switch · prompt
-caching · SSE streaming · settings UI · capability-v2 (positive net allowlist / realpath / DNS-rebind) ·
-agent↔agent Bridge (parked).
+Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
+aren't announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
+(positive net allowlist / realpath / DNS-rebind) · telegram v2 (UTF-8-aware 4096 split · group chats ·
+persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate + api-seam pattern).
 
 ## Gotchas
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
