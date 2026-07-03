@@ -11,18 +11,26 @@
 // (Task 4) is a thin shell over the socket-free handle_ask/handle_share seams below.
 #pragma once
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include "hades/bridge/http.h"
 #include "hades/module.h"
 #include "hades/turn_gate.h"
 namespace hades {
 class Blackboard;
+class Executor;
 
 class BridgeModule : public Module {
  public:
   // Test injection: a non-empty secret skips the on_start env-var resolution.
   explicit BridgeModule(std::string secret_for_test = "") : secret_(std::move(secret_for_test)) {}
+  // Test injection of the outbound HTTP seam (real path: on_start creates CprBridgeHttp).
+  // Delegating ctor: no initializer-order coupling to the member declaration order.
+  explicit BridgeModule(std::unique_ptr<BridgeHttp> http, std::string secret_for_test = "")
+      : BridgeModule(std::move(secret_for_test)) { http_ = std::move(http); }
+  void set_executor(Executor* ex) { executor_ = ex; }
   std::string type() const override { return "bridge"; }
   void on_start(const Block& cfg, Blackboard& bb) override;
   void on_attach(Blackboard& bb) override;
@@ -66,5 +74,9 @@ class BridgeModule : public Module {
   bool got_reply_ = false;
   std::string last_reply_;
   bool denied_confirm_ = false;            // a confirm was auto-denied during MY turn
+
+  std::unique_ptr<BridgeHttp> http_;
+  Executor* executor_ = nullptr;   // push jobs run here when set (inline otherwise — tests)
+  void push_share_(const std::string& key, const nlohmann::json& value);
 };
 }  // namespace hades

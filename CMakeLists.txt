@@ -37,6 +37,7 @@ target_sources(hades_core PRIVATE src/skills/scan.cpp)
 target_sources(hades_core PRIVATE src/telegram/parse.cpp)
 target_sources(hades_core PRIVATE src/telegram/cpr_telegram_api.cpp)
 target_sources(hades_core PRIVATE src/bridge/protocol.cpp)
+target_sources(hades_core PRIVATE src/bridge/cpr_bridge_http.cpp)
 
 add_executable(hades_tests tests/test_smoke.cpp)
 target_link_libraries(hades_tests PRIVATE hades_core GTest::gtest_main)

@@ -5,6 +5,7 @@
 #include "hades/blackboard.h"
 #include "hades/bridge/protocol.h"
 #include "hades/config.h"
+#include "hades/executor.h"
 #include "hades/launcher.h"    // MalConfig
 #include "hades/timeouts.h"    // kDefaultTurnIdleTimeoutS, kDefaultAskTimeoutS
 namespace hades {
@@ -46,6 +47,7 @@ void BridgeModule::on_start(const Block& cfg, Blackboard&) {
       throw MalConfig("bridge secret env var not set or empty: " + env);
     secret_ = sec;
   }
+  if (!http_) http_ = std::make_unique<CprBridgeHttp>();
 }
 
 void BridgeModule::on_attach(Blackboard& bb) {
@@ -69,6 +71,18 @@ void BridgeModule::on_attach(Blackboard& bb) {
                {"approved", false}},
               "bridge");
   });
+  // Outbound pShare: on a change of any listed key, push it to ALL peers. The handler runs on
+  // the pump thread, so the (possibly slow) HTTP posts are offloaded to the Executor when one
+  // is set; without one (tests) they run inline and stay deterministic. Fire-and-forget.
+  for (const auto& key : share_out_) {
+    bb.subscribe(key, [this, key](const Entry& e) {
+      // Capture by value: the worker must not touch `e` after the handler returns.
+      const nlohmann::json value = e.value;
+      auto job = [this, key, value] { push_share_(key, value); };
+      if (executor_) executor_->submit(job);
+      else job();
+    });
+  }
 }
 
 bool BridgeModule::authorized_(const std::string& presented_secret,
@@ -121,5 +135,21 @@ nlohmann::json BridgeModule::handle_share(const std::string& body,
 
 nlohmann::json BridgeModule::health_json() const {
   return {{"name", name_}, {"v", kBridgeProtocolV}};
+}
+
+void BridgeModule::push_share_(const std::string& key, const nlohmann::json& value) {
+  // Best-effort: a peer being down must never disturb the agent. status 0 = transport failure;
+  // any non-2xx counts as failed too. BRIDGE_ERROR is observable in hades-scope and tests.
+  const std::string body = build_share(name_, key, value).dump();
+  for (const auto& [peer, url] : peers_) {
+    try {
+      auto [status, resp] = http_->post_json(url + "/share", body, secret_, 10.0);
+      if (status < 200 || status >= 300)
+        bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (status " +
+                                      std::to_string(status) + ")", "bridge");
+    } catch (...) {
+      bb_->post("BRIDGE_ERROR", "share push to " + peer + " failed (exception)", "bridge");
+    }
+  }
 }
 }  // namespace hades

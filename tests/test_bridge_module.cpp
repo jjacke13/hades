@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include "hades/blackboard.h"
+#include "hades/bridge/http.h"
 #include "hades/bridge/protocol.h"
 #include "hades/launcher.h"          // MalConfig
 #include "hades/module/bridge_module.h"
@@ -165,4 +166,72 @@ TEST(BridgeModule, AskTimeoutAbandonsTurn) {
   EXPECT_FALSE(res.value("ok", true));
   EXPECT_NE(res.value("error", "").find("timed out"), std::string::npos);
   EXPECT_TRUE(abandoned);
+}
+
+namespace {
+struct FakeHttp : BridgeHttp {
+  std::vector<std::tuple<std::string, std::string, std::string>> posts;  // url, body, secret
+  int status = 200;
+  std::pair<int, std::string> post_json(const std::string& url, const std::string& body,
+                                        const std::string& secret, double) override {
+    posts.emplace_back(url, body, secret);
+    return {status, R"({"ok":true})"};
+  }
+};
+}  // namespace
+
+TEST(BridgeModule, ShareOutPushesToAllPeersOnChange) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  FakeHttp* h = http.get();
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg;
+  cfg.kv["name"] = "worker1";
+  cfg.kv["share_out"] = "STATUS BUDGET_SPENT_USD";
+  m.on_start(cfg, bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}, {"other", "http://10.0.0.2:9090"}});
+  m.on_attach(bb);
+  bb.post("STATUS", "sunny", "t");
+  bb.pump();                                     // no executor -> push runs inline
+  ASSERT_EQ(h->posts.size(), 2u);                // one per peer
+  EXPECT_EQ(std::get<0>(h->posts[0]), "http://10.0.0.1:9090/share");
+  EXPECT_EQ(std::get<2>(h->posts[0]), "s3cret");
+  auto sent = parse_share(std::get<1>(h->posts[0]));
+  ASSERT_TRUE(sent.ok);
+  EXPECT_EQ(sent.from, "worker1");
+  EXPECT_EQ(sent.key, "STATUS");
+  EXPECT_EQ(sent.value.get<std::string>(), "sunny");
+}
+
+TEST(BridgeModule, UnlistedKeyIsNotPushed) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  FakeHttp* h = http.get();
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg; cfg.kv["name"] = "worker1"; cfg.kv["share_out"] = "STATUS";
+  m.on_start(cfg, bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}});
+  m.on_attach(bb);
+  bb.post("OTHER_KEY", 1, "t");
+  bb.pump();
+  EXPECT_TRUE(h->posts.empty());
+}
+
+TEST(BridgeModule, FailedPushPostsBridgeErrorAndDoesNotThrow) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  http->status = 0;                              // transport failure
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg; cfg.kv["name"] = "worker1"; cfg.kv["share_out"] = "STATUS";
+  m.on_start(cfg, bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}});
+  m.on_attach(bb);
+  std::string err;
+  bb.subscribe("BRIDGE_ERROR", [&](const Entry& e) {
+    if (e.value.is_string()) err = e.value.get<std::string>();
+  });
+  bb.post("STATUS", "x", "t");
+  bb.pump();
+  bb.pump();                                     // dispatch the BRIDGE_ERROR posted inline
+  EXPECT_NE(err.find("front"), std::string::npos);
 }
