@@ -76,25 +76,47 @@ int main(int argc, char** argv) {
       out = {{"ok", false},
              {"result", {{"error", "bridge secret env var not set: " + secret_env}}}};
     } else {
-      const std::string body = hades::build_ask(own_name, 0, message).dump();
-      cpr::Response r = cpr::Post(
-          cpr::Url{peers.at(peer) + "/ask"}, cpr::Body{body},
-          cpr::Header{{"Content-Type", "application/json"}, {"X-Hades-Bridge", secret}},
-          cpr::Timeout{static_cast<long>(timeout_s * 1000)}, cpr::Redirect{false});
-      auto resp = nlohmann::json::parse(r.text, nullptr, false);
-      if (r.status_code == 200 && resp.is_object() && resp.value("ok", false)) {
-        out = {{"ok", true},
-               {"result", {{"peer", peer}, {"reply", resp.value("reply", "")}}}};
-      } else if (r.status_code == 0) {
+      // Defense-in-depth: no edit to this block may re-introduce an abort (uncaught throw =
+      // exit 134, no JSON line, core dump holding the bridge secret). Fail closed instead.
+      try {
+        const std::string body = hades::build_ask(own_name, 0, message).dump();
+        cpr::Response r = cpr::Post(
+            cpr::Url{peers.at(peer) + "/ask"}, cpr::Body{body},
+            cpr::Header{{"Content-Type", "application/json"}, {"X-Hades-Bridge", secret}},
+            cpr::Timeout{static_cast<long>(timeout_s * 1000)}, cpr::Redirect{false});
+        auto resp = nlohmann::json::parse(r.text, nullptr, false);
+        // Typed-guarded reads: a key present with a MISMATCHED type must not throw (.value()
+        // throws type_error.302 in that case). find() returns end() on a non-object too.
+        auto jstr = [&](const char* k) {
+          auto it = resp.find(k);
+          return (it != resp.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+        };
+        auto ok_it = resp.find("ok");
+        const bool peer_ok = ok_it != resp.end() && ok_it->is_boolean() && ok_it->get<bool>();
+        if (r.status_code == 200 && peer_ok) {
+          auto reply = resp.find("reply");
+          if (reply == resp.end() || !reply->is_string()) {
+            // ok:true but the reply is missing/non-string — the reply is the whole point of the
+            // call, so this is a failure, NOT success-with-empty-reply.
+            out = {{"ok", false},
+                   {"result", {{"error", "peer " + peer + " returned malformed reply"}}}};
+          } else {
+            out = {{"ok", true},
+                   {"result", {{"peer", peer}, {"reply", reply->get<std::string>()}}}};
+          }
+        } else if (r.status_code == 0) {
+          out = {{"ok", false},
+                 {"result", {{"error", "peer unreachable: " + peer + " (connect/timeout)"}}}};
+        } else {
+          const std::string why = resp.is_object() ? jstr("error") : std::string("bad response");
+          out = {{"ok", false},
+                 {"result",
+                  {{"error", "peer " + peer + " refused (" + std::to_string(r.status_code) +
+                                 "): " + why}}}};
+        }
+      } catch (...) {
         out = {{"ok", false},
-               {"result", {{"error", "peer unreachable: " + peer + " (connect/timeout)"}}}};
-      } else {
-        const std::string why =
-            resp.is_object() ? resp.value("error", "") : std::string("bad response");
-        out = {{"ok", false},
-               {"result",
-                {{"error", "peer " + peer + " refused (" + std::to_string(r.status_code) +
-                               "): " + why}}}};
+               {"result", {{"error", "internal error handling peer response"}}}};
       }
     }
   } else {

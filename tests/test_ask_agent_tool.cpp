@@ -16,6 +16,7 @@ struct StubPeer {
   int port = 0;
   std::thread th;
   std::string seen_secret, seen_body;
+  std::string reply_body = R"({"ok":true,"reply":"42 GB free"})";  // overridable per test
   StubPeer() {
     srv.Post("/ask", [this](const httplib::Request& req, httplib::Response& res) {
       seen_secret = req.get_header_value("X-Hades-Bridge");
@@ -25,7 +26,7 @@ struct StubPeer {
         res.set_content(R"({"ok":false,"error":"forbidden"})", "application/json");
         return;
       }
-      res.set_content(R"({"ok":true,"reply":"42 GB free"})", "application/json");
+      res.set_content(reply_body, "application/json");
     });
     port = srv.bind_to_any_port("127.0.0.1");
     th = std::thread([this] { srv.listen_after_bind(); });
@@ -95,6 +96,24 @@ TEST(AskAgentTool, MissingSecretEnvFailsClosed) {
                      "worker1=http://127.0.0.1:1"},
                     call("worker1", "hi"));
   EXPECT_FALSE(j.value("ok", true));
+}
+
+// A peer returning a body whose keys exist but have the WRONG type must not abort the tool
+// (.value() throws type_error.302 on a type mismatch). Every case must yield a clean ok:false.
+TEST(AskAgentTool, MalformedPeerResponseFailsClosed) {
+  ::setenv("HADES_TEST_ASK_SECRET", "s3cret", 1);
+  for (const char* body : {R"({"ok":1})",                  // ok is a number, not a bool
+                           R"({"ok":true,"reply":42})",    // reply is a number, not a string
+                           R"({"ok":"true"})",             // ok is a string, not a bool
+                           "not json"}) {                  // not JSON at all
+    StubPeer peer;
+    peer.reply_body = body;
+    auto j = run_tool({ASK_AGENT_BIN, "front", "HADES_TEST_ASK_SECRET", "10",
+                       "worker1=http://127.0.0.1:" + std::to_string(peer.port)},
+                      call("worker1", "disk space?"));
+    ASSERT_FALSE(j.is_discarded()) << body;
+    EXPECT_FALSE(j.value("ok", true)) << body;
+  }
 }
 
 TEST(AskAgentTool, MalformedArgsFailClosed) {
