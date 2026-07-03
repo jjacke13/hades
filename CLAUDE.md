@@ -21,7 +21,7 @@ results back. Tools run as **isolated subprocesses**. See `docs/architecture.md`
 | .moos mission | Manifest (plain-text MOOS-style blocks, NOT TOML) |
 | .alog / alogview | Eventlog / `hades-scope` |
 | **a vehicle/community** | **one agent = Blackboard + Arbiter + modules** |
-| pShare / pMOOSBridge | (planned) a **Bridge** module between Blackboards for agent↔agent |
+| pShare / pMOOSBridge | a **Bridge** module between Blackboards for agent↔agent (shipped 2026-07-03) |
 
 **Personas/multi-agent:** 1 agent = 1 community (Blackboard+Arbiter+modules). Objectives are that
 agent's goals, NOT other agents. More agents = replicate the community; bridge them with a `pShare`-style
@@ -327,7 +327,7 @@ whitelist · peer presence via `/health` polling · ask offload (with tool-offlo
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (284/284, ~3.0s)
+nix develop --command ctest --test-dir build                 # test (350/350, ~3.5s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
