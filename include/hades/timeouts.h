@@ -14,4 +14,5 @@ inline constexpr double kDefaultLlmTimeoutS = 600.0;       // 10 min
 // run_until IDLE ceiling (front-ends). Resets on every bus event, so it bounds a
 // single SILENT stretch, not total turn time. MUST stay > kDefaultLlmTimeoutS.
 inline constexpr double kDefaultTurnIdleTimeoutS = 900.0;  // 15 min
+inline constexpr double kDefaultAskTimeoutS = 180.0;   // ask_agent peer-call timeout (Bridge block)
 }  // namespace hades
