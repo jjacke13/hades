@@ -296,6 +296,15 @@ each machine is the deploy story).
 - **Confirm auto-deny:** a confirm-band action inside a peer-driven turn is **auto-denied** with an explanatory
   note appended to the reply (peers cannot approve confirmation prompts — a worker's risky powers come from its
   OWN manifest allow-scopes, set at deploy). `denied_confirm_` tracked per MY turn.
+- **LIVE-VALIDATED 2026-07-04** (Vaios, two agents, shared secret): `ask hades2 what time it is` → full
+  round-trip worked — delegation out (`ask_agent`→hades2 `/ask`), peer turn on hades2, reply back, asker
+  summarized. The smoke exercised the **auto-deny path**: hades2's only way to answer was the confirm-band
+  `shell` tool (`date`), so the peer request was auto-denied and the explanatory note propagated back. **v1 UX
+  edge this surfaced (deploy story working as designed, but sharp):** a peer gets NOTHING that needs a
+  confirm-band tool on the receiver. To let peers actually use a worker's tools, scope those tools into the
+  worker's **allow** band (`capability_policy` `fs_read_allow` / a future net_allow / or drop the tool's
+  confirm) — a peer's powers are exactly the receiver's *unconfirmed* powers. Give a worker a non-confirm way
+  to do the safe thing (e.g. a dedicated time tool, or allow `shell` on a locked-down worker).
 - **Outbound / delegation:** the **`ask_agent`** native tool (`tools/ask_agent_main.cpp`, isolated subprocess,
   self-describing — its **description names the known peers** so the LLM sees who it can delegate to) POSTs
   `/ask` to a peer and returns the reply as the tool result. Per-tool **`timeout_s`** override in the `Tool`
