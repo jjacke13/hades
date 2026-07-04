@@ -461,7 +461,32 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
 aren't announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
 (positive net allowlist / realpath / DNS-rebind) · telegram v2 (UTF-8-aware 4096 split · group chats ·
-persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate + api-seam pattern).
+persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate + api-seam pattern) · bridge v2
+(per-peer secrets/share-lists/confirm-policy · per-key rename · max_hops>1 · transport seam · discovery ·
+inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn
+can't read out the receiver's full memory — see the Bridge SECURITY note).
+
+### Codebase-organization + docs backlog (Vaios 2026-07-04 — revisit, not yet scheduled)
+Three intents about making the **MOOS-IvP mapping legible in the source layout itself** (today the mapping lives
+in this doc, not the tree):
+1. **Fewer, app-shaped src files.** Consolidate the many small `src/**/*.cpp` into fewer units, each as close as
+   possible to ONE MOOS-IvP **app** (module). Tension to resolve deliberately: the house "many small files" rule
+   vs "one file ≈ one app" — pick the app-granularity where it clarifies (e.g. a module + its small helpers in
+   one TU) without making an 800-line monster. Candidates: the `src/embedding/*` fleet (7 files → 1–2 behind the
+   `VectorCache`/provider seams), `src/bridge/*`, `src/telegram/*`. Keep the pure/testable seams intact.
+2. **Mark behaviors vs apps in the layout.** Make the tree state which code is a **behavior** (`Objective` —
+   `stay_on_budget`, `avoid_destructive`, `capability_policy`, `peer_loop_guard`: competing goals of ONE agent's
+   helm) vs an **app** (`Module` — LLM, ToolRunner, Arbiter, Memory, EmbeddingMemory, Skills, Chat, HttpServer,
+   Telegram, Bridge). Idea: `src/behaviors/` (objectives) + `src/apps/` (modules) — or at least a header/doc index
+   — so the MOOS-IvP behavior↔app distinction is visible without reading CLAUDE.md. (Note: tools are NOT apps —
+   they're transient sandboxed subprocess *actions/actuators*; ToolRunner is the app that runs them.)
+3. **Manifest reference doc.** One file (`docs/manifest-reference.md`?) listing EVERY exact manifest key, grouped
+   by block, with what it does + default + gotchas. Blocks to cover in full: `Session` (provider/endpoint/model/
+   api_key_env/price_per_mtok/system_prompt_file/user_file/memory_file/llm_timeout_s/turn_idle_timeout_s/
+   sessions_dir/history_budget_chars) · `Module =` roster · `Tool = <name> { native|mcp, timeout_s }` · `Objective
+   = {stay_on_budget|avoid_destructive|capability_policy}` (+ each one's keys) · `Memory` · `Embedding` · `Skills`
+   · `Serve` · `Telegram` · `Bridge` + `Peer` · `Arbiter`. Single source of truth for operators (the info is today
+   scattered across CLAUDE.md subsections + code defaults).
 
 ## Gotchas
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
