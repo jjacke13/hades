@@ -100,6 +100,15 @@ target_link_libraries(hades-ask-agent PRIVATE hades_core)            # protocol 
 target_sources(hades_tests PRIVATE tests/test_ask_agent_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE ASK_AGENT_BIN="$<TARGET_FILE:hades-ask-agent>")
 add_dependencies(hades_tests hades-ask-agent)
+add_executable(hades-grep tools/grep_main.cpp)
+target_link_libraries(hades-grep PRIVATE nlohmann_json::nlohmann_json)
+add_executable(hades-glob tools/glob_main.cpp)
+target_link_libraries(hades-glob PRIVATE nlohmann_json::nlohmann_json)
+target_sources(hades_tests PRIVATE tests/test_grep_glob_tools.cpp)
+target_compile_definitions(hades_tests PRIVATE
+  GREP_BIN="$<TARGET_FILE:hades-grep>"
+  GLOB_BIN="$<TARGET_FILE:hades-glob>")
+add_dependencies(hades_tests hades-grep hades-glob)
 target_sources(hades_core PRIVATE src/behaviors/standard_behaviors.cpp)
 target_sources(hades_core PRIVATE src/behaviors/capability_policy.cpp)
 target_sources(hades_tests PRIVATE tests/test_objectives.cpp)
