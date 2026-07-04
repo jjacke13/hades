@@ -1,4 +1,4 @@
-// src/objective/capability_policy.cpp — CapabilityPolicy: scoped allow/confirm/deny per tool
+// src/behaviors/capability_policy.cpp — CapabilityPolicy: scoped allow/confirm/deny per tool
 //
 // Implements the capability taxonomy table + the veto mapping: fs_read/list_dir are path-scoped
 // (deny-prefix -> hard veto; allow-prefix -> allow; else -> confirm); write_file/shell escalate
