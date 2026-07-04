@@ -298,13 +298,25 @@ each machine is the deploy story).
   OWN manifest allow-scopes, set at deploy). `denied_confirm_` tracked per MY turn.
 - **LIVE-VALIDATED 2026-07-04** (Vaios, two agents, shared secret): `ask hades2 what time it is` → full
   round-trip worked — delegation out (`ask_agent`→hades2 `/ask`), peer turn on hades2, reply back, asker
-  summarized. The smoke exercised the **auto-deny path**: hades2's only way to answer was the confirm-band
-  `shell` tool (`date`), so the peer request was auto-denied and the explanatory note propagated back. **v1 UX
-  edge this surfaced (deploy story working as designed, but sharp):** a peer gets NOTHING that needs a
-  confirm-band tool on the receiver. To let peers actually use a worker's tools, scope those tools into the
-  worker's **allow** band (`capability_policy` `fs_read_allow` / a future net_allow / or drop the tool's
-  confirm) — a peer's powers are exactly the receiver's *unconfirmed* powers. Give a worker a non-confirm way
-  to do the safe thing (e.g. a dedicated time tool, or allow `shell` on a locked-down worker).
+  summarized. First smoke exercised the **auto-deny path** (hades2's only answer was the confirm-band `shell`
+  tool → auto-denied + note propagated); after a fix it answered the time, a **memory query** (peer turn ran
+  hades2's full memory stack — core `facts.md` + archival recall + injection — and returned it), and free-form
+  cooperation. Two-agent team confirmed live.
+- **v1 confirm-band UX edge (deploy story as designed, but sharp):** a peer gets NOTHING that needs a
+  confirm-band tool on the receiver — a peer's powers are exactly the receiver's *unconfirmed* powers.
+  `capability_policy` has **no allow-key for `shell`/Exec, `write_file`/FsWrite, or Unknown tools — those are
+  ALWAYS confirm** (only FsRead/FsDeny/Net are scope-tunable). To let peers use a worker's tools: give the
+  worker a non-confirm path (a dedicated tool + an `allow` row in `capability_of`), OR remove
+  `capability_policy` on a deliberately locked-down worker (see the SECRET-EXPOSURE caveat next).
+- **SECURITY — a peer can read out whatever the receiver will put in a plain answer.** `/ask` drives a normal
+  turn, so anything that reaches the LLM as context (injected **core+archival memory**, folded skills roster,
+  file contents already read) can be spoken back to a peer with **no tool call → no capability gate**. The
+  memory-query smoke proved it: a peer extracted hades2's pinned facts + archival memories. Only the receiver's
+  **soul/persona + objectives** guard this, NOT `capability_policy` (which gates tool *actions*, not answers).
+  Corollary: **removing `capability_policy` on a bridged worker is dangerous** — then a peer can also
+  `fs_read .env`/`~/.ssh/id_rsa` (the `fs_deny` hard-veto is gone) and get secrets back. Keep it on any
+  peer-exposed agent; don't put anything peer-secret in a bridged agent's memory/reachable files. v2 seam:
+  a per-peer "what may I answer" policy / memory-scope for peer turns.
 - **Outbound / delegation:** the **`ask_agent`** native tool (`tools/ask_agent_main.cpp`, isolated subprocess,
   self-describing — its **description names the known peers** so the LLM sees who it can delegate to) POSTs
   `/ask` to a peer and returns the reply as the tool result. Per-tool **`timeout_s`** override in the `Tool`
