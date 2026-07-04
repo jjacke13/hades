@@ -1,4 +1,4 @@
-// src/obs/scope.cpp — Eventlog line filter by key prefix
+// src/apps/scope/scope.cpp — Eventlog line filter by key prefix
 //
 // Implements scope_filter(): given raw tab-separated Eventlog lines and a key prefix,
 // returns only the lines whose key field starts with that prefix. Called by

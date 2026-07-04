@@ -1,4 +1,4 @@
-// src/module/chat_module.cpp — stdin/stdout REPL; USER_MESSAGE / CONFIRM I/O
+// src/apps/chat/chat.cpp — stdin/stdout REPL; USER_MESSAGE / CONFIRM I/O
 //
 // Implements ChatModule: run_repl() drives a line-by-line user prompt loop,
 // posting USER_MESSAGE and calling Blackboard::pump() each turn. Subscribes

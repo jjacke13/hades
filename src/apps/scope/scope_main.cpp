@@ -1,4 +1,4 @@
-// src/obs/scope_main.cpp — hades-scope CLI entry point
+// src/apps/scope/scope_main.cpp — hades-scope CLI entry point
 //
 // Reads an Eventlog .alog file from argv[1], optionally filters lines by KEY_PREFIX
 // (argv[2]) via scope_filter(), and prints matching lines to stdout. The uXMS analog

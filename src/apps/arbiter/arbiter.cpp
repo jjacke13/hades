@@ -1,4 +1,4 @@
-// src/arbiter/arbiter.cpp — decision core: USER_MESSAGE -> LLM -> act -> gate
+// src/apps/arbiter/arbiter.cpp — decision core: USER_MESSAGE -> LLM -> act -> gate
 //
 // Subscribes to USER_MESSAGE, LLM_RESPONSE, TOOL_RESULT, and CONFIRM_RESPONSE
 // on the Blackboard. Per turn: posts LLM_REQUEST with conversation history and
