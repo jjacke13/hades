@@ -1,14 +1,20 @@
-// src/config/manifest.cpp — MOOS-style block manifest parser implementation
+// src/core/config.cpp — manifest parse + prompt assembly + version
 //
-// Implements parse_manifest(): tokenizes plain-text "Section = name { key = value }"
-// input into a Manifest of Block structs; collects warnings, never throws. Provides
-// Manifest::session() and Manifest::of() accessors plus string-to-typed-value helpers
-// (set_double_on_string, set_bool_on_string) used by Launcher and module on_start() handlers.
+// Merged (2026-07-04 src reorg): config/manifest (MOOS-style block parser, warnings,
+// fatal multi-kv detection), config/prompt (assemble_system_prompt SOUL/USER +
+// read_memory_layer live core memory), core/version.
 
-#include "hades/config.h"
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <fstream>
 #include <sstream>
+#include "hades/config.h"
+#include "hades/prompt.h"
+#include "hades/version.h"
+#include "hades/launcher.h"  // MalConfig
+
+// ── MOOS-style block manifest parser (was src/config/manifest.cpp) ──────────────
 namespace hades {
 
 static std::string trim(std::string s) {
@@ -168,3 +174,42 @@ bool set_bool_on_string(const std::string& v, bool& out) {
 }
 
 }  // namespace hades
+
+// ── assemble_system_prompt (SOUL+USER) + read_memory_layer (live core memory) (was src/config/prompt.cpp) ──────────────
+namespace hades {
+namespace {
+std::string read_or_throw(const std::string& path) {
+  std::ifstream f(path);
+  if (!f) throw MalConfig("system prompt file not readable: " + path);
+  std::stringstream s;
+  s << f.rdbuf();
+  return s.str();
+}
+}  // namespace
+
+std::string assemble_system_prompt(const Block& session) {
+  static constexpr std::array<const char*, 2> kKeys = {"system_prompt_file", "user_file"};
+  std::string out;
+  for (const char* key : kKeys) {
+    auto it = session.kv.find(key);
+    if (it == session.kv.end() || it->second.empty()) continue;
+    std::string content = read_or_throw(it->second);
+    if (content.empty()) continue;
+    if (!out.empty()) out += "\n\n";
+    out += content;
+  }
+  return out;
+}
+
+std::string read_memory_layer(const std::string& path) {
+  if (path.empty()) return "";
+  std::ifstream f(path);
+  if (!f) return "";  // core file may not exist until the first pin_fact — not an error
+  std::stringstream s;
+  s << f.rdbuf();
+  return s.str();
+}
+}  // namespace hades
+
+// ── hades semver string (was src/core/version.cpp) ──────────────
+namespace hades { std::string version() { return "0.1.0"; } }

@@ -1,15 +1,20 @@
-// src/core/session_id.cpp — session-id generation + per-session jsonl path resolution
+// src/core/session.cpp — session identity + persisted-conversation reads
 //
-// See session_id.h. The binary reads the real local clock for the launch id; path resolution
-// is pure filesystem logic (newest-by-lexical-filename selection, MalConfig on a missing named
-// session). `.jsonl` files are append-created by the Arbiter, so no directory is created here.
+// Merged (2026-07-04 src reorg): session_id (launch-timestamp ids, collision-safe
+// unique_fresh_path, --resume resolution) + session_history (tolerant per-session
+// jsonl reader shared by the Arbiter's load_history and GET /history).
 
-#include "hades/session_id.h"
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
+#include <utility>
+#include "hades/session_id.h"
+#include "hades/session_history.h"
 #include "hades/launcher.h"  // MalConfig
+
+// ── session-id generation + per-session jsonl path resolution (was src/core/session_id.cpp) ──────────────
 namespace hades {
 
 // First NON-EXISTING path among dir/<id>.jsonl, dir/<id>-1.jsonl, dir/<id>-2.jsonl, … so two
@@ -67,4 +72,21 @@ SessionResolution resolve_session_path(const std::string& dir, bool resume,
   return {dir + "/" + newest, false};
 }
 
+}  // namespace hades
+
+// ── tolerant per-session jsonl reader (was src/core/session_history.cpp) ──────────────
+namespace hades {
+std::vector<nlohmann::json> read_session_jsonl(const std::string& path) {
+  std::vector<nlohmann::json> out;
+  if (path.empty()) return out;
+  std::ifstream f(path);
+  if (!f) return out;  // missing file: fresh/absent session, not an error
+  std::string line;
+  while (std::getline(f, line)) {
+    if (line.empty()) continue;
+    auto j = nlohmann::json::parse(line, nullptr, false);  // false = no throw, returns discarded
+    if (!j.is_discarded() && j.is_object()) out.push_back(std::move(j));
+  }
+  return out;
+}
 }  // namespace hades
