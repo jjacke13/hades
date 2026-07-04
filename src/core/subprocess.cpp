@@ -1,4 +1,4 @@
-// src/tool/subprocess.cpp — fork/exec isolation primitive with timeout + memory cap
+// src/core/subprocess.cpp — fork/exec isolation primitive with timeout + memory cap
 //
 // Implements run_subprocess(): forks the child, wires stdin/stdout/stderr through
 // non-blocking pipes driven by poll(), enforces a wall-clock deadline (SIGKILL on
