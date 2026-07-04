@@ -1,16 +1,24 @@
-// src/module/telegram_module.cpp — poll loop, allowlist, turn driving, inline-keyboard confirms
-#include "hades/module/telegram_module.h"
+// src/apps/telegram/telegram.cpp — the Telegram front-end app: module + parse + cpr shell
+//
+// Merged (2026-07-04 src reorg): module/telegram_module (long-poll, allowlist, DM-only,
+// TurnGate turns, inline-keyboard confirms) + telegram/parse (tolerant Bot-API parse/
+// builders, 4096 split) + telegram/cpr_telegram_api (thin network shell, method-only logging).
+
 #include <chrono>
+#include <cpr/cpr.h>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <sstream>
+#include "hades/module/telegram_module.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"
 #include "hades/launcher.h"                       // MalConfig
 #include "hades/telegram/cpr_telegram_api.h"
 #include "hades/telegram/parse.h"                 // split_message
 #include "hades/timeouts.h"                       // kDefaultTurnIdleTimeoutS
-#include <cstdlib>
-#include <sstream>
+
+// ── TelegramModule: poll loop, allowlist, turn driving, inline-keyboard confirms (was src/module/telegram_module.cpp) ──────────────
 namespace hades {
 
 TelegramModule::TelegramModule(std::unique_ptr<TelegramApi> api) : api_(std::move(api)) {}
@@ -183,5 +191,137 @@ void TelegramModule::start_polling() {
 
 void TelegramModule::wait() {
   if (poll_thread_.joinable()) poll_thread_.join();
+}
+}  // namespace hades
+
+// ── parse_updates/split_message + request builders: tolerant Bot-API parse (was src/telegram/parse.cpp) ──────────────
+namespace hades {
+namespace {
+// Type-safe numeric extraction: {"id":42} -> 42; missing/non-number -> 0 (entry then skipped).
+long long num(const nlohmann::json& j, const char* key) {
+  auto it = j.find(key);
+  return (it != j.end() && it->is_number_integer()) ? it->get<long long>() : 0;
+}
+}  // namespace
+
+ParsedUpdates parse_updates(const std::string& body) {
+  ParsedUpdates out;
+  auto j = nlohmann::json::parse(body, nullptr, false);
+  if (j.is_discarded() || !j.is_object()) return out;
+  auto ok_it = j.find("ok");
+  if (ok_it == j.end() || !ok_it->is_boolean() || !ok_it->get<bool>()) return out;
+  auto res = j.find("result");
+  if (res == j.end() || !res->is_array()) return out;
+  out.ok = true;
+  for (const auto& u : *res) {
+    if (!u.is_object()) continue;
+    TgUpdate t;
+    t.update_id = num(u, "update_id");
+    if (t.update_id == 0) continue;
+    if (auto m = u.find("message"); m != u.end() && m->is_object()) {
+      auto txt = m->find("text");
+      if (txt == m->end() || !txt->is_string()) continue;      // photos/stickers etc: skip
+      if (!m->contains("from") || !(*m)["from"].is_object()) continue;
+      if (!m->contains("chat") || !(*m)["chat"].is_object()) continue;
+      t.kind = "message";
+      t.from_id = num((*m)["from"], "id");
+      t.chat_id = num((*m)["chat"], "id");
+      t.text = txt->get<std::string>();
+      if (t.from_id == 0 || t.chat_id == 0) continue;
+      out.updates.push_back(std::move(t));
+    } else if (auto c = u.find("callback_query"); c != u.end() && c->is_object()) {
+      t.kind = "callback";
+      if (auto id = c->find("id"); id != c->end() && id->is_string())
+        t.callback_id = id->get<std::string>();
+      if (auto d = c->find("data"); d != c->end() && d->is_string())
+        t.callback_data = d->get<std::string>();
+      if (c->contains("from") && (*c)["from"].is_object()) t.from_id = num((*c)["from"], "id");
+      if (c->contains("message") && (*c)["message"].is_object() &&
+          (*c)["message"].contains("chat") && (*c)["message"]["chat"].is_object())
+        t.chat_id = num((*c)["message"]["chat"], "id");
+      if (t.callback_id.empty() || t.from_id == 0) continue;
+      out.updates.push_back(std::move(t));
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> split_message(const std::string& text, std::size_t limit) {
+  std::vector<std::string> out;
+  for (std::size_t i = 0; i < text.size(); i += limit) out.push_back(text.substr(i, limit));
+  return out;
+}
+
+nlohmann::json build_send_message(long long chat_id, const std::string& text) {
+  return {{"chat_id", chat_id}, {"text", text}};
+}
+
+nlohmann::json build_confirm_message(long long chat_id, const std::string& prompt,
+                                     const std::string& confirm_id) {
+  nlohmann::json row = nlohmann::json::array(
+      {{{"text", "Approve"}, {"callback_data", "approve:" + confirm_id}},
+       {{"text", "Deny"}, {"callback_data", "deny:" + confirm_id}}});
+  return {{"chat_id", chat_id},
+          {"text", prompt},
+          {"reply_markup", {{"inline_keyboard", nlohmann::json::array({row})}}}};
+}
+
+nlohmann::json build_answer_callback(const std::string& callback_query_id) {
+  return {{"callback_query_id", callback_query_id}};
+}
+}  // namespace hades
+
+// ── CprTelegramApi: cpr glue for the Bot API (fail-soft, no logic) (was src/telegram/cpr_telegram_api.cpp) ──────────────
+namespace hades {
+namespace {
+constexpr double kSendTimeoutS = 30.0;   // sendMessage/answerCallbackQuery are quick calls
+}
+
+CprTelegramApi::CprTelegramApi(std::string token)
+    : base_("https://api.telegram.org/bot" + std::move(token)) {}
+
+std::vector<TgUpdate> CprTelegramApi::get_updates(long long offset, double timeout_s) {
+  // Long-poll: Telegram holds the request up to timeout_s; the cpr cap sits above it so a
+  // full-length poll is never cut off client-side. Errors -> {} (the caller backs off).
+  nlohmann::json body{{"offset", offset}, {"timeout", static_cast<long long>(timeout_s)}};
+  auto r = cpr::Post(cpr::Url{base_ + "/getUpdates"},
+                     cpr::Header{{"Content-Type", "application/json"}},
+                     cpr::Body{body.dump()},
+                     cpr::Timeout{static_cast<int>((timeout_s + 10.0) * 1000)});
+  if (r.status_code != 200) {
+    std::cerr << "hades: telegram getUpdates failed (status " << r.status_code << ")\n";
+    return {};
+  }
+  auto p = parse_updates(r.text);
+  if (!p.ok) std::cerr << "hades: telegram getUpdates: unparseable response\n";
+  return p.updates;
+}
+
+bool CprTelegramApi::post_json_(const std::string& method, const nlohmann::json& body,
+                                double timeout_s) {
+  auto r = cpr::Post(cpr::Url{base_ + "/" + method},
+                     cpr::Header{{"Content-Type", "application/json"}},
+                     cpr::Body{body.dump()},
+                     cpr::Timeout{static_cast<int>(timeout_s * 1000)});
+  if (r.status_code != 200) {
+    // Log the METHOD only — the URL carries the bot token.
+    std::cerr << "hades: telegram " << method << " failed (status " << r.status_code << ")\n";
+    return false;
+  }
+  return true;
+}
+
+bool CprTelegramApi::send_message(long long chat_id, const std::string& text) {
+  return post_json_("sendMessage", build_send_message(chat_id, text), kSendTimeoutS);
+}
+
+bool CprTelegramApi::send_confirm(long long chat_id, const std::string& prompt,
+                                  const std::string& confirm_id) {
+  return post_json_("sendMessage", build_confirm_message(chat_id, prompt, confirm_id),
+                    kSendTimeoutS);
+}
+
+void CprTelegramApi::answer_callback(const std::string& callback_query_id) {
+  post_json_("answerCallbackQuery", build_answer_callback(callback_query_id), kSendTimeoutS);
 }
 }  // namespace hades

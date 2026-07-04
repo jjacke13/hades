@@ -1,17 +1,19 @@
-// src/module/http_server_module.cpp — HTTP front-end implementation (cpp-httplib)
+// src/apps/serve/serve.cpp — the HTTP front-end app: web UI + JSON API + Serve config
 //
-// on_attach subscribes to ASSISTANT_MESSAGE (captures the reply) and CONFIRM_REQUEST
-// (captures a pending gate). handle_message/handle_confirm post the triggering event
-// and pump the turn to completion under turn_mu_(), then report reply-or-needs_confirm.
-// listen() exposes POST /chat, POST /confirm, GET /health. See the header.
+// Merged (2026-07-04 src reorg): module/http_server_module (POST /chat|/confirm,
+// GET /health|/history, CSRF authorize, TurnGate turns) + config/serve_config
+// (Serve block + --serve port resolution).
 
-#include "hades/module/http_server_module.h"
 #include <httplib.h>
 #include <iostream>
+#include <string>
+#include "hades/module/http_server_module.h"
 #include "hades/blackboard.h"
 #include "hades/session_history.h"  // read_session_jsonl (GET /history)
 #include "hades/timeouts.h"   // kDefaultTurnIdleTimeoutS
+#include "hades/serve_config.h"
 
+// ── HttpServerModule: /chat|/confirm|/health|/history, CSRF, TurnGate turns (was src/module/http_server_module.cpp) ──────────────
 namespace {
 // Generous IDLE ceiling for run_until — NOT a per-turn wall-clock cap. The timer
 // resets on every bus event, so it fires only after this many seconds of NO bus
@@ -169,5 +171,35 @@ void HttpServerModule::listen(const std::string& host, int port, const std::stri
   std::cout << "hades serving on http://" << host << ":" << port << "/  (web UI + POST /chat)"
             << std::endl;
   srv.listen(host, port);
+}
+}  // namespace hades
+
+// ── resolve_serve_config: Serve block -> ServeConfig, --serve port (was src/config/serve_config.cpp) ──────────────
+namespace hades {
+namespace {
+int parse_port(const std::string& s) {
+  try {
+    std::size_t i = 0;
+    long v = std::stol(s, &i);
+    if (i == s.size() && v > 0 && v < 65536) return static_cast<int>(v);
+  } catch (...) { /* fall through */ }
+  return 0;  // invalid -> caller keeps its default
+}
+}  // namespace
+
+ServeConfig resolve_serve_config(const Manifest& m, int cli_port) {
+  ServeConfig c{"127.0.0.1", 8080, "web"};
+  auto blocks = m.of("Serve");
+  if (!blocks.empty()) {
+    const auto& kv = blocks.front().kv;
+    if (auto it = kv.find("host");    it != kv.end() && !it->second.empty()) c.host = it->second;
+    if (auto it = kv.find("webroot"); it != kv.end() && !it->second.empty()) c.webroot = it->second;
+    if (auto it = kv.find("port");    it != kv.end()) {
+      int p = parse_port(it->second);
+      if (p > 0) c.port = p;
+    }
+  }
+  if (cli_port > 0 && cli_port < 65536) c.port = cli_port;  // ignore out-of-range CLI port
+  return c;
 }
 }  // namespace hades
