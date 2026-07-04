@@ -16,7 +16,7 @@ example.
 
 ## 1. Manifest syntax
 
-Parser: `src/config/manifest.cpp`.
+Parser: `src/core/config.cpp`.
 
 **Block forms.** A block is `Section = name` followed by a `{ … }` body:
 
@@ -96,8 +96,8 @@ dev.hades roster: `llm tool_runner memory chat arbiter serve skills embedding_me
 ## 3. `Session` block
 
 The core config: the LLM provider, prompt files, memory file, timeouts, session persistence.
-Read across `app/agent_wiring.cpp`, `src/module/llm_module.cpp` (`on_start`),
-`src/config/prompt.cpp`, `app/hades_main.cpp`.
+Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
+`src/core/config.cpp`, `app/hades_main.cpp`.
 
 | Key | What it does | Default | Notes |
 |---|---|---|---|
@@ -126,7 +126,7 @@ Read across `app/agent_wiring.cpp`, `src/module/llm_module.cpp` (`on_start`),
 
 ## 4. `Tool` blocks — `Tool = <name> { native = … | mcp = … }`
 
-`src/tool/registry.cpp` (`add_from_block`), `src/module/tool_runner.cpp`, plus argv appends in
+`src/apps/tool_runner/tool_runner.cpp` (`add_from_block`), plus argv appends in
 `app/agent_wiring.cpp` (`wire_agent`).
 
 | Key | What it does | Default | Notes |
@@ -227,7 +227,7 @@ symlink path-deny bypass (lexical, not realpath), no positive net egress allowli
 
 ## 6. `Memory` block
 
-`src/module/memory_module.cpp` (`on_start`). Requires `Module = memory`.
+`src/apps/memory/memory.cpp` (`on_start`). Requires `Module = memory`.
 
 | Key | What it does | Default |
 |---|---|---|
@@ -241,7 +241,7 @@ whitespace-free.
 
 ## 7. `Embedding` block
 
-`src/module/embedding_memory_module.cpp` (`on_start`). Requires `Module = embedding_memory`
+`src/apps/embedding_memory/embedding_memory.cpp` (`on_start`). Requires `Module = embedding_memory`
 (opt-in; omit to stay keyword-only).
 
 | Key | What it does | Default |
@@ -279,7 +279,7 @@ whitespace-free.
 
 ## 8. `Skills` block
 
-`src/skills/scan.cpp` (`resolve_skills_dir`). Requires `Module = skills`.
+`src/apps/skills/skills.cpp` (`resolve_skills_dir`). Requires `Module = skills`.
 
 | Key | What it does | Default |
 |---|---|---|
@@ -293,7 +293,7 @@ The dir is git-tracked in this repo (the agent writes skills at runtime → work
 
 ## 9. `Serve` block
 
-`src/config/serve_config.cpp`. Used by `--serve`.
+`src/apps/serve/serve.cpp`. Used by `--serve`.
 
 | Key | What it does | Default |
 |---|---|---|
@@ -313,7 +313,7 @@ The dir is git-tracked in this repo (the agent writes skills at runtime → work
 
 ## 10. `Telegram` block
 
-`src/module/telegram_module.cpp` (`on_start`). Requires `Module = telegram`.
+`src/apps/telegram/telegram.cpp` (`on_start`). Requires `Module = telegram`.
 
 | Key | What it does | Default |
 |---|---|---|
@@ -336,7 +336,7 @@ The dir is git-tracked in this repo (the agent writes skills at runtime → work
 
 ## 11. `Bridge` block + `Peer` blocks
 
-`src/module/bridge_module.cpp` (`on_start`) + `app/agent_wiring.cpp`. The `Bridge` block is the
+`src/apps/bridge/bridge.cpp` (`on_start`) + `app/agent_wiring.cpp`. The `Bridge` block is the
 agent's **identity** and is read even without `Module = bridge` (the `ask_agent` tool needs
 `Bridge.name`); the `bridge` **module** adds the inbound HTTP listener.
 

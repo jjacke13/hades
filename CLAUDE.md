@@ -489,6 +489,10 @@ in this doc, not the tree):
    scattered across CLAUDE.md subsections + code defaults).
 
 ## Gotchas
+- **src/ reorganized 2026-07-04** (`refactor/src-apps`): `src/apps/<name>/` (one dir per Module —
+  MOOS one-dir-per-app), `src/behaviors/` (Objectives), `src/core/` (shared infra incl. config/
+  session/subprocess). 45→22 files; headers/tests/app/tools untouched; `Pieces:` paths in
+  OLDER sections above are pre-reorg (find code via `src/apps/<module-name>/`).
 - nixpkgs renamed `cpr`→`libcpr` and cpp-httplib's attr is **`httplib`**.
 - The manifest `Module =` lines **drive the module set** (pAntler): `build_agent(Manifest)` →
   `Launcher.instantiate` (MalConfig on unknown type) → `take_as` into the Agent → `wire_agent` (null-guarded,
