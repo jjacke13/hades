@@ -6,6 +6,7 @@
 // (thin outbound shell). valid_peer_name stays header-inline in include/hades/bridge/protocol.h.
 
 #include <cpr/cpr.h>
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <httplib.h>
@@ -71,6 +72,12 @@ double BridgeModule::effective_timeout_() const {
 }
 
 BridgeModule::~BridgeModule() {
+  {
+    std::lock_guard<std::mutex> lk(discovery_mu_);   // stop the discovery timer FIRST (it touches
+    discovery_stop_ = true;                           // bb_/http_/peers_ — join before they die)
+  }
+  discovery_cv_.notify_all();
+  if (discovery_thread_.joinable()) discovery_thread_.join();
   if (srv_) srv_->stop();                          // wakes the listen() thread
   if (listen_thread_.joinable()) listen_thread_.join();
 }
@@ -275,6 +282,47 @@ nlohmann::json BridgeModule::card_json() const {
   return build_card(name_, url, kBridgeProtocolV, description_, skills, tools_, caps_);
 }
 
+// Discovery (pull): GET each peer's /card and mirror it to PEER.<peer>.card. Best-effort like
+// run_share_push — a peer being down posts BRIDGE_ERROR and never disturbs the agent. Parses the
+// body tolerantly (a non-JSON / non-object card is skipped). NEVER throws.
+void BridgeModule::discover_once() {
+  for (const auto& [peer, url] : peers_) {
+    try {
+      auto [status, body] = http_->get_json(url + "/card", secret_, 10.0);
+      if (status < 200 || status >= 300) {
+        bb_->post("BRIDGE_ERROR", "card pull from " + peer + " failed (status " +
+                                      std::to_string(status) + ")", "bridge");
+        continue;
+      }
+      auto card = nlohmann::json::parse(body, nullptr, false);
+      if (card.is_discarded() || !card.is_object()) {
+        bb_->post("BRIDGE_ERROR", "card pull from " + peer + " returned non-JSON", "bridge");
+        continue;
+      }
+      bb_->post(peer_bus_key(peer, kCardKey), card, "bridge");   // PEER.<peer>.card
+    } catch (...) {
+      bb_->post("BRIDGE_ERROR", "card pull from " + peer + " threw", "bridge");
+    }
+  }
+}
+
+void BridgeModule::start_discovery() {
+  if (discovery_thread_.joinable()) return;                     // idempotent
+  discover_once();                                              // boot pull (first tick)
+  if (discover_interval_s_ <= 0.0) return;                      // 0 -> boot-only, no thread
+  discovery_thread_ = std::thread([this] {
+    std::unique_lock<std::mutex> lk(discovery_mu_);
+    while (!discovery_stop_) {
+      if (discovery_cv_.wait_for(lk, std::chrono::duration<double>(discover_interval_s_),
+                                 [this] { return discovery_stop_; }))
+        break;                                                  // stopped
+      lk.unlock();
+      try { discover_once(); } catch (...) {}                   // never escape the thread
+      lk.lock();
+    }
+  });
+}
+
 }  // namespace hades
 
 // ── bridge wire protocol: tolerant parse/build, peer-name gate (was src/bridge/protocol.cpp) ──────────────
@@ -376,6 +424,18 @@ std::pair<int, std::string> CprBridgeHttp::post_json(const std::string& url,
         cpr::Url{url}, cpr::Body{body},
         cpr::Header{{"Content-Type", "application/json"}, {"X-Hades-Bridge", secret}},
         cpr::Timeout{static_cast<int>(timeout_s * 1000)}, cpr::Redirect{false});
+    return {static_cast<int>(r.status_code), r.text};
+  } catch (const std::exception&) {
+    return {0, ""};   // transport failure — the caller degrades (never throws)
+  }
+}
+
+std::pair<int, std::string> CprBridgeHttp::get_json(const std::string& url,
+                                                    const std::string& secret, double timeout_s) {
+  try {
+    cpr::Response r = cpr::Get(cpr::Url{url}, cpr::Header{{"X-Hades-Bridge", secret}},
+                               cpr::Timeout{static_cast<int>(timeout_s * 1000)},
+                               cpr::Redirect{false});
     return {static_cast<int>(r.status_code), r.text};
   } catch (const std::exception&) {
     return {0, ""};   // transport failure — the caller degrades (never throws)

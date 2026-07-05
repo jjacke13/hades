@@ -10,6 +10,7 @@
 // rostered Peer — either failure returns an indistinguishable "forbidden". The socket layer
 // (Task 4) is a thin shell over the socket-free handle_ask/handle_share seams below.
 #pragma once
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <string>
@@ -56,6 +57,13 @@ class BridgeModule : public Module {
   void set_peers(std::map<std::string, std::string> peers) { peers_ = std::move(peers); }
   void set_turn_gate(TurnGate* g) { gate_ = g; }
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
+
+  // Discovery (pull): best-effort GET of every peer's /card -> PEER.<peer>.card on the bus.
+  // start_discovery spawns a periodic timer thread (hades_main; idempotent; interval <= 0 does
+  // the boot pull only, spawns no thread). discover_once is public for tests + the boot pull.
+  void set_discover_interval_s(double s) { discover_interval_s_ = s; }
+  void discover_once();
+  void start_discovery();
 
   // Socket-free request handlers (the Task-4 routes are thin shells over these).
   // presented_secret is the X-Hades-Bridge header value; a bad secret OR an unknown `from`
@@ -116,5 +124,13 @@ class BridgeModule : public Module {
 
   std::unique_ptr<httplib::Server> srv_;   // dtor lives in the .cpp (complete type there)
   std::thread listen_thread_;
+
+  // Discovery timer: a stop-flagged, cv-notified thread that re-pulls peer cards every
+  // discover_interval_s_. Stopped + joined FIRST in ~BridgeModule (before any member it touches).
+  double discover_interval_s_ = 300.0;
+  std::thread discovery_thread_;
+  std::mutex discovery_mu_;
+  std::condition_variable discovery_cv_;
+  bool discovery_stop_ = false;
 };
 }  // namespace hades

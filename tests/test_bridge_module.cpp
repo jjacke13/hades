@@ -183,6 +183,14 @@ struct FakeHttp : BridgeHttp {
     posts.emplace_back(url, body, secret);
     return {status, R"({"ok":true})"};
   }
+  std::vector<std::string> gets;         // discovery: pulled /card urls
+  int get_status = 200;
+  std::string card_body = R"({"v":1})";
+  std::pair<int, std::string> get_json(const std::string& url, const std::string&,
+                                       double) override {
+    gets.push_back(url);
+    return {get_status, card_body};
+  }
 };
 }  // namespace
 
@@ -224,6 +232,9 @@ struct SlowMutexHttp : BridgeHttp {
     std::lock_guard<std::mutex> lk(*mu);
     ++*calls;
     return {200, R"({"ok":true})"};
+  }
+  std::pair<int, std::string> get_json(const std::string&, const std::string&, double) override {
+    return {0, ""};   // unused by the push test; present so the pure virtual is satisfied
   }
 };
 }  // namespace
@@ -354,4 +365,41 @@ TEST(BridgeModule, RealSocketAskShareHealthAnd403) {
   EXPECT_EQ(cok.status_code, 200);
   EXPECT_NE(cok.text.find("worker1"), std::string::npos);
   EXPECT_EQ(cpr::Get(cpr::Url{base + "/card"}).status_code, 403);
+}
+
+TEST(BridgeModule, DiscoverOncePullsPeerCardsToBus) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  http->card_body = R"({"name":"front","skills":[{"id":"deploy","description":"ship"}]})";
+  FakeHttp* h = http.get();
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg; cfg.kv["name"] = "worker1";
+  m.on_start(cfg, bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}});
+  m.on_attach(bb);
+  m.discover_once();
+  ASSERT_EQ(h->gets.size(), 1u);
+  EXPECT_EQ(h->gets[0], "http://10.0.0.1:9090/card");
+  auto e = bb.get("PEER.front.card");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.value("name", ""), "front");
+}
+
+TEST(BridgeModule, DiscoverFailureLogsBridgeErrorNoThrow) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  http->get_status = 0;                                  // transport failure
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg; cfg.kv["name"] = "worker1";
+  m.on_start(cfg, bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}});
+  m.on_attach(bb);
+  std::string err;
+  bb.subscribe("BRIDGE_ERROR", [&](const Entry& e) {
+    if (e.value.is_string()) err = e.value.get<std::string>();
+  });
+  m.discover_once();
+  bb.pump();
+  EXPECT_FALSE(bb.get("PEER.front.card").has_value());
+  EXPECT_NE(err.find("front"), std::string::npos);
 }
