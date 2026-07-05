@@ -226,7 +226,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | `fs_read`, `list_dir`, `grep`, `glob` | FsRead | deny if under `fs_deny`; confirm if it escapes via `..`; **allow** if under `fs_read_allow`; else confirm (or deny if `confirm_unscoped=false`). Scope-tunable. |
 | `http_fetch` | Net | deny if host empty/unparseable; deny if private and `block_private_net`; deny if a `net_deny_hosts` substring; else **allow**. Scope-tunable. |
 | `write_file`, `edit_file` | FsWrite | deny if under `fs_deny`; confirm if it escapes via `..`; **allow** if under `fs_write_allow`; else confirm. Scope-tunable. |
-| `run_command` | ExecScoped | confirm if command empty/non-string; confirm if it has shell metacharacters (`;\|&$\`()<>`); **allow** if it matches an `exec_allow` prefix at a token boundary; else confirm. Scope-tunable. |
+| `run_command` | ExecScoped | confirm if command empty/non-string; confirm if it has shell metacharacters (`;\|&$\`()<>` or a newline); **allow** if it matches an `exec_allow` prefix at a token boundary; else confirm. Scope-tunable. |
 | `git_read` | GitRead | **always allow** — read-only by construction (fixed argv per op, no shell, leading-dash paths rejected, `--` before pathspecs). |
 | `shell` | Exec | **always confirm**. |
 | unknown tool | Unknown | **always confirm**. |
