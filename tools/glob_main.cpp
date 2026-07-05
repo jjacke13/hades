@@ -15,6 +15,8 @@
 namespace fs = std::filesystem;
 
 namespace {
+constexpr std::size_t kMaxOutBytes = 64 * 1024;
+
 bool skip_dir_name(const std::string& n) {
   return n == ".git" || n == ".hades" || n.rfind("build", 0) == 0;
 }
@@ -80,12 +82,13 @@ int main() {
     if (pattern.empty()) {
       out = {{"ok", false}, {"result", {{"error", "missing arg: pattern"}}}};
     } else if (!fs::is_directory(root, ec) || ec) {
-      out = {{"ok", false}, {"result", {{"error", "no such directory: " + root}}}};
+      out = {{"ok", false}, {"result", {{"error", "no such directory: '" + root + "'"}}}};
     } else {
       try {
         const std::regex re(glob_to_regex(pattern));
         std::vector<std::string> files;
         bool truncated = false;
+        std::size_t out_bytes = 0;
         fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
         for (; !ec && it != end; it.increment(ec)) {
           std::error_code dec;
@@ -97,7 +100,10 @@ int main() {
           const std::string rel = fs::relative(it->path(), root, dec).generic_string();
           if (dec || !std::regex_match(rel, re)) continue;
           if (static_cast<long long>(files.size()) >= max_results) { truncated = true; break; }
-          files.push_back(it->path().generic_string());
+          const std::string path = it->path().generic_string();
+          out_bytes += path.size() + 8;
+          files.push_back(path);
+          if (out_bytes > kMaxOutBytes) { truncated = true; break; }
         }
         std::sort(files.begin(), files.end());
         out = {{"ok", true}, {"result", {{"files", files}, {"truncated", truncated}}}};

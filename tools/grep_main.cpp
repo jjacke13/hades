@@ -5,6 +5,7 @@
 // binary files, files > 4 MB; does NOT follow directory symlinks), and returns matches as one
 // JSON line. Read-only; the path argument is capability-gated upstream (FsRead scopes).
 // Fail-closed: malformed input, bad regex, missing path -> ok:false, never throws.
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -53,10 +54,11 @@ bool scan_file(const fs::path& p, const std::regex& re, long long context,
       if (!text.empty()) text += "\n";
       text += std::to_string(k + 1) + ": " + lines[k];
     }
+    const std::string& stored = context > 0 ? text : lines[i];
     matches.push_back({{"file", p.generic_string()},
                        {"line", static_cast<long long>(i + 1)},
-                       {"text", context > 0 ? text : lines[i]}});
-    out_bytes += lines[i].size() + p.generic_string().size() + 32;
+                       {"text", stored}});
+    out_bytes += stored.size() + p.generic_string().size() + 32;
     if (static_cast<long long>(matches.size()) >= max_results || out_bytes > kMaxOutBytes)
       return false;
   }
@@ -115,7 +117,7 @@ int main() {
     if (pattern.empty()) {
       out = {{"ok", false}, {"result", {{"error", "missing arg: pattern"}}}};
     } else if (!fs::exists(root, ec) || ec) {
-      out = {{"ok", false}, {"result", {{"error", "no such path: " + root}}}};
+      out = {{"ok", false}, {"result", {{"error", "no such path: '" + root + "'"}}}};
     } else {
       try {
         auto flags = std::regex::ECMAScript;

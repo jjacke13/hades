@@ -83,6 +83,50 @@ TEST(GrepTool, MaxResultsTruncates) {
   EXPECT_TRUE(j["result"].value("truncated", false));
 }
 
+TEST(GrepTool, ContextAndOutputCap) {
+  const std::string root = ::testing::TempDir() + "/devtools_grepctx_" + std::to_string(::getpid());
+  fs::remove_all(root);
+  fs::create_directories(root);
+  // Context inclusion: matched line's text carries its neighbours.
+  std::ofstream(root + "/ctx.txt") << "line one alpha\nline two target\nline three gamma\n";
+  auto c = run(GREP_BIN, {{"call", "grep"},
+                          {"args", {{"pattern", "target"}, {"path", root + "/ctx.txt"},
+                                    {"context", 1}}}});
+  ASSERT_TRUE(c.value("ok", false)) << c.dump();
+  ASSERT_EQ(c["result"]["matches"].size(), 1u);
+  const std::string text = c["result"]["matches"][0].value("text", "");
+  EXPECT_NE(text.find("alpha"), std::string::npos);   // preceding context line
+  EXPECT_NE(text.find("gamma"), std::string::npos);   // following context line
+
+  // Output cap: ~200 matches of 400-char lines + context=5 must truncate under 64KB.
+  const std::string longline = std::string(400, 'X') + " MATCH\n";
+  std::ofstream big(root + "/big.txt");
+  for (int i = 0; i < 200; ++i) big << longline;
+  big.close();
+  auto j = run(GREP_BIN, {{"call", "grep"},
+                          {"args", {{"pattern", "MATCH"}, {"path", root + "/big.txt"},
+                                    {"context", 5}, {"max_results", 500}}}});
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  EXPECT_TRUE(j["result"].value("truncated", false));
+  EXPECT_LT(j.dump().size(), 96u * 1024u);
+  fs::remove_all(root);
+}
+
+TEST(GlobTool, OutputByteCapTruncates) {
+  const std::string root = ::testing::TempDir() + "/devtools_globcap_" + std::to_string(::getpid());
+  fs::remove_all(root);
+  fs::create_directories(root);
+  // Long file names so accumulated path bytes exceed 64KB well before max_results=1000.
+  const std::string pad(240, 'x');
+  for (int i = 0; i < 400; ++i) std::ofstream(root + "/file_" + std::to_string(i) + pad);
+  auto j = run(GLOB_BIN, {{"call", "glob"},
+                          {"args", {{"pattern", "*"}, {"path", root}, {"max_results", 1000}}}});
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  EXPECT_TRUE(j["result"].value("truncated", false));
+  EXPECT_FALSE(j["result"]["files"].empty());
+  fs::remove_all(root);
+}
+
 TEST(GlobTool, DescribeAndPatterns) {
   auto d = run(GLOB_BIN, {{"call", "describe"}});
   ASSERT_TRUE(d.value("ok", false));
