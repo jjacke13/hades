@@ -4,16 +4,23 @@
 // TurnGate turns, inline-keyboard confirms) + telegram/parse (tolerant Bot-API parse/
 // builders, 4096 split) + telegram/cpr_telegram_api (thin network shell, method-only logging).
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cpr/cpr.h>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
+#include <unistd.h>
 #include "hades/module/telegram_module.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"
 #include "hades/launcher.h"                       // MalConfig
+#include "hades/stt/provider.h"                   // SttProvider / SttResult
 #include "hades/telegram/cpr_telegram_api.h"
 #include "hades/telegram/parse.h"                 // split_message
 #include "hades/timeouts.h"                       // kDefaultTurnIdleTimeoutS
@@ -124,6 +131,62 @@ void TelegramModule::drive_turn_(long long chat_id, const nlohmann::json& post_v
     std::cerr << "hades: telegram send_confirm failed (confirm still pending in the agent)\n";
 }
 
+namespace {
+// RAII temp file for a downloaded voice clip: unique name in the system temp dir, unlinked on scope
+// exit (success OR error). The poll thread handles one voice at a time, so a per-call file is fine.
+struct TempAudio {
+  std::filesystem::path path;
+  bool ok = false;
+  explicit TempAudio(const std::string& bytes) {
+    static std::atomic<unsigned long long> counter{0};
+    const std::string name = "hades_stt_" + std::to_string(::getpid()) + "_" +
+                             std::to_string(counter.fetch_add(1)) + ".oga";
+    path = std::filesystem::temp_directory_path() / name;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (f) {
+      f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      ok = static_cast<bool>(f);
+    }
+  }
+  ~TempAudio() { std::error_code ec; std::filesystem::remove(path, ec); }
+  TempAudio(const TempAudio&) = delete;
+  TempAudio& operator=(const TempAudio&) = delete;
+};
+
+std::string trim_ws(const std::string& s) {
+  auto ns = [](unsigned char c) { return !std::isspace(c); };
+  auto b = std::find_if(s.begin(), s.end(), ns);
+  auto e = std::find_if(s.rbegin(), s.rend(), ns).base();
+  return (b < e) ? std::string(b, e) : std::string{};
+}
+}  // namespace
+
+// Voice update: download the clip, write it to a temp file, transcribe, then drive a normal turn
+// with the transcript. Fail-soft — every failure path sends a text reply and posts NO USER_MESSAGE;
+// the whole block is try/catch-guarded so no exception escapes the poll loop. Transcription happens
+// BEFORE drive_turn_ locks the gate (drive_turn_ locks it itself, as it does for text).
+void TelegramModule::handle_voice_(const TgUpdate& u) {
+  if (!stt_) { send_reply_(u.chat_id, "voice input isn't enabled"); return; }
+  try {
+    const std::string fpath = api_->get_file_path(u.voice_file_id);
+    if (fpath.empty()) { send_reply_(u.chat_id, "couldn't fetch your voice message"); return; }
+    const std::string bytes = api_->download_file(fpath);
+    if (bytes.empty()) { send_reply_(u.chat_id, "couldn't download your voice message"); return; }
+    TempAudio tmp(bytes);
+    if (!tmp.ok) { send_reply_(u.chat_id, "couldn't save your voice message"); return; }
+    SttResult r = stt_->transcribe(tmp.path.string());
+    if (!r.ok) {
+      send_reply_(u.chat_id, "couldn't transcribe your voice message: " + r.error);
+      return;
+    }
+    const std::string text = trim_ws(r.text);
+    if (text.empty()) { send_reply_(u.chat_id, "didn't catch that"); return; }
+    drive_turn_(u.chat_id, nlohmann::json(text), "USER_MESSAGE");
+  } catch (const std::exception& e) {
+    send_reply_(u.chat_id, std::string("voice error: ") + e.what());
+  }
+}
+
 void TelegramModule::handle_text_(const TgUpdate& u) {
   drive_turn_(u.chat_id, nlohmann::json(u.text), "USER_MESSAGE");
 }
@@ -161,6 +224,7 @@ bool TelegramModule::poll_once() {
       // see confirm buttons. A DM always has chat_id == from_id; anything else is dropped.
       if (u.kind == "message" && u.chat_id != u.from_id) continue;
       if (u.kind == "message" && !u.text.empty()) handle_text_(u);
+      else if (u.kind == "message" && !u.voice_file_id.empty()) handle_voice_(u);
       else if (u.kind == "callback") handle_callback_(u);
     }
     return true;

@@ -24,6 +24,7 @@
 #include "hades/turn_gate.h"
 namespace hades {
 class Blackboard;
+class SttProvider;
 
 class TelegramModule : public Module {
  public:
@@ -38,6 +39,9 @@ class TelegramModule : public Module {
   void set_turn_gate(TurnGate* g) { gate_ = g; }
   // run_until idle ceiling (0 -> default kDefaultTurnIdleTimeoutS); wiring sets the manifest value.
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
+  // Optional STT provider (source-agnostic seam). Null -> voice updates get an "isn't enabled"
+  // nudge. Injected by wire_agent from the Stt block; owned by the Agent (outlives the poll thread).
+  void set_stt(SttProvider* s) { stt_ = s; }
 
   void start_polling();   // spawn the poll loop (called by hades_main when rostered)
   void wait();            // join the poll thread (telegram-only roster blocks here; Ctrl-C exits)
@@ -51,11 +55,13 @@ class TelegramModule : public Module {
   void drive_turn_(long long chat_id, const nlohmann::json& post_value, const char* key);
   void handle_text_(const TgUpdate& u);
   void handle_callback_(const TgUpdate& u);
+  void handle_voice_(const TgUpdate& u);
   void send_reply_(long long chat_id, const std::string& text);
   std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
   double effective_timeout_() const;
 
   std::unique_ptr<TelegramApi> api_;
+  SttProvider* stt_ = nullptr;   // non-owning; Agent owns it, declared before telegram (teardown)
   Blackboard* bb_ = nullptr;
   TurnGate* gate_ = nullptr;
   TurnGate local_gate_;

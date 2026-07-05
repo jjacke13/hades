@@ -7,6 +7,7 @@
 #include "hades/blackboard.h"
 #include "hades/launcher.h"          // MalConfig
 #include "hades/module/telegram_module.h"
+#include "hades/stt/provider.h"
 using namespace hades;
 
 namespace {
@@ -37,6 +38,21 @@ struct FakeApi : TelegramApi {
   std::string get_file_path(const std::string&) override { return file_path_ret; }
   std::string download_file(const std::string&) override { return download_ret; }
 };
+
+struct FakeStt : SttProvider {
+  SttResult ret;
+  std::string last_path;
+  SttResult transcribe(const std::string& audio_path) override {
+    last_path = audio_path;
+    return ret;
+  }
+};
+
+TgUpdate voice(long long uid, long long from, long long chat, const std::string& fid) {
+  TgUpdate u; u.update_id = uid; u.kind = "message"; u.from_id = from; u.chat_id = chat;
+  u.voice_file_id = fid;
+  return u;
+}
 
 TgUpdate msg(long long uid, long long from, long long chat, const std::string& text) {
   TgUpdate u; u.update_id = uid; u.kind = "message"; u.from_id = from; u.chat_id = chat; u.text = text;
@@ -201,4 +217,76 @@ TEST(TelegramModule, MissingOrBadAllowUsersIsMalConfig) {
     Block cfg; cfg.kv["allow_users"] = "12ab";     // non-numeric id
     EXPECT_THROW(m.on_start(cfg, bb), MalConfig);
   }
+}
+
+TEST(TelegramModule, VoiceMessageTranscribesAndDrivesTurn) {
+  Rig r;                                     // echo agent installed
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "hello from voice", "", ""};
+  FakeStt* sp = stt.get();
+  r.mod->set_stt(sp);
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "OGGbytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  EXPECT_TRUE(r.mod->poll_once());
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_EQ(r.api->sent[0].second, "echo:hello from voice");   // transcript drove the turn
+  EXPECT_FALSE(sp->last_path.empty());                          // a temp file path was passed
+}
+
+TEST(TelegramModule, VoiceWithNoSttProviderNudges) {
+  Rig r(false);                              // no echo; provider not set
+  bool user_msg = false;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { user_msg = true; });
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  EXPECT_FALSE(user_msg);                                       // no turn
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("isn't enabled"), std::string::npos);
+}
+
+TEST(TelegramModule, VoiceTranscriptionFailureRepliesNoTurn) {
+  Rig r(false);
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {false, "", "", "backend down"};
+  r.mod->set_stt(stt.get());
+  bool user_msg = false;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { user_msg = true; });
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  EXPECT_FALSE(user_msg);
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("couldn't transcribe"), std::string::npos);
+}
+
+TEST(TelegramModule, VoiceEmptyTranscriptSaysDidntCatch) {
+  Rig r(false);
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "   ", "", ""};          // whitespace-only -> treated as empty
+  r.mod->set_stt(stt.get());
+  bool user_msg = false;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { user_msg = true; });
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  EXPECT_FALSE(user_msg);
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("didn't catch that"), std::string::npos);
+}
+
+TEST(TelegramModule, VoiceDownloadFailureReplies) {
+  Rig r(false);
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "unused", "", ""};
+  r.mod->set_stt(stt.get());
+  r.api->file_path_ret = "";                 // getFile fails -> empty path
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("couldn't"), std::string::npos);
 }
