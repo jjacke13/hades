@@ -59,12 +59,16 @@ static std::string write_script(const char* tag, const std::string& body) {
 }
 
 TEST(CommandTtsProvider, ReturnsStdoutBytesAndPassesTextOnStdin) {
-  // The wrapper echoes back whatever arrived on stdin -> proves the text reached the child + bytes returned raw.
+  // The wrapper echoes back whatever arrived on stdin -> proves the text reached the child + bytes
+  // returned raw. Payload carries leading/trailing whitespace AND an embedded NUL so a stray trim or
+  // c-string truncation would visibly corrupt the assertion (binary-integrity is TTS's key property).
   const std::string s = write_script("ok", "cat\n");
   CommandTtsProvider p({s}, 30.0);
-  TtsResult r = p.synthesize("SPOKEN TEXT");
+  const std::string payload("  spoken\0audio  \n", 17);   // 2sp + spoken + NUL + audio + 2sp + \n
+  TtsResult r = p.synthesize(payload);
   EXPECT_TRUE(r.ok);
-  EXPECT_EQ(r.audio, "SPOKEN TEXT");   // raw, NOT trimmed (binary-safe passthrough)
+  EXPECT_EQ(r.audio, payload);          // raw, NOT trimmed, NOT NUL-truncated (binary-safe passthrough)
+  EXPECT_EQ(r.audio.size(), 17u);
 }
 
 TEST(CommandTtsProvider, NonZeroExitIsSoftError) {
