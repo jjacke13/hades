@@ -229,6 +229,16 @@ without a TTS backend). Pieces: `src/tts/tts_providers.cpp`, `include/hades/tts/
 **Live-smoke pending** (Vaios: voice note to the bot with uncommented `Stt` + `Tts` blocks + a TTS-capable endpoint).
 
 ### Bridge protocol (card discovery + typed share) — shipped 2026-07-05, `feat/bridge-protocol`, 450/450 (TSan 132/132)
+**LIVE-VALIDATED 2026-07-06 (Vaios, CROSS-MACHINE: desktop `hades1` 192.168.0.107 ↔ Pi Zero 2 W `pi0`
+192.168.0.121, both 0.0.0.0:9090, aarch64 static build on the Pi):** "what can pi0 do?" answered STRAIGHT
+OFF pi0's card — no tool call — with the real caps summary (`fs_read/fs_write: scoped, exec: none,
+net: private-blocked` = exactly pi.hades's capability_policy); "ask pi0 what time it is" did the full
+delegation round-trip and hit the **auto-deny path** (pi0's only time source = confirm-band `shell` →
+auto-denied for peers, note propagated back) — the documented v1 edge: a peer gets exactly the receiver's
+UNCONFIRMED powers. Fix-by-design: add `exec_allow = date` to pi0's capability_policy → `run_command date`
+= ExecScoped allow AND the card flips to `exec: scoped`. NixOS desktop needed the firewall port opened
+(`networking.firewall.allowedTCPPorts`); Pi OS Lite ships no firewall; `host = 0.0.0.0` on both (the
+default 127.0.0.1 refuses LAN before any firewall matters).
 Un-parks **NEXT direction 1** (bridge-as-protocol / standardize the blackboard vars) — agents now exchange
 **structured** capability + fact state, not just session text. Backward-compatible (no protocol-aware peer →
 old `/ask`+`/share` behavior unchanged). **Two channels:**
