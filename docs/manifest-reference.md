@@ -365,7 +365,7 @@ cannot send audio). No `Module =` line is needed; the block's presence is the sw
 | `endpoint` | **Base** URL of the transcription API (http provider). | — | **Required for `http`** (empty → `MalConfig`). The provider appends `/audio/transcriptions`. |
 | `model` | Transcription model id (http provider). | `whisper-1` | Sent as the multipart `model` field. |
 | `api_key_env` | **Name of the env var** holding the STT key (http provider). | `HADES_API_KEY` | Resolved from the env; empty → sent with no bearer. Redacted in `session.log`. |
-| `language` | Spoken-language hint. English-only v1. | `en` | http: sent as the multipart `language` field. command: baked into the wrapper (`-l en`), this key is unused. |
+| `language` | Spoken-language hint. English-only v1. | `en` | http: sent as the multipart `language` field. command: ignored by hades — bake the language flag into your wrapper script (`-l en`). |
 | `timeout_s` | Per-transcription timeout (HTTP call or subprocess). | `60` | Bad/0/garbage → default. |
 | `command` | Subprocess wrapper (command provider). | — | **Required for `command`** (empty → `MalConfig`). Whitespace-split into argv; the audio path is appended as the **last** arg. See `tools/whisper_reference.sh`. |
 
