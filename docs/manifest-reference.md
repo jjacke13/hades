@@ -158,6 +158,11 @@ a valid `Bridge.name` — else `MalConfig` ("nobody to call" / "requires Bridge 
 `timeout_s` is auto-set to `Bridge.ask_timeout_s + 10` so the tool reports its own timeout instead
 of being killed mid-write.
 
+**Dev tools (`grep`, `glob`, `edit_file`, `git_read`, `run_command`).** The five coding tools take
+**no** argv append — their scoping comes from `capability_policy` (see §5), not a wired path, so
+they need no extra block. `run_command` carries `timeout_s = 600` in dev.hades (builds/tests run
+long); the other four use the 30s runner default. All five are plain `native` blocks.
+
 ---
 
 ## 5. `Objective` blocks — `Objective = <name> { … }`
@@ -193,8 +198,10 @@ built-in `capability_of` table (the authority — a tool can't grant itself perm
 
 | Key | What it does | Default |
 |---|---|---|
-| `fs_read_allow` | Whitespace-separated path prefixes `fs_read`/`list_dir` may read silently. | empty |
+| `fs_read_allow` | Whitespace-separated path prefixes `fs_read`/`list_dir`/`grep`/`glob` may read silently. | empty |
 | `fs_deny` | Whitespace-separated prefixes hard-vetoed for **both** read and write. | empty |
+| `fs_write_allow` | Whitespace-separated path prefixes `write_file`/`edit_file` may write **without** confirm. Empty → every write confirms (the pre-scope behavior). `fs_deny` still hard-vetoes. | empty |
+| `exec_allow` | **Comma-separated** command prefixes `run_command` may run without confirm — the **one non-whitespace list** (prefixes contain spaces, e.g. `cmake --build build, ctest --test-dir build`). Matched at a token boundary (`ctest` matches `ctest --x`, never `ctest-evil`). | empty |
 | `net_deny_hosts` | Whitespace-separated host substrings hard-vetoed for `http_fetch`. | empty |
 | `block_private_net` | Hard-veto fetches to loopback / RFC1918 / link-local / obfuscated-numeric hosts (SSRF guard). | `true` |
 | `confirm_unscoped` | An out-of-`fs_read_allow` read → confirm (`true`) or hard-veto (`false`). | `true` |
@@ -203,16 +210,24 @@ Path matching is **lexical** (`./x`, `././x`, `x` all normalize together); a sur
 → confirm. Allow-matching is path-boundary-aware (`./workspace` does not also allow
 `./workspace-backup`). Host matching is case-insensitive substring.
 
+**`exec_allow` — allowlist SPECIFIC invocations and know your binaries.** A prefix whose binary has
+a run-a-script flag (`ctest -S`, `cmake -P`, `make` with attacker-chosen targets) grants more than
+its name suggests — the trailing arguments are inside the granted trust. Allow the exact invocation
+you mean (`ctest --test-dir build`), not a bare tool name that can be steered into running code.
+
 #### Capability verdict table (what each tool gets)
 
-This is the table that confuses operators: **`shell`, `write_file` and unknown tools are ALWAYS
-confirm-gated regardless of your scopes** — scopes only tune `fs_read`/`list_dir`/`http_fetch`.
+This is the table that confuses operators: **`shell` and unknown tools are ALWAYS confirm-gated
+regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` are scope-tunable
+(`fs_read_allow` / `fs_write_allow` / `net_deny_hosts` / `exec_allow`); `git_read` is always allow.
 
 | Tool(s) | Capability | Verdict |
 |---|---|---|
-| `fs_read`, `list_dir` | FsRead | deny if under `fs_deny`; confirm if it escapes via `..`; **allow** if under `fs_read_allow`; else confirm (or deny if `confirm_unscoped=false`). Scope-tunable. |
+| `fs_read`, `list_dir`, `grep`, `glob` | FsRead | deny if under `fs_deny`; confirm if it escapes via `..`; **allow** if under `fs_read_allow`; else confirm (or deny if `confirm_unscoped=false`). Scope-tunable. |
 | `http_fetch` | Net | deny if host empty/unparseable; deny if private and `block_private_net`; deny if a `net_deny_hosts` substring; else **allow**. Scope-tunable. |
-| `write_file` | FsWrite | deny if under `fs_deny`; else **always confirm**. |
+| `write_file`, `edit_file` | FsWrite | deny if under `fs_deny`; confirm if it escapes via `..`; **allow** if under `fs_write_allow`; else confirm. Scope-tunable. |
+| `run_command` | ExecScoped | confirm if command empty/non-string; confirm if it has shell metacharacters (`;\|&$\`()<>`); **allow** if it matches an `exec_allow` prefix at a token boundary; else confirm. Scope-tunable. |
+| `git_read` | GitRead | **always allow** — read-only by construction (fixed argv per op, no shell, leading-dash paths rejected, `--` before pathspecs). |
 | `shell` | Exec | **always confirm**. |
 | unknown tool | Unknown | **always confirm**. |
 | `save_memory`, `pin_fact` | MemoryAppend | **always allow** (append-only to the agent's own files). |
@@ -221,7 +236,9 @@ confirm-gated regardless of your scopes** — scopes only tune `fs_read`/`list_d
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |
 
 **Documented v1 gaps (v2):** DNS-rebind/TOCTOU (host string checked, cpr connects later),
-symlink path-deny bypass (lexical, not realpath), no positive net egress allowlist.
+symlink path-deny bypass (lexical, not realpath), no positive net egress allowlist. `git_read` is
+**always allow**: a git-TRACKED and MODIFIED file listed in `fs_deny` still surfaces its content via
+`diff` (`fs_deny` gates `fs_read` paths, not git-surfaced content). Keep real secrets **gitignored**.
 
 ---
 

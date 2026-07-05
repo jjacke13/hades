@@ -29,10 +29,11 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-03)
-`feat/bridge` (off `main` @ `2e6548f`), **350/350 tests** (ASan+UBSan + **TSan** clean; suite ~3.4s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
-Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **9 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill`, self-describing) · **tool capability
-model** (`CapabilityPolicy` objective — scoped fs_read/http_fetch allow/confirm/deny, see below) + the older
+`feat/bridge` (off `main` @ `2e6548f`), **381/381 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
+Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **15 tools**
+(`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
+`grep glob edit_file git_read run_command`, self-describing) · **tool capability
+model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run_command allow/confirm/deny + git_read read-only, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 **two memory layers** (core + archival, see below) · a **skills system** (loadable instruction packs, see below) ·
 layered **system prompt** (SOUL/USER static +
@@ -348,13 +349,13 @@ whitelist · peer presence via `/health` polling · ask offload (with tool-offlo
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (350/350, ~3.5s)
+nix develop --command ctest --test-dir build                 # test (381/381, ~4.4s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
 ```
-Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill,ask-agent}` (tools),
+Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill,ask-agent,grep,glob,edit-file,git-read,run-command}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
 **readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
@@ -393,9 +394,10 @@ enforcement) · settings UI · embeddings (over the session-files corpus too) ·
 
 ## Tool-capability model (shipped 2026-06-30, `main` @ `1e5f4b6`) — `CapabilityPolicy` objective
 Replaces "blocklist-only" tool safety. A built-in **`capability_of(tool)` table** (the AUTHORITY — a tool
-cannot grant itself permission; NOT read from its `describe`) maps the 9 tools to capabilities
-(`FsRead/FsWrite/Net/Exec/MemoryAppend/Unknown`). `CapabilityPolicy : Objective` reads **scopes from the
-manifest** (`Objective = capability_policy { fs_read_allow / fs_deny / block_private_net / confirm_unscoped }`,
+cannot grant itself permission; NOT read from its `describe`) maps the tools to capabilities
+(`FsRead/FsWrite/Net/Exec/MemoryAppend/SkillRead/SkillWrite/PeerAsk/GitRead/ExecScoped/Unknown`).
+`CapabilityPolicy : Objective` reads **scopes from the
+manifest** (`Objective = capability_policy { fs_read_allow / fs_deny / fs_write_allow / exec_allow / block_private_net / confirm_unscoped }`,
 MULTI-LINE per the (2) parser footgun) and gates at the Arbiter veto seam: **hard-veto** fs_read of a denied
 path + http_fetch to a private/loopback host; **confirm** out-of-scope read / write_file / shell / unknown
 tool; **allow** in-scope read / public fetch / memory_append. `avoid_destructive` kept as a backstop
@@ -412,6 +414,23 @@ no positive `net_allow` egress allowlist (default-allow-public still permits exf
 hosts). Pieces: `src/objective/capability_policy.cpp`, `include/hades/objective/capability_policy.h`,
 `app/agent_wiring.cpp` (`make_objective` case), `tools/http_fetch_main.cpp` (redirects off),
 `tests/test_capability_{policy,wiring}.cpp`.
+
+### Dev-tools capability extension (shipped 2026-07-05, `feat/dev-tools`) — 5 coding tools + 2 new scopes
+Adds 5 native coding tools (`grep glob edit_file git_read run_command`) and extends the capability table with
+3 caps + 2 manifest scopes: **`fs_write_allow`** (whitespace-list) — `write_file`/`edit_file` write WITHOUT
+confirm under an allowed prefix (`fs_deny` still hard-vetoes, `..`→confirm, else confirm; empty scope = every
+write confirms, the old behavior); **`exec_allow`** (**COMMA-separated** — the one non-whitespace list, since
+command prefixes contain spaces) — `run_command`→**ExecScoped**: shell-metachar/empty→confirm, token-boundary
+prefix match→allow, else confirm (run_command never uses a shell — whitespace-split argv + execvp); **GitRead**
+(`git_read`) → **always allow**, read-only by construction (fixed argv per op, no shell, leading-dash paths
+rejected, `--` before pathspecs). `grep`/`glob`→FsRead (same scoping as fs_read). dev.hades ships
+`fs_write_allow = ./workspace` + `exec_allow = cmake --build build, ctest --test-dir build`. Operator caveat:
+allowlist SPECIFIC invocations — a prefix whose binary has a run-a-script flag (`ctest -S`, `cmake -P`, `make`
+with attacker targets) grants more than its name (trailing args are inside the trust). git_read v1 gap: a
+git-tracked+modified file in `fs_deny` still leaks via `diff` (fs_deny gates fs_read paths, not git-surfaced
+content — keep real secrets gitignored). Pieces: `src/behaviors/capability_policy.cpp` (caps+ExecScoped/GitRead),
+`app/agent_wiring.cpp` (`split_comma_list` for exec_allow), `tools/{grep,glob,edit_file,git_read,run_command}_main.cpp`,
+`docs/manifest-reference.md` (§4–5). Spec/plan: `docs/superpowers/{specs,plans}/*dev-tools*`.
 
 ## MULTI-AGENT OPERATION — Bridge v1 SHIPPED (2026-07-03, `feat/bridge`)
 Un-parked and shipped. 1 agent = 1 community (Blackboard+Arbiter+modules); peers bridge pShare-style. The v1
@@ -518,6 +537,10 @@ in this doc, not the tree):
   unscoped, allows in-scope read/public-fetch/memory-append; `avoid_destructive` is the backstop. **Inert
   unless the manifest lists `Objective = capability_policy`** (multi-line block). v2 gaps documented:
   DNS-rebind/TOCTOU, symlink path-deny, no positive net allowlist. `http_fetch` no longer follows redirects.
+  Dev-tools scopes: `fs_write_allow` (write/edit without confirm) is whitespace-separated like the other path
+  lists, but **`exec_allow` is COMMA-separated** (the one non-whitespace list — command prefixes contain spaces,
+  e.g. `cmake --build build, ctest --test-dir build`). `git_read` is always-allow (leaks a modified fs_deny file
+  via `diff` — keep secrets gitignored); `grep`/`glob` scope like `fs_read`.
 - `save_memory`/`pin_fact` store paths must contain **no whitespace** (tool argv is whitespace-split) —
   wiring throws `MalConfig` if they do.
 - `pin_fact` tool **requires** `memory_file` in the Session block (wiring throws `MalConfig` otherwise) —

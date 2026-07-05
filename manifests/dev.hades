@@ -30,6 +30,15 @@ Tool = save_memory { native = ./build/hades-save-memory }
 Tool = pin_fact    { native = ./build/hades-pin-fact }
 Tool = use_skill  { native = ./build/hades-use-skill }
 Tool = save_skill { native = ./build/hades-save-skill }
+Tool = grep       { native = ./build/hades-grep }
+Tool = glob       { native = ./build/hades-glob }
+Tool = edit_file  { native = ./build/hades-edit-file }
+Tool = git_read   { native = ./build/hades-git-read }
+Tool = run_command
+{
+  native    = ./build/hades-run-command
+  timeout_s = 600
+}
 Memory
 {
   store = .hades/memory.jsonl
@@ -49,6 +58,8 @@ Objective = capability_policy
 {
   fs_read_allow     = ./workspace ./docs ./manifests ./prompts ./web
   fs_deny           = /etc /root .env secrets/ .ssh/ .git/credentials id_rsa
+  fs_write_allow    = ./workspace
+  exec_allow        = cmake --build build, ctest --test-dir build
   block_private_net = true
   confirm_unscoped  = true
 }
@@ -84,28 +95,28 @@ Embedding {
 # --- Telegram front-end (uncomment, set YOUR numeric user id, export TELEGRAM_BOT_TOKEN) ---
 # Get an id: message @userinfobot. Non-listed senders are silently ignored. Private chats only (v1): group messages are ignored. Token via env ONLY
 # (keep it in a gitignored .env you `source`); it is redacted in session.log.
- Module = telegram
- Telegram
- {
-   token_env      = TELEGRAM_BOT_TOKEN
-   allow_users    = 123456789
-   poll_timeout_s = 50
- }
+ #Module = telegram
+ #Telegram
+ #{
+ #  token_env      = TELEGRAM_BOT_TOKEN
+ #  allow_users    = 123456789
+ #  poll_timeout_s = 50
+ #}
 
 # --- Bridge: multi-agent (uncomment on EACH agent; set name/port/peers; export HADES_BRIDGE_SECRET
 # in the same gitignored .env as the other secrets — same secret on every fleet member, v1) ---
 # A peer request drives a normal turn through THIS agent's own objectives; confirm-gated actions
 # are AUTO-DENIED for peers. Shares arrive as PEER.<name>.<key>. host 0.0.0.0 for LAN.
-# Module = bridge
-# Bridge
-# {
-#   name          = hades1
-#   host          = 127.0.0.1
-#   port          = 9090
-#   secret_env    = HADES_BRIDGE_SECRET
-#   share_out     =
-#   max_hops      = 1
-#   ask_timeout_s = 180
-# }
-# Peer = hades2 { url = http://127.0.0.1:9091 }
-# Tool = ask_agent { native = ./build/hades-ask-agent }
+ Module = bridge
+ Bridge
+ {
+   name          = hades1
+   host          = 127.0.0.1
+   port          = 9090
+   secret_env    = HADES_BRIDGE_SECRET
+   #share_out     =
+   max_hops      = 1
+   ask_timeout_s = 180
+ }
+ Peer = hades2 { url = http://127.0.0.1:9091 }
+ Tool = ask_agent { native = ./build/hades-ask-agent }
