@@ -109,6 +109,11 @@ target_compile_definitions(hades_tests PRIVATE
   GREP_BIN="$<TARGET_FILE:hades-grep>"
   GLOB_BIN="$<TARGET_FILE:hades-glob>")
 add_dependencies(hades_tests hades-grep hades-glob)
+add_executable(hades-edit-file tools/edit_file_main.cpp)
+target_link_libraries(hades-edit-file PRIVATE nlohmann_json::nlohmann_json)
+target_sources(hades_tests PRIVATE tests/test_edit_file_tool.cpp)
+target_compile_definitions(hades_tests PRIVATE EDIT_FILE_BIN="$<TARGET_FILE:hades-edit-file>")
+add_dependencies(hades_tests hades-edit-file)
 target_sources(hades_core PRIVATE src/behaviors/standard_behaviors.cpp)
 target_sources(hades_core PRIVATE src/behaviors/capability_policy.cpp)
 target_sources(hades_tests PRIVATE tests/test_objectives.cpp)
