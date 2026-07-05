@@ -361,3 +361,52 @@ std::pair<int, std::string> CprBridgeHttp::post_json(const std::string& url,
   }
 }
 }  // namespace hades
+
+// ── bridge registry: canonical card builders (registry.h) ──────────────
+#include "hades/bridge/registry.h"
+#include <sstream>
+namespace hades {
+
+nlohmann::json build_skills_from_announce(const std::string& announce) {
+  nlohmann::json out = nlohmann::json::array();
+  std::istringstream is(announce);
+  std::string line;
+  while (std::getline(is, line)) {
+    if (line.rfind("- ", 0) != 0) continue;              // only "- id: desc" list lines
+    const std::size_t colon = line.find(": ", 2);
+    if (colon == std::string::npos) continue;
+    std::string id = line.substr(2, colon - 2);
+    std::string desc = line.substr(colon + 2);
+    if (id.empty()) continue;
+    out.push_back({{"id", id}, {"description", desc}});
+  }
+  return out;
+}
+
+nlohmann::json caps_summary(const Block& cfg) {
+  auto has = [&](const char* k) { return cfg.kv.count(k) && !cfg.kv.at(k).empty(); };
+  bool block_priv = false;
+  if (cfg.kv.count("block_private_net")) {
+    const std::string& v = cfg.kv.at("block_private_net");
+    block_priv = (v == "true" || v == "1" || v == "yes");
+  }
+  return {{"fs_read",  has("fs_read_allow")  ? "scoped" : "none"},
+          {"fs_write", has("fs_write_allow") ? "scoped" : "none"},
+          {"exec",     has("exec_allow")     ? "scoped" : "none"},
+          {"net",      block_priv ? "private-blocked" : "public"}};
+}
+
+nlohmann::json build_card(const std::string& name, const std::string& url, int version,
+                          const std::string& description, const std::string& skills_announce,
+                          const nlohmann::json& tools, const nlohmann::json& caps) {
+  return {{"name", name},
+          {"description", description.empty() ? name : description},
+          {"url", url},
+          {"version", version},
+          {"capabilities", {{"streaming", false}}},
+          {"skills", build_skills_from_announce(skills_announce)},
+          {"tools", tools.is_array() ? tools : nlohmann::json::array()},
+          {"caps", caps.is_object() ? caps : nlohmann::json::object()}};
+}
+
+}  // namespace hades
