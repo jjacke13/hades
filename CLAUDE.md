@@ -370,8 +370,14 @@ Pieces: `src/module/bridge_module.cpp`, `src/bridge/{protocol,cpr_bridge_http}.c
 Spec/plan: `docs/superpowers/specs/2026-07-03-bridge-multi-agent-design.md`, `docs/superpowers/plans/2026-07-03-bridge-multi-agent.md`.
 **v2 seams (recorded, not built):** per-peer secrets · per-peer share lists · per-peer confirm policy (propagate
 to the asker's human) · per-key rename (full pShare) · `max_hops > 1` (wire field already present) · transport
-behind a small interface (queue/webhook) · discovery (static roster now, registry/mDNS later) · inbound share
-whitelist · peer presence via `/health` polling · ask offload (with tool-offload, un-freezing the asker during a peer turn).
+behind a small interface (queue/webhook — **hyperdht-cpp** the self-host-native P2P option, no public IP/certs) ·
+discovery (static roster now, registry/mDNS later) · inbound share whitelist · rate limiting · peer presence via
+`/health` polling · ask offload (with tool-offload, un-freezing the asker during a peer turn). **Two new v2 ideas
+(Vaios↔hades convo 2026-07-05):** (1) **belief-as-report provenance** — a peer's `ask_agent` reply / `/share`
+value is a *report from peer X*, NOT local truth; provenance-tag it + re-verify before acting (extends the Bridge
+SECURITY note; today the asking LLM can treat a peer reply as fact). (2) **cross-agent safety veto / quorum** — a
+dedicated *safety agent* vetoing another agent's action, or a consensus check across agents. NOT possible today —
+objectives are strictly per-agent (one helm); a cross-agent veto is a new architecture layer, not a bridge tweak.
 
 ## Build / run
 ```bash
