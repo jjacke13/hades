@@ -286,6 +286,31 @@ TEST(BridgeModule, FailedPushPostsBridgeErrorAndDoesNotThrow) {
   EXPECT_NE(err.find("front"), std::string::npos);
 }
 
+TEST(BridgeModule, CardJsonAssemblesInjectedAndBusInputs) {
+  Rig r(false);
+  r.mod->set_description("worker one");
+  r.mod->set_tools(nlohmann::json::array({{{"name", "shell"}}}));
+  r.mod->set_caps({{"fs_read", "scoped"}, {"net", "public"}});
+  r.bb.post("SKILLS_ANNOUNCE",
+            "Available skills (…):\n- deploy: ship it", "skills");   // latest-value, get() sees it
+  auto c = r.mod->card_json();
+  EXPECT_EQ(c.value("name", ""), "worker1");
+  EXPECT_EQ(c.value("description", ""), "worker one");
+  EXPECT_EQ(c["skills"][0].value("id", ""), "deploy");
+  EXPECT_EQ(c["tools"][0].value("name", ""), "shell");
+  EXPECT_EQ(c["caps"].value("fs_read", ""), "scoped");
+  // no literal path leak from a real capability summary shape
+  EXPECT_EQ(c.dump().find("workspace"), std::string::npos);
+}
+
+TEST(BridgeModule, CardJsonEmptyWhenNoSkillsOrInjection) {
+  Rig r(false);
+  auto c = r.mod->card_json();
+  EXPECT_EQ(c.value("name", ""), "worker1");
+  EXPECT_TRUE(c["skills"].is_array());
+  EXPECT_TRUE(c["skills"].empty());              // no SKILLS_ANNOUNCE -> []
+}
+
 TEST(BridgeModule, RealSocketAskShareHealthAnd403) {
   Rig r;                                          // echo agent, secret s3cret, peer front
   const int port = r.mod->start_listening();      // port_ default 9090? Rig sets none -> use 0
@@ -323,4 +348,10 @@ TEST(BridgeModule, RealSocketAskShareHealthAnd403) {
   auto e = r.bb.get("PEER.front.STATUS");
   ASSERT_TRUE(e.has_value());
   EXPECT_EQ(e->value.get<std::string>(), "wet");
+
+  // /card with auth -> 200 A2A-shaped; without auth -> 403
+  auto cok = cpr::Get(cpr::Url{base + "/card"}, cpr::Header{{"X-Hades-Bridge", "s3cret"}});
+  EXPECT_EQ(cok.status_code, 200);
+  EXPECT_NE(cok.text.find("worker1"), std::string::npos);
+  EXPECT_EQ(cpr::Get(cpr::Url{base + "/card"}).status_code, 403);
 }

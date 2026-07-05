@@ -64,6 +64,13 @@ class BridgeModule : public Module {
   nlohmann::json handle_share(const std::string& body, const std::string& presented_secret);
   nlohmann::json health_json() const;
 
+  // A2A-shaped agent-card, built ON DEMAND from injected inputs + the live SKILLS_ANNOUNCE bus
+  // var. The wiring injects description/tools/caps once; skills come from the bus each call.
+  void set_description(std::string d) { description_ = std::move(d); }
+  void set_tools(nlohmann::json t) { tools_ = std::move(t); }
+  void set_caps(nlohmann::json c) { caps_ = std::move(c); }
+  nlohmann::json card_json() const;
+
   const std::string& name() const { return name_; }
   double ask_timeout_s() const { return ask_timeout_s_; }
   const std::vector<std::string>& share_out_keys() const { return share_out_; }
@@ -77,6 +84,9 @@ class BridgeModule : public Module {
 
   std::string name_;                       // REQUIRED (valid_peer_name)
   std::string secret_;                     // resolved once (env or test injection)
+  std::string description_;                // card fields: injected by wiring (card seam)
+  nlohmann::json tools_ = nlohmann::json::array();
+  nlohmann::json caps_ = nlohmann::json::object();
   std::map<std::string, std::string> peers_;   // name -> base url (allowlist + push targets)
   std::vector<std::string> share_out_;     // keys pushed to peers on change (Task 3)
   long long max_hops_ = 1;

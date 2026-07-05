@@ -14,6 +14,7 @@
 #include "hades/blackboard.h"
 #include "hades/bridge/http.h"
 #include "hades/bridge/protocol.h"
+#include "hades/bridge/registry.h"   // build_card (card seam)
 #include "hades/config.h"
 #include "hades/executor.h"
 #include "hades/launcher.h"    // MalConfig
@@ -101,6 +102,14 @@ int BridgeModule::start_listening() {
       return;
     }
     respond(res, health_json());
+  });
+  srv_->Get("/card", [this, respond](const httplib::Request& req, httplib::Response& res) {
+    // Secret-gated like /health: the card names the agent's tools/skills/caps — fleet-internal.
+    if (req.get_header_value("X-Hades-Bridge") != secret_) {
+      respond(res, {{"ok", false}, {"error", "forbidden"}});
+      return;
+    }
+    respond(res, card_json());
   });
 
   // Bind BEFORE spawning the thread so the caller learns the real port synchronously
@@ -256,6 +265,16 @@ nlohmann::json BridgeModule::health_json() const {
   return {{"name", name_}, {"v", kBridgeProtocolV}};
 }
 
+nlohmann::json BridgeModule::card_json() const {
+  std::string skills;
+  if (bb_) {                                      // SKILLS_ANNOUNCE is latest-value; absent -> ""
+    if (auto e = bb_->get("SKILLS_ANNOUNCE"); e && e->value.is_string())
+      skills = e->value.get<std::string>();
+  }
+  const std::string url = "http://" + host_ + ":" + std::to_string(port_);
+  return build_card(name_, url, kBridgeProtocolV, description_, skills, tools_, caps_);
+}
+
 }  // namespace hades
 
 // ── bridge wire protocol: tolerant parse/build, peer-name gate (was src/bridge/protocol.cpp) ──────────────
@@ -365,8 +384,6 @@ std::pair<int, std::string> CprBridgeHttp::post_json(const std::string& url,
 }  // namespace hades
 
 // ── bridge registry: canonical card builders (registry.h) ──────────────
-#include "hades/bridge/registry.h"
-#include <sstream>
 namespace hades {
 
 nlohmann::json build_skills_from_announce(const std::string& announce) {
