@@ -388,7 +388,46 @@ cannot send audio). No `Module =` line is needed; the block's presence is the sw
 
 ---
 
-## 12. `Bridge` block + `Peer` blocks
+## 12. `Tts` block
+
+`resolve_tts` (`app/agent_wiring.cpp`); providers in `src/tts/tts_providers.cpp`. **Opt-in: with no
+`Tts` block the agent never speaks** (`Agent.tts == nullptr`). When present, one `TtsProvider` is built
+and injected into the **user-facing** front-end (Telegram v1) so that on a **voice-origin** turn the
+agent's reply is synthesized to a voice note and sent alongside the text (mirror modality — a typed
+turn stays text-only). The **Bridge is never given one** — agent↔agent traffic stays text (a peer
+cannot receive audio). No `Module =` line is needed; the block's presence is the switch.
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `provider` | `http` (OpenAI-compat) or `command` (local wrapper). | `http` | Unknown value → `MalConfig`. |
+| `endpoint` | **Base** URL of the speech API (http provider). | — | **Required for `http`** (empty → `MalConfig`). The provider appends `/audio/speech`. |
+| `model` | TTS model id (http provider). | `tts-1` | Sent as the JSON `model` field. |
+| `voice` | Voice id (http provider). | `alloy` | Sent as the JSON `voice` field. |
+| `api_key_env` | **Name of the env var** holding the TTS key (http provider). | `HADES_API_KEY` | Resolved from the env; empty → sent with no bearer. Redacted in `session.log`. |
+| `max_chars` | Replies longer than this are NOT spoken (the text reply is still sent). | `4000` | Guards against a multi-minute synth of a long/code-wall reply. Bad/0/garbage → default. |
+| `timeout_s` | Per-synthesis timeout (HTTP call or subprocess). | `60` | Bad/0/garbage → default. |
+| `command` | Subprocess wrapper (command provider). | — | **Required for `command`** (empty → `MalConfig`). Whitespace-split into argv; reply TEXT on stdin, ogg-opus bytes on stdout. See `tools/piper_reference.sh`. |
+
+**Gotchas.**
+- **`endpoint` must be the BASE url, NOT `.../audio/speech`** — the http provider appends
+  `/audio/speech` (the same base-url gotcha as STT's `/audio/transcriptions` and embedding's
+  `/embeddings`). OpenAI: `endpoint = https://api.openai.com/v1`.
+- **OGG/Opus is required.** Telegram `sendVoice` needs Ogg-Opus, so the provider MUST yield it: the
+  http provider requests `response_format = opus`; the `command` wrapper must emit ogg-opus on stdout
+  (the reference `tools/piper_reference.sh` pipes piper → `ffmpeg -c:a libopus -f ogg`).
+- **Mirror modality — only voice-origin turns speak.** A typed message gets a text reply only; a voice
+  message gets BOTH the text reply and a spoken voice note. Text is the anchor: it is sent first, then
+  the voice note is best-effort.
+- **Fail-soft everywhere.** A non-2xx status, empty audio, subprocess timeout/non-zero exit, or a
+  `sendVoice` failure logs and leaves the already-delivered text reply as the answer — it never crashes a turn.
+- **`command` provider:** the wrapper reads reply TEXT on stdin and must write ONLY ogg-opus bytes to
+  stdout; run with `run_subprocess` (fork/exec, **no shell**). One-shot per reply.
+- **User-facing only / Bridge-excluded:** the seam is injected into Telegram (and future local front-ends),
+  never the Bridge — a peer agent never receives a voice reply from this agent.
+
+---
+
+## 13. `Bridge` block + `Peer` blocks
 
 `src/apps/bridge/bridge.cpp` (`on_start`) + `app/agent_wiring.cpp`. The `Bridge` block is the
 agent's **identity** and is read even without `Module = bridge` (the `ask_agent` tool needs
@@ -427,7 +466,7 @@ Rules (`wire_agent`): peer `<name>` must match `[A-Za-z0-9_-]{1,64}`; duplicate 
 
 ---
 
-## 13. `Arbiter` block
+## 14. `Arbiter` block
 
 `Module = arbiter` builds the Arbiter, but the **`Arbiter { … }` block is currently unread**. The
 `policy = v1` key in dev.hades is decorative (no code queries `m.of("Arbiter")`). It reserves the

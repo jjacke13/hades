@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` (**voice STT shipped** — Telegram voice messages transcribed to text; no new tool binary), **405/405 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary), **426/426 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **15 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command`, self-describing) · **tool capability
@@ -203,6 +203,30 @@ AFTER it — the telegram dtor joins the poll thread, which may be mid-`transcri
 `docs/superpowers/{specs/2026-07-05-stt-voice-input-design.md,plans/2026-07-05-voice-stt.md}`. **TTS is the next voice half**
 (agent reply → speech → Telegram `sendVoice`, separate later spec; provider TBD piper/API behind a seam like STT).
 **Live-smoke pending** (Vaios: send a voice note to the bot with an uncommented `Stt` block + `HADES_API_KEY`).
+
+### Voice TTS (shipped 2026-07-05, `feat/voice-tts`) — a voice-origin reply is spoken back
+The other voice half: a Telegram **voice** message gets its reply spoken back as a voice note. **Mirror
+modality** — only a **voice-origin** turn speaks (`speak_reply_` set in `handle_voice_`); a typed turn stays
+text-only. **Source-agnostic provider seam**, EXACTLY the STT/embedding-provider precedent: one `TtsProvider`
+interface (`include/hades/tts/*`, `src/tts/tts_providers.cpp`), two transports — **`provider = http`**
+(OpenAI-compat JSON `POST <base>/audio/speech` with `{model,input,voice,response_format:"opus"}`, reuses the
+`cpr_http` seam) and **`provider = command`** (a local piper/TTS wrapper — `tools/piper_reference.sh`, reply
+TEXT on stdin → ogg-opus bytes on stdout, one-shot via `run_subprocess`, NO shell). **`response_format=opus` /
+the wrapper's `ffmpeg -c:a libopus -f ogg`** because Telegram `sendVoice` requires **OGG/Opus**. **Text is the
+anchor** — `send_reply_` sends the text first, THEN the voice note is **best-effort** (a synth/`sendVoice`
+failure logs and leaves the text as the reply; whole speak path in try/catch — never crashes a turn). **`max_chars`**
+(default **4000**) caps spoken length: a longer reply is text-only (no multi-minute synth of a code wall).
+**Opt-in: no `Tts` block → `Agent.tts == nullptr`, agent never speaks** (no `Module =` line — the block's
+presence is the switch; `resolve_tts` in `app/agent_wiring.cpp`, `max_chars` set via `set_tts_max_chars`).
+Injected into **user-facing front-ends only** — **the Bridge is NEVER given one** (agent↔agent stays text; a
+peer never receives audio). **Teardown order:** `Agent::tts` is declared BEFORE `telegram` (like `stt`) so it
+is destroyed AFTER it — the telegram dtor joins the poll thread, which may be mid-`synthesize()` touching the
+provider (do NOT reorder). `Tts { provider endpoint model voice api_key_env max_chars timeout_s command }` block
+(documented in `docs/manifest-reference.md` §12); dev.hades ships it **COMMENTED** (text-only default runnable
+without a TTS backend). Pieces: `src/tts/tts_providers.cpp`, `include/hades/tts/*`, `app/agent_wiring.cpp`
+(`resolve_tts` + inject), `src/apps/telegram/telegram.cpp` (`handle_voice_`/`set_tts`/speak path + `send_voice`),
+`include/hades/telegram/api.h` (`send_voice`), `tools/piper_reference.sh`, `tests/test_tts_{providers,wiring}.cpp`.
+**Live-smoke pending** (Vaios: voice note to the bot with uncommented `Stt` + `Tts` blocks + a TTS-capable endpoint).
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 
@@ -384,7 +408,7 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (405/405, ~4.4s)
+nix develop --command ctest --test-dir build                 # test (426/426, ~4.4s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -511,13 +535,13 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 6. **Freshness:** `/new` does NOT re-point `live_session_path_` (documented gotcha) — a proper session-lifecycle rethink.
 (GET /history — DONE `e916084`. Memory embeddings — DONE `20ba94c`. Memory-injection framing — DONE `678a248`.)
 
-## NEXT (decided 2026-07-05, Vaios): Voice — STT + TTS (brainstorm-first)
+## Voice — STT + TTS (decided 2026-07-05, Vaios) — BOTH SHIPPED 2026-07-05
 **WhatsApp DROPPED** (2026-07-05): Cloud API is webhook-push → mandatory inbound public HTTPS endpoint (TLS
 certs / tunnel) no matter what; unofficial whatsapp-web.js is Node + QR + ToS-risky. Vaios is P2P/self-host
 (`hyperdht-cpp`) — TLS/tunnel setup is a non-starter. (Future self-host-native multi-agent path = a
 **hyperdht-based Bridge transport** behind the bridge v2 "transport seam" — agent↔agent over DHT, no public IP,
 no certs. Parked.)
-**Voice = two independent parts. STT FIRST** (SHIPPED), TTS is a separate later spec (still NEXT).
+**Voice = two independent parts. BOTH SHIPPED** (STT first, then TTS).
 - **STT — SHIPPED 2026-07-05, `feat/voice-stt`** (405/405, TSan clean; spec
   `docs/superpowers/specs/2026-07-05-stt-voice-input-design.md`, off `main` @ `5fe5f3c`; see the **Voice STT**
   subsection under Current state for the shipped detail). **Source-agnostic provider seam** (Vaios's requirement — a
@@ -533,8 +557,15 @@ no certs. Parked.)
   `USER_MESSAGE`, on the poll thread (off-bus, no Executor), fail-soft (bad transcribe → text reply, no turn).
   `stt` declared before `telegram` in Agent (teardown: poll thread may be mid-transcribe). dev.hades ships the
   `Stt` block COMMENTED (text-only default); reference wrapper `tools/whisper_reference.sh`; docs `manifest-reference.md` §11.
-- **TTS — NEXT (the other voice half)** (later spec) — agent reply text → speech → Telegram `sendVoice`. Provider TBD: `qwen3_tts_rs` or
-  **piper** (local) vs API. Behind a seam like STT.
+- **TTS — SHIPPED 2026-07-05, `feat/voice-tts`** (426/426, TSan clean; see the **Voice TTS** subsection under
+  Current state for the shipped detail) — a voice-origin reply is spoken back as a Telegram `sendVoice` voice note
+  (mirror modality; typed turns stay text). **Source-agnostic provider seam** like STT: one `TtsProvider`, two
+  transports — `provider = http` (OpenAI-compat `POST <base>/audio/speech`, `response_format=opus`, DEFAULT — same
+  base-url gotcha) + `provider = command` (local **piper** via `tools/piper_reference.sh` → `ffmpeg` ogg-opus).
+  Text-anchored + best-effort + fail-soft; `max_chars` (default 4000) caps spoken length. `Tts { provider endpoint
+  model voice api_key_env max_chars timeout_s command }` block, opt-in (no block → `Agent.tts==nullptr`, never
+  speaks). **Bridge excluded** (a peer never gets audio). `tts` declared before `telegram` (teardown). dev.hades
+  ships the `Tts` block COMMENTED; docs `manifest-reference.md` §12.
 Future self-host-native multi-agent: a **hyperdht-based Bridge transport** (bridge v2 "transport seam", agent↔agent
 over DHT, no public IP/certs) — the P2P path, parked.
 
@@ -644,6 +675,14 @@ in this doc, not the tree):
   `Agent.stt==nullptr`), fail-soft (bad transcribe → "didn't catch that", never a crash), and injected into
   user-facing front-ends ONLY — the **Bridge is never given one** (a peer can't send audio). dev.hades ships the
   `Stt` block COMMENTED.
+- **Tts `endpoint` is the BASE url too** (http provider) — it appends `/audio/speech` (same footgun as Stt's
+  `/audio/transcriptions` + embedding's `/embeddings`). OpenAI: `endpoint = https://api.openai.com/v1`. **Telegram
+  `sendVoice` requires OGG/Opus, so the provider MUST yield it** — the http provider sends `response_format=opus`;
+  the `command` wrapper must emit ogg-opus on stdout (`tools/piper_reference.sh` = piper → `ffmpeg -c:a libopus -f ogg`).
+  TTS is opt-in (no `Tts` block → `Agent.tts==nullptr`, never speaks), **mirror modality** (only voice-origin turns
+  speak; typed stays text), text-anchored + best-effort + fail-soft, `max_chars` (default 4000) caps spoken length,
+  and injected into user-facing front-ends ONLY — the **Bridge is never given one** (a peer never gets audio).
+  dev.hades ships the `Tts` block COMMENTED.
 - **Embedding live-session exclusion is fixed at launch.** `/new` rotates the Arbiter's session but does NOT
   re-point the embedding module's `live_session_path_` (set once, before `on_attach`, to avoid a cross-thread
   write). So a periodic reindex after a `/new` may index the now-live post-`/new` session mid-write — parser-safe

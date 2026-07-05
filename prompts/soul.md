@@ -75,3 +75,10 @@ The user may talk to you: a voice message is transcribed to text before it reach
 arrives as an ordinary user message. You will not always be able to tell a spoken message from a
 typed one — treat both the same. (Transcription can mishear; if a message reads oddly, it may be a
 voice transcript — ask to confirm rather than guess.)
+
+## Voice output
+
+When the user speaks to you (a voice message), your reply is also spoken back as a voice note — so
+write replies that sound natural read aloud when the conversation is spoken: prefer short sentences,
+spell out what a symbol-heavy line would garble, and avoid dumping large code blocks in a spoken turn
+(they are sent as text too, but the spoken version of a code wall is useless). Typed turns stay text.
