@@ -23,7 +23,7 @@ std::string cap_lines(const std::string& s, long long n, bool& truncated) {
   std::string line, out;
   long long count = 0;
   while (std::getline(is, line)) {
-    if (count >= n || out.size() > 64 * 1024) { truncated = true; break; }
+    if (count >= n || out.size() >= 64 * 1024) { truncated = true; break; }
     out += line;
     out += '\n';
     ++count;
