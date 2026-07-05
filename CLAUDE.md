@@ -28,8 +28,8 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-07-03)
-`feat/bridge` (off `main` @ `2e6548f`), **381/381 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`claude-haiku-4.5` LLM + `openai/text-embedding-3-small` embeddings).
+## Current state (2026-07-05)
+`main` @ `23f2bd2` (bridge + src-reorg + dev-tools all merged), **381/381 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **15 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command`, self-describing) · **tool capability
@@ -475,6 +475,24 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
    the budget objective — PPQ embeds hit the balance unmetered).
 6. **Freshness:** `/new` does NOT re-point `live_session_path_` (documented gotcha) — a proper session-lifecycle rethink.
 (GET /history — DONE `e916084`. Memory embeddings — DONE `20ba94c`. Memory-injection framing — DONE `678a248`.)
+
+## NEXT (decided 2026-07-05, Vaios): two new front-end apps — WhatsApp + Voice (brainstorm-first)
+Both are **Modules** on the proven front-end pattern (Telegram precedent): a Module that posts `USER_MESSAGE` →
+`run_until(reply|confirm)` → replies, serialized by the shared **TurnGate**, `my_turn_` turn-owner guard, per-app
+secret via env var (redacted), confirm-gating over the app, teardown via explicit start (not `on_attach`).
+- **WhatsApp** — the key design fork to settle in brainstorm: transport. WhatsApp Cloud API (official) is
+  **webhook-push, NOT long-poll** like Telegram — needs an inbound public HTTPS endpoint (reuse the httplib
+  listener pattern from serve/bridge), a verify-token handshake, and message-status callbacks; vs an unofficial
+  library (whatsapp-web.js — Node, QR-login, ToS-risky) — decide official-Cloud-API vs unofficial. Allowlist +
+  DM-only carry over from Telegram. So WhatsApp is Telegram-shaped on the AGENT side but webhook-shaped on the
+  TRANSPORT side (the httplib inbound seam already exists twice — serve + bridge).
+- **Voice** — bigger departure, two sub-questions for brainstorm: (1) **shape** — a new LOCAL front-end
+  (mic→STT→USER_MESSAGE→reply→TTS→speaker) vs voice-notes OVER a chat app (Telegram/WhatsApp voice message →
+  STT → turn → TTS reply); (2) **providers** — STT/TTS behind a seam like the LLM/embedding providers.
+  **Vaios has his OWN ASR: `qwen3_asr_rs` (Rust, ~/Desktop/repos/qwen3_asr_rs)** — a natural STT backend to wire
+  via the subprocess-provider pattern (embedding-provider precedent). TTS provider TBD (piper/local vs API).
+  Likely lands as a provider seam + a front-end Module, keeping the bus single-threaded (STT/TTS offloaded to the
+  Executor like the LLM call).
 
 ## Other open work
 Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
