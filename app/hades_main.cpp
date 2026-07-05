@@ -170,6 +170,7 @@ int main(int argc, char** argv) {
       if (p < 0) { std::cerr << "hades: bridge failed to bind its port\n"; return 1; }
       std::cerr << "hades: bridge \"" << agent.bridge->name() << "\" listening on port "
                 << p << "\n";
+      agent.bridge->start_discovery();   // boot pull + periodic /card refresh (after wiring)
     }
 
     if (serve) {

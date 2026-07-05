@@ -7,6 +7,8 @@
 #include <string>
 #include "app/agent_wiring.h"
 #include "hades/blackboard.h"
+#include "hades/bridge/protocol.h"   // build_share
+#include "hades/bridge/registry.h"   // kShareTypeFact
 #include "hades/launcher.h"
 using namespace hades;
 
@@ -132,4 +134,38 @@ TEST(BridgeWiring, PeerTurnCannotAskOnward) {
   EXPECT_FALSE(confirm);                        // hard veto, not confirm-gated
   ASSERT_TRUE(result.is_string());
   EXPECT_NE(result.get<std::string>().find("loop guard"), std::string::npos);
+}
+
+TEST(BridgeWiring, CardServesInjectedDescriptionToolsCapsAndPeerTrustParsed) {
+  // Manifest: bridge module + a peer with trust=untrusted + a capability_policy scope + a tool.
+  // NOTE (deviation from brief): the Peer block is MULTI-LINE. Packing `url` and `trust` on one
+  // physical line (`Peer = mate { url = … trust = untrusted }`) trips the manifest fail-loud
+  // multi-kv guard (packs_second_kv) -> MalConfig at build. Multi-line keeps the same intent.
+  const std::string mtext =
+      "Session\n{\n  model = m\n}\n"
+      "Module = tool_runner\nModule = arbiter\nModule = bridge\n"
+      "Tool = shell { native = /bin/true }\n"
+      "Bridge\n{\n  name = worker1\n  port = 0\n  description = a helper\n"
+      "  discover_interval_s = 0\n}\n"
+      "Peer = mate\n{\n  url = http://127.0.0.1:1\n  trust = untrusted\n}\n"
+      "Objective = capability_policy\n{\n  fs_read_allow = ./workspace\n"
+      "  block_private_net = true\n}\n";
+  ::setenv("HADES_BRIDGE_SECRET", "s3cret", 1);
+  Blackboard bb;
+  Manifest m = parse_manifest(mtext);
+  Agent agent = build_agent(bb, m);
+  ASSERT_NE(agent.bridge, nullptr);
+  auto card = agent.bridge->card_json();
+  EXPECT_EQ(card.value("description", ""), "a helper");
+  EXPECT_EQ(card["caps"].value("fs_read", ""), "scoped");
+  EXPECT_EQ(card["caps"].value("net", ""), "private-blocked");
+  ASSERT_TRUE(card["tools"].is_array());
+  EXPECT_EQ(card["tools"][0].value("name", ""), "shell");
+  // trust parsed: an untrusted peer's fact is labeled untrusted.
+  auto res = agent.bridge->handle_share(
+      build_share("mate", "w", "x", kShareTypeFact).dump(), "s3cret");
+  ASSERT_TRUE(res.value("ok", false));
+  auto e = bb.get("PEER.mate.fact.w");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.value("trust", ""), "untrusted");
 }

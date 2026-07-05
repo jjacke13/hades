@@ -22,6 +22,7 @@
 #include "hades/objective/peer_loop_guard.h"
 #include "hades/objective/stay_on_budget.h"
 #include "hades/bridge/protocol.h"  // valid_peer_name
+#include "hades/bridge/registry.h"  // caps_summary
 #include "hades/prompt.h"  // assemble_system_prompt
 #include "hades/skills/scan.h"  // resolve_skills_dir
 #include "hades/stt/http_stt_provider.h"
@@ -343,6 +344,31 @@ void wire_agent(Agent& a,
     a.bridge->set_turn_gate(a.gate.get());
     a.bridge->on_start(bridge_cfg, bb);
     a.bridge->set_peers(peers);
+    // Feed the agent-card seams: description (default = the agent's own name), the resolved tool
+    // NAMES (same roster ask_agent sees — names only, no argv), and a CATEGORY summary of the
+    // capability_policy block (never literal paths — a peer learns the shape, not the allowlist).
+    a.bridge->set_description(bridge_cfg.kv.count("description") ? bridge_cfg.kv.at("description")
+                                                                : bridge_name);
+    nlohmann::json card_tools = nlohmann::json::array();
+    for (const auto& t : tools_resolved) card_tools.push_back({{"name", t.name}});
+    a.bridge->set_tools(card_tools);
+    for (const auto& ob : objectives)
+      if (ob.name == "capability_policy") { a.bridge->set_caps(caps_summary(ob)); break; }
+    // Per-peer trust (default trusted; the map is a demotion list). Seam for future untrusted joiners.
+    std::map<std::string, bool> peer_trust;
+    for (const auto& p : peer_blocks)
+      peer_trust[p.name] = !(p.kv.count("trust") && p.kv.at("trust") == "untrusted");
+    a.bridge->set_peer_trust(peer_trust);
+    // Discovery interval: positive value arms the periodic /card pull; explicit "0" turns it off
+    // (set_pos_double_on_string rejects 0, so handle that case separately). start_discovery itself
+    // is called only by hades_main (never here) so tests spawn no thread.
+    if (bridge_cfg.kv.count("discover_interval_s")) {
+      double di = 0.0;
+      if (set_pos_double_on_string(bridge_cfg.kv.at("discover_interval_s"), di))
+        a.bridge->set_discover_interval_s(di);
+      else if (bridge_cfg.kv.at("discover_interval_s") == "0")
+        a.bridge->set_discover_interval_s(0.0);
+    }
     if (a.executor) a.bridge->set_executor(a.executor.get());
     a.bridge->on_attach(bb);
   }
