@@ -676,9 +676,15 @@ in this doc, not the tree):
   user-facing front-ends ONLY — the **Bridge is never given one** (a peer can't send audio). dev.hades ships the
   `Stt` block COMMENTED.
 - **Tts `endpoint` is the BASE url too** (http provider) — it appends `/audio/speech` (same footgun as Stt's
-  `/audio/transcriptions` + embedding's `/embeddings`). OpenAI: `endpoint = https://api.openai.com/v1`. **Telegram
-  `sendVoice` requires OGG/Opus, so the provider MUST yield it** — the http provider sends `response_format=opus`;
-  the `command` wrapper must emit ogg-opus on stdout (`tools/piper_reference.sh` = piper → `ffmpeg -c:a libopus -f ogg`).
+  `/audio/transcriptions` + embedding's `/embeddings`). PPQ: `endpoint = https://api.ppq.ai/v1`; OpenAI:
+  `https://api.openai.com/v1`. **PPQ TTS model = `deepgram_aura_2`** (Deepgram Aura) or ElevenLabs
+  (`eleven_multilingual_v2`/`eleven_flash_v2_5`), NOT `tts-1`; **voice = `aura-2-arcas-en`** (Aura voices
+  `aura-2-{arcas,thalia,andromeda,helena,apollo,aries}-en`) — `resolve_tts` defaults are `deepgram_aura_2`/
+  `aura-2-arcas-en`. **PPQ char limits: 2000 (Deepgram) / 5000 (ElevenLabs)** → set `max_chars` ≤ that (over → 422
+  → fail-soft skip). **Telegram `sendVoice` requires OGG/Opus, so the provider MUST yield it** — the http provider
+  sends `response_format=opus`; **but PPQ's `/audio/speech` docs DON'T list `response_format`** → if PPQ ignores it
+  and returns mp3, `sendVoice` rejects → silent skip (text stands); #1 TTS smoke risk, v2 fix = module mp3→opus
+  transcode. The `command` wrapper must emit ogg-opus on stdout (`tools/piper_reference.sh` = piper → `ffmpeg -c:a libopus -f ogg`).
   TTS is opt-in (no `Tts` block → `Agent.tts==nullptr`, never speaks), **mirror modality** (only voice-origin turns
   speak; typed stays text), text-anchored + best-effort + fail-soft, `max_chars` (default 4000) caps spoken length,
   and injected into user-facing front-ends ONLY — the **Bridge is never given one** (a peer never gets audio).

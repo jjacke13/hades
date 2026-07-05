@@ -110,11 +110,11 @@ Embedding {
 # Tts
 # {
 #   provider    = http
-#   endpoint    = https://api.openai.com/v1
-#   model       = tts-1
-#   voice       = alloy
+#   endpoint    = https://api.ppq.ai/v1
+#   model       = deepgram_aura_2       # PPQ: Deepgram Aura (or eleven_multilingual_v2 / eleven_flash_v2_5)
+#   voice       = aura-2-arcas-en       # Aura voices: aura-2-{arcas,thalia,andromeda,helena,apollo,aries}-en
 #   api_key_env = HADES_API_KEY
-#   max_chars   = 4000
+#   max_chars   = 2000                  # Deepgram limit 2000 (ElevenLabs 5000); over -> 422 -> skipped
 #   timeout_s   = 60
 #   # provider  = command
 #   # command   = ./tools/piper_reference.sh

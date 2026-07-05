@@ -91,8 +91,8 @@ std::unique_ptr<SttProvider> resolve_stt(const Block& cfg) {
 std::unique_ptr<TtsProvider> resolve_tts(const Block& cfg) {
   if (cfg.kv.empty()) return nullptr;
   const std::string provider = cfg.kv.count("provider") ? cfg.kv.at("provider") : "http";
-  const std::string model = cfg.kv.count("model") ? cfg.kv.at("model") : "tts-1";
-  const std::string voice = cfg.kv.count("voice") ? cfg.kv.at("voice") : "alloy";
+  const std::string model = cfg.kv.count("model") ? cfg.kv.at("model") : "deepgram_aura_2";
+  const std::string voice = cfg.kv.count("voice") ? cfg.kv.at("voice") : "aura-2-arcas-en";
   double timeout_s = 60.0;
   if (cfg.kv.count("timeout_s")) set_pos_double_on_string(cfg.kv.at("timeout_s"), timeout_s);
   if (provider == "http") {

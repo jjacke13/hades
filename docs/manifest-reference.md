@@ -401,20 +401,23 @@ cannot receive audio). No `Module =` line is needed; the block's presence is the
 |---|---|---|---|
 | `provider` | `http` (OpenAI-compat) or `command` (local wrapper). | `http` | Unknown value → `MalConfig`. |
 | `endpoint` | **Base** URL of the speech API (http provider). | — | **Required for `http`** (empty → `MalConfig`). The provider appends `/audio/speech`. |
-| `model` | TTS model id (http provider). | `tts-1` | Sent as the JSON `model` field. |
-| `voice` | Voice id (http provider). | `alloy` | Sent as the JSON `voice` field. |
+| `model` | TTS model id (http provider). | `deepgram_aura_2` | Sent as the JSON `model` field. PPQ: `deepgram_aura_2` (Deepgram Aura) or an ElevenLabs model (`eleven_multilingual_v2`, `eleven_flash_v2_5`). For OpenAI-proper use `tts-1`/`gpt-4o-mini-tts`. |
+| `voice` | Voice id (http provider). | `aura-2-arcas-en` | Sent as the JSON `voice` field. PPQ Aura voices: `aura-2-{arcas,thalia,andromeda,helena,apollo,aries}-en`; ElevenLabs = a voice id. OpenAI = `alloy` etc. |
 | `api_key_env` | **Name of the env var** holding the TTS key (http provider). | `HADES_API_KEY` | Resolved from the env; empty → sent with no bearer. Redacted in `session.log`. |
-| `max_chars` | Replies longer than this are NOT spoken (the text reply is still sent). | `4000` | Guards against a multi-minute synth of a long/code-wall reply. Bad/0/garbage → default. |
+| `max_chars` | Replies longer than this are NOT spoken (the text reply is still sent). | `4000` | Guards against a multi-minute synth. **Set ≤ the provider's input limit — PPQ: 2000 (Deepgram) / 5000 (ElevenLabs); over the limit the API 422s → fail-soft skip.** Bad/0/garbage → default. |
 | `timeout_s` | Per-synthesis timeout (HTTP call or subprocess). | `60` | Bad/0/garbage → default. |
 | `command` | Subprocess wrapper (command provider). | — | **Required for `command`** (empty → `MalConfig`). Whitespace-split into argv; reply TEXT on stdin, ogg-opus bytes on stdout. See `tools/piper_reference.sh`. |
 
 **Gotchas.**
 - **`endpoint` must be the BASE url, NOT `.../audio/speech`** — the http provider appends
   `/audio/speech` (the same base-url gotcha as STT's `/audio/transcriptions` and embedding's
-  `/embeddings`). OpenAI: `endpoint = https://api.openai.com/v1`.
-- **OGG/Opus is required.** Telegram `sendVoice` needs Ogg-Opus, so the provider MUST yield it: the
-  http provider requests `response_format = opus`; the `command` wrapper must emit ogg-opus on stdout
-  (the reference `tools/piper_reference.sh` pipes piper → `ffmpeg -c:a libopus -f ogg`).
+  `/embeddings`). PPQ: `endpoint = https://api.ppq.ai/v1`; OpenAI: `https://api.openai.com/v1`.
+- **OGG/Opus is required + the `response_format` risk.** Telegram `sendVoice` needs Ogg-Opus, so the
+  provider MUST yield it: the http provider requests `response_format = opus`; the `command` wrapper must
+  emit ogg-opus on stdout (the reference `tools/piper_reference.sh` pipes piper → `ffmpeg -c:a libopus -f
+  ogg`). **PPQ's `/audio/speech` docs do NOT list `response_format`** — if PPQ ignores it and returns
+  mp3/default, `sendVoice` rejects it → fail-soft skip (text stands). If a live PPQ test yields no voice,
+  this is why; the v2 fix is a module-side mp3→ogg-opus transcode (not built).
 - **Mirror modality — only voice-origin turns speak.** A typed message gets a text reply only; a voice
   message gets BOTH the text reply and a spoken voice note. Text is the anchor: it is sent first, then
   the voice note is best-effort.
