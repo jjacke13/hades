@@ -286,7 +286,22 @@ nlohmann::json BridgeModule::handle_share(const std::string& body,
   if (!m.ok) return {{"ok", false}, {"error", m.error}};
   if (!authorized_(presented_secret, m.from)) return {{"ok", false}, {"error", "forbidden"}};
   // No turn, no gate: thread-safe post; the PEER. prefix is collision-proof by construction.
-  bb_->post(peer_bus_key(m.from, m.key), m.value, "bridge");
+  // Route by the share type (Task 6): a card mirrors to PEER.<from>.card, a fact is wrapped with
+  // provenance + a trust label (default trusted), anything else keeps the legacy raw path.
+  if (m.type == kShareTypeCard) {
+    bb_->post(peer_bus_key(m.from, kCardKey), m.value, "bridge");   // PEER.<from>.card
+  } else if (m.type == kShareTypeFact) {
+    auto it = peer_trusted_.find(m.from);
+    const bool trusted = (it == peer_trusted_.end()) ? true : it->second;   // default trusted
+    // Store text + provenance; the Arbiter renders the trust-labeled line. A non-string value is
+    // dumped so `text` is always a string (tolerant).
+    const std::string text = m.value.is_string() ? m.value.get<std::string>() : m.value.dump();
+    bb_->post(peer_bus_key(m.from, std::string("fact.") + m.key),
+              {{"from", m.from}, {"trust", trusted ? "trusted" : "untrusted"}, {"text", text}},
+              "bridge");
+  } else {
+    bb_->post(peer_bus_key(m.from, m.key), m.value, "bridge");      // raw legacy (unchanged)
+  }
   return {{"ok", true}};
 }
 

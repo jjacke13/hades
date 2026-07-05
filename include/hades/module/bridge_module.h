@@ -55,6 +55,9 @@ class BridgeModule : public Module {
   void wait();                // join (bridge-only roster blocks here; Ctrl-C exits)
 
   void set_peers(std::map<std::string, std::string> peers) { peers_ = std::move(peers); }
+  // Per-peer trust tier for inbound type=fact shares (peer name -> trusted?). A peer ABSENT
+  // from the map defaults to trusted — the map is a demotion list, not an allowlist.
+  void set_peer_trust(std::map<std::string, bool> t) { peer_trusted_ = std::move(t); }
   void set_turn_gate(TurnGate* g) { gate_ = g; }
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
 
@@ -100,6 +103,7 @@ class BridgeModule : public Module {
   nlohmann::json tools_ = nlohmann::json::array();
   nlohmann::json caps_ = nlohmann::json::object();
   std::map<std::string, std::string> peers_;   // name -> base url (allowlist + push targets)
+  std::map<std::string, bool> peer_trusted_;   // name -> trusted? (absent -> trusted; fact tier)
   std::vector<std::string> share_out_;     // keys pushed to peers on change (Task 3)
   long long max_hops_ = 1;
   double ask_timeout_s_ = 180.0;           // kDefaultAskTimeoutS (set in on_start)

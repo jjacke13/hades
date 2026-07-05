@@ -10,6 +10,7 @@
 #include "hades/blackboard.h"
 #include "hades/bridge/http.h"
 #include "hades/bridge/protocol.h"
+#include "hades/bridge/registry.h"   // kShareTypeCard/kShareTypeFact/kCardKey (typed routing)
 #include "hades/executor.h"
 #include "hades/launcher.h"          // MalConfig
 #include "hades/module/bridge_module.h"
@@ -142,6 +143,50 @@ TEST(BridgeModule, ShareStoresPrefixedKey) {
   auto e = r.bb.get("PEER.front.STATUS");
   ASSERT_TRUE(e.has_value());
   EXPECT_EQ(e->value.get<std::string>(), "sunny");
+}
+
+TEST(BridgeModule, InboundCardShareStoredUnderCardKey) {
+  Rig r;
+  auto res = r.mod->handle_share(
+      build_share("front", "card", {{"name", "front"}}, kShareTypeCard).dump(), "s3cret");
+  ASSERT_TRUE(res.value("ok", false));
+  auto e = r.bb.get("PEER.front.card");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.value("name", ""), "front");
+}
+
+TEST(BridgeModule, InboundFactFromTrustedPeerLabeledReports) {
+  Rig r;                                                // "front" not in trust map -> trusted
+  auto res = r.mod->handle_share(
+      build_share("front", "weather", "sunny", kShareTypeFact).dump(), "s3cret");
+  ASSERT_TRUE(res.value("ok", false));
+  auto e = r.bb.get("PEER.front.fact.weather");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.value("trust", ""), "trusted");
+  EXPECT_EQ(e->value.value("text", ""), "sunny");
+  EXPECT_EQ(e->value.value("from", ""), "front");
+}
+
+TEST(BridgeModule, InboundFactFromUntrustedPeerLabeledUnverified) {
+  Rig r;
+  r.mod->set_peer_trust({{"front", false}});
+  auto res = r.mod->handle_share(
+      build_share("front", "weather", "sunny", kShareTypeFact).dump(), "s3cret");
+  ASSERT_TRUE(res.value("ok", false));
+  auto e = r.bb.get("PEER.front.fact.weather");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.value("trust", ""), "untrusted");
+}
+
+TEST(BridgeModule, InboundRawShareUnchangedLegacy) {
+  Rig r;                                                // no type -> raw (Task 2 default)
+  auto j = nlohmann::json{{"v", kBridgeProtocolV}, {"from", "front"}, {"key", "STATUS"},
+                          {"value", "wet"}};
+  auto res = r.mod->handle_share(j.dump(), "s3cret");
+  ASSERT_TRUE(res.value("ok", false));
+  auto e = r.bb.get("PEER.front.STATUS");
+  ASSERT_TRUE(e.has_value());
+  EXPECT_EQ(e->value.get<std::string>(), "wet");        // legacy PEER.<from>.<key>
 }
 
 TEST(BridgeModule, ShareRejectsForbiddenOversizedAndMalformed) {
