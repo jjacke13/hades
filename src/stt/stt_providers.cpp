@@ -24,25 +24,24 @@ HttpSttProvider::HttpSttProvider(std::string e, std::string k, std::string m, st
       language_(std::move(lang)), http_(std::move(h)) {}
 
 SttResult HttpSttProvider::transcribe(const std::string& audio_path) {
-  std::vector<std::pair<std::string, std::string>> fields{{"model", model_}};
-  if (!language_.empty()) fields.push_back({"language", language_});
-  HttpResponse resp;
-  try {
-    resp = http_(endpoint_ + "/audio/transcriptions", key_, audio_path, fields);
+  try {  // never-throw invariant: whole body fail-soft (fields alloc, transport, json parse)
+    std::vector<std::pair<std::string, std::string>> fields{{"model", model_}};
+    if (!language_.empty()) fields.push_back({"language", language_});
+    HttpResponse resp = http_(endpoint_ + "/audio/transcriptions", key_, audio_path, fields);
+    if (resp.status < 200 || resp.status >= 300)
+      return {false, "", "", "stt http status " + std::to_string(resp.status)};
+    auto j = nlohmann::json::parse(resp.body, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return {false, "", "", "stt http: unparseable response"};
+    auto t = j.find("text");
+    if (t == j.end() || !t->is_string()) return {false, "", "", "stt http: no text field"};
+    SttResult r;
+    r.ok = true;
+    r.text = t->get<std::string>();
+    if (auto l = j.find("language"); l != j.end() && l->is_string()) r.language = l->get<std::string>();
+    return r;
   } catch (...) {
-    return {false, "", "", "stt http transport error"};
+    return {false, "", "", "stt http internal error"};
   }
-  if (resp.status < 200 || resp.status >= 300)
-    return {false, "", "", "stt http status " + std::to_string(resp.status)};
-  auto j = nlohmann::json::parse(resp.body, nullptr, false);
-  if (j.is_discarded() || !j.is_object()) return {false, "", "", "stt http: unparseable response"};
-  auto t = j.find("text");
-  if (t == j.end() || !t->is_string()) return {false, "", "", "stt http: no text field"};
-  SttResult r;
-  r.ok = true;
-  r.text = t->get<std::string>();
-  if (auto l = j.find("language"); l != j.end() && l->is_string()) r.language = l->get<std::string>();
-  return r;
 }
 
 SttHttpClient cpr_stt_http(double timeout_s) {
@@ -65,13 +64,17 @@ CommandSttProvider::CommandSttProvider(std::vector<std::string> argv, double tim
 
 SttResult CommandSttProvider::transcribe(const std::string& audio_path) {
   if (argv_.empty()) return {false, "", "", "stt command not configured"};
-  std::vector<std::string> argv = argv_;
-  argv.push_back(audio_path);   // contract: last arg is the audio file
-  ProcResult pr = run_subprocess(argv, "", timeout_s_);
-  if (pr.timed_out) return {false, "", "", "stt command timed out"};
-  if (pr.code != 0) return {false, "", "", "stt command exit " + std::to_string(pr.code)};
-  std::string text = trim(pr.out);
-  if (text.empty()) return {false, "", "", "stt command produced no transcript"};
-  return {true, text, "", ""};
+  try {  // never-throw invariant: guards a bad_alloc from the argv copy/push_back
+    std::vector<std::string> argv = argv_;
+    argv.push_back(audio_path);   // contract: last arg is the audio file
+    ProcResult pr = run_subprocess(argv, "", timeout_s_);
+    if (pr.timed_out) return {false, "", "", "stt command timed out"};
+    if (pr.code != 0) return {false, "", "", "stt command exit " + std::to_string(pr.code)};
+    std::string text = trim(pr.out);
+    if (text.empty()) return {false, "", "", "stt command produced no transcript"};
+    return {true, text, "", ""};
+  } catch (...) {
+    return {false, "", "", "stt command internal error"};
+  }
 }
 }  // namespace hades
