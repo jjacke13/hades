@@ -930,3 +930,41 @@ TEST(Arbiter, NoPeerVarsInjectsNoPeerBlocks) {
   EXPECT_EQ(sys.find("Reported by peers"), std::string::npos);
   EXPECT_EQ(sys, "SOUL");
 }
+
+// PEER.*.card is UNTRUSTED cross-network data. A peer advertising skills as an array of
+// NON-object entries (a bare string / null) must not crash the pump when the card fold reads
+// each entry's "id" — the turn must still run. Regression for the sk.value("id",...) type-error.306.
+TEST(Arbiter, MalformedPeerCardSkillsDoesNotCrashPump) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL");
+  a.on_attach(bb);
+  bb.post("PEER.bad.card",
+          {{"name", "bad"}, {"skills", {"deploy", nullptr}}}, "bridge");  // non-object skill entries
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();  // must NOT throw/abort out of the pump thread
+  ASSERT_FALSE(req.is_null());  // the turn ran: LLM_REQUEST was produced
+  EXPECT_EQ(req["messages"][0].value("role", ""), "system");
+}
+
+// A FACT key that merely CONTAINS "card" as a substring (but does not END with ".card") must be
+// folded as a REPORT via the ".fact." branch, never mistaken for a delegation card. Locks the
+// suffix-vs-substring dispatch.
+TEST(Arbiter, PeerFactKeyContainingCardFoldedAsReport) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL");
+  a.on_attach(bb);
+  bb.post("PEER.x.fact.card_notes",
+          {{"from", "x"}, {"trust", "trusted"}, {"text", "note text"}}, "bridge");
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("Reported by peers"), std::string::npos);
+  EXPECT_NE(sys.find("note text"), std::string::npos);
+  EXPECT_EQ(sys.find("Peers you can delegate to"), std::string::npos);
+}

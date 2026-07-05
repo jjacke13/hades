@@ -212,6 +212,7 @@ void Arbiter::start_turn() {
           line += " skills:[";
           bool first = true;
           for (const auto& sk : val["skills"]) {
+            if (!sk.is_object()) continue;            // tolerate non-object skill entries (untrusted peer data)
             line += (first ? "" : ",") + sk.value("id", "");
             first = false;
           }
