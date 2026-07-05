@@ -32,6 +32,10 @@ struct FakeApi : TelegramApi {
     return true;
   }
   void answer_callback(const std::string& id) override { answered.push_back(id); }
+  std::string file_path_ret;                     // get_file_path returns this
+  std::string download_ret;                      // download_file returns this
+  std::string get_file_path(const std::string&) override { return file_path_ret; }
+  std::string download_file(const std::string&) override { return download_ret; }
 };
 
 TgUpdate msg(long long uid, long long from, long long chat, const std::string& text) {

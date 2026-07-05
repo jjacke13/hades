@@ -18,9 +18,12 @@ class CprTelegramApi : public TelegramApi {
   bool send_confirm(long long chat_id, const std::string& prompt,
                     const std::string& confirm_id) override;
   void answer_callback(const std::string& callback_query_id) override;
+  std::string get_file_path(const std::string& file_id) override;
+  std::string download_file(const std::string& file_path) override;
 
  private:
   bool post_json_(const std::string& method, const nlohmann::json& body, double timeout_s);
-  std::string base_;   // https://api.telegram.org/bot<token>
+  std::string base_;        // https://api.telegram.org/bot<token>
+  std::string file_base_;   // https://api.telegram.org/file/bot<token>
 };
 }  // namespace hades

@@ -219,14 +219,21 @@ ParsedUpdates parse_updates(const std::string& body) {
     t.update_id = num(u, "update_id");
     if (t.update_id == 0) continue;
     if (auto m = u.find("message"); m != u.end() && m->is_object()) {
-      auto txt = m->find("text");
-      if (txt == m->end() || !txt->is_string()) continue;      // photos/stickers etc: skip
       if (!m->contains("from") || !(*m)["from"].is_object()) continue;
       if (!m->contains("chat") || !(*m)["chat"].is_object()) continue;
+      auto txt = m->find("text");
+      if (txt != m->end() && txt->is_string()) {
+        t.text = txt->get<std::string>();
+      } else if (auto v = m->find("voice"); v != m->end() && v->is_object()) {
+        auto fid = v->find("file_id");
+        if (fid == v->end() || !fid->is_string()) continue;    // voice without a file_id: nothing to fetch
+        t.voice_file_id = fid->get<std::string>();
+      } else {
+        continue;                                              // photos/stickers/etc: skip
+      }
       t.kind = "message";
       t.from_id = num((*m)["from"], "id");
       t.chat_id = num((*m)["chat"], "id");
-      t.text = txt->get<std::string>();
       if (t.from_id == 0 || t.chat_id == 0) continue;
       out.updates.push_back(std::move(t));
     } else if (auto c = u.find("callback_query"); c != u.end() && c->is_object()) {
@@ -278,7 +285,8 @@ constexpr double kSendTimeoutS = 30.0;   // sendMessage/answerCallbackQuery are 
 }
 
 CprTelegramApi::CprTelegramApi(std::string token)
-    : base_("https://api.telegram.org/bot" + std::move(token)) {}
+    : base_("https://api.telegram.org/bot" + token),
+      file_base_("https://api.telegram.org/file/bot" + std::move(token)) {}
 
 std::vector<TgUpdate> CprTelegramApi::get_updates(long long offset, double timeout_s) {
   // Long-poll: Telegram holds the request up to timeout_s; the cpr cap sits above it so a
@@ -323,5 +331,34 @@ bool CprTelegramApi::send_confirm(long long chat_id, const std::string& prompt,
 
 void CprTelegramApi::answer_callback(const std::string& callback_query_id) {
   post_json_("answerCallbackQuery", build_answer_callback(callback_query_id), kSendTimeoutS);
+}
+
+std::string CprTelegramApi::get_file_path(const std::string& file_id) {
+  // getFile -> {"ok":true,"result":{"file_path":"voice/file_5.oga"}}. Errors -> "".
+  auto r = cpr::Post(cpr::Url{base_ + "/getFile"},
+                     cpr::Header{{"Content-Type", "application/json"}},
+                     cpr::Body{nlohmann::json{{"file_id", file_id}}.dump()},
+                     cpr::Timeout{static_cast<int>(kSendTimeoutS * 1000)}, cpr::Redirect{false});
+  if (r.status_code != 200) {
+    std::cerr << "hades: telegram getFile failed (status " << r.status_code << ")\n";
+    return "";
+  }
+  auto j = nlohmann::json::parse(r.text, nullptr, false);
+  if (!j.is_object() || !j.value("ok", false)) return "";
+  auto res = j.find("result");
+  if (res == j.end() || !res->is_object()) return "";
+  auto fp = res->find("file_path");
+  return (fp != res->end() && fp->is_string()) ? fp->get<std::string>() : "";
+}
+
+std::string CprTelegramApi::download_file(const std::string& file_path) {
+  // GET https://api.telegram.org/file/bot<token>/<file_path> -> raw bytes ("" on error).
+  auto r = cpr::Get(cpr::Url{file_base_ + "/" + file_path},
+                    cpr::Timeout{static_cast<int>(kSendTimeoutS * 1000)}, cpr::Redirect{false});
+  if (r.status_code != 200) {
+    std::cerr << "hades: telegram file download failed (status " << r.status_code << ")\n";
+    return "";
+  }
+  return r.text;
 }
 }  // namespace hades

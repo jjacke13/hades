@@ -17,5 +17,9 @@ class TelegramApi {
   virtual bool send_confirm(long long chat_id, const std::string& prompt,
                             const std::string& confirm_id) = 0;
   virtual void answer_callback(const std::string& callback_query_id) = 0;
+  // Voice input: resolve a file_id to a Bot-API file_path (getFile), then download the bytes.
+  // Both return "" on any error (fail-soft; the module surfaces a text reply).
+  virtual std::string get_file_path(const std::string& file_id) = 0;
+  virtual std::string download_file(const std::string& file_path) = 0;
 };
 }  // namespace hades

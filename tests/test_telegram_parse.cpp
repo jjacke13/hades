@@ -75,3 +75,37 @@ TEST(TelegramParse, BuildersProduceExactApiShapes) {
   EXPECT_EQ(row[1]["callback_data"], "deny:c1");
   EXPECT_EQ(build_answer_callback("cbq1")["callback_query_id"], "cbq1");
 }
+
+TEST(TelegramParse, VoiceMessageCapturesFileId) {
+  std::string body = R"({"ok":true,"result":[{
+    "update_id":7,
+    "message":{"from":{"id":42},"chat":{"id":42},
+               "voice":{"file_id":"AwACAgV","duration":3}}}]})";
+  auto p = parse_updates(body);
+  ASSERT_TRUE(p.ok);
+  ASSERT_EQ(p.updates.size(), 1u);
+  EXPECT_EQ(p.updates[0].kind, "message");
+  EXPECT_TRUE(p.updates[0].text.empty());
+  EXPECT_EQ(p.updates[0].voice_file_id, "AwACAgV");
+  EXPECT_EQ(p.updates[0].from_id, 42);
+  EXPECT_EQ(p.updates[0].chat_id, 42);
+}
+
+TEST(TelegramParse, VoiceWithoutFileIdIsSkipped) {
+  std::string body = R"({"ok":true,"result":[{
+    "update_id":8,
+    "message":{"from":{"id":42},"chat":{"id":42},"voice":{"duration":3}}}]})";
+  auto p = parse_updates(body);
+  EXPECT_TRUE(p.ok);
+  EXPECT_TRUE(p.updates.empty());   // no file_id -> nothing to fetch
+}
+
+TEST(TelegramParse, TextStillWinsAndPhotoStillSkipped) {
+  std::string body = R"({"ok":true,"result":[
+    {"update_id":9,"message":{"from":{"id":1},"chat":{"id":1},"text":"hi","voice":{"file_id":"X"}}},
+    {"update_id":10,"message":{"from":{"id":1},"chat":{"id":1},"photo":[{"file_id":"P"}]}}]})";
+  auto p = parse_updates(body);
+  ASSERT_EQ(p.updates.size(), 1u);            // photo skipped
+  EXPECT_EQ(p.updates[0].text, "hi");         // text preferred over voice when both present
+  EXPECT_TRUE(p.updates[0].voice_file_id.empty());
+}

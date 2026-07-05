@@ -18,6 +18,7 @@ struct TgUpdate {
   long long   from_id = 0;     // sender user id (allowlist check)
   long long   chat_id = 0;     // where to reply
   std::string text;            // message text (kind=="message")
+  std::string voice_file_id;   // voice message file_id (kind=="message", empty text)
   std::string callback_id;     // callback_query.id (kind=="callback")
   std::string callback_data;   // "approve:<id>" | "deny:<id>" (kind=="callback")
 };
