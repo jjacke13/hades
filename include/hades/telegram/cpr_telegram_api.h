@@ -20,6 +20,7 @@ class CprTelegramApi : public TelegramApi {
   void answer_callback(const std::string& callback_query_id) override;
   std::string get_file_path(const std::string& file_id) override;
   std::string download_file(const std::string& file_path) override;
+  bool send_voice(long long chat_id, const std::string& ogg_bytes) override;
 
  private:
   bool post_json_(const std::string& method, const nlohmann::json& body, double timeout_s);

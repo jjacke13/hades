@@ -425,4 +425,18 @@ std::string CprTelegramApi::download_file(const std::string& file_path) {
   }
   return r.text;
 }
+bool CprTelegramApi::send_voice(long long chat_id, const std::string& ogg_bytes) {
+  // sendVoice as multipart with the bytes carried IN MEMORY (cpr::Buffer) — no temp file. Telegram
+  // requires OGG/Opus for a voice note; the provider guarantees that. Errors -> false (text stands).
+  auto r = cpr::Post(cpr::Url{base_ + "/sendVoice"},
+                     cpr::Multipart{{"chat_id", std::to_string(chat_id)},
+                                    {"voice", cpr::Buffer{ogg_bytes.begin(), ogg_bytes.end(),
+                                                          "voice.ogg"}}},
+                     cpr::Timeout{static_cast<int>(kSendTimeoutS * 1000)}, cpr::Redirect{false});
+  if (r.status_code != 200) {
+    std::cerr << "hades: telegram sendVoice failed (status " << r.status_code << ")\n";
+    return false;
+  }
+  return true;
+}
 }  // namespace hades

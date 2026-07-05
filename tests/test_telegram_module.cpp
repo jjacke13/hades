@@ -37,6 +37,13 @@ struct FakeApi : TelegramApi {
   std::string download_ret;                      // download_file returns this
   std::string get_file_path(const std::string&) override { return file_path_ret; }
   std::string download_file(const std::string&) override { return download_ret; }
+  std::vector<std::pair<long long, std::string>> voices;   // send_voice(chat, bytes) calls
+  bool voice_fails = false;
+  bool send_voice(long long chat, const std::string& bytes) override {
+    if (voice_fails) return false;
+    voices.push_back({chat, bytes});
+    return true;
+  }
 };
 
 struct FakeStt : SttProvider {

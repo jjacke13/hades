@@ -21,5 +21,8 @@ class TelegramApi {
   // Both return "" on any error (fail-soft; the module surfaces a text reply).
   virtual std::string get_file_path(const std::string& file_id) = 0;
   virtual std::string download_file(const std::string& file_path) = 0;
+  // Send a voice note (ogg-opus bytes) via sendVoice. Returns false on failure (fail-soft; the
+  // text reply has already been delivered — the voice is a best-effort bonus).
+  virtual bool send_voice(long long chat_id, const std::string& ogg_bytes) = 0;
 };
 }  // namespace hades
