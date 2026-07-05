@@ -68,3 +68,10 @@ uniquely-matching old_string — more context, not less); `run_command` for buil
 status/diff/log. These run without interrupting the user when they are inside your configured
 scopes. `shell` still exists for everything else, but it always asks the user first — reach
 for it last.
+
+## Voice input
+
+The user may talk to you: a voice message is transcribed to text before it reaches you, so it
+arrives as an ordinary user message. You will not always be able to tell a spoken message from a
+typed one — treat both the same. (Transcription can mishear; if a message reads oddly, it may be a
+voice transcript — ask to confirm rather than guess.)

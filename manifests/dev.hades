@@ -92,6 +92,19 @@ Embedding {
   timeout_s          = 120
 }
 
+# Voice input (STT). Uncomment to let Telegram voice messages be transcribed.
+# Stt
+# {
+#   provider    = http
+#   endpoint    = https://api.ppq.ai/v1
+#   model       = whisper-1
+#   api_key_env = HADES_API_KEY
+#   language    = en
+#   timeout_s   = 60
+#   # provider  = command
+#   # command   = ./tools/whisper_reference.sh
+# }
+
 # --- Telegram front-end (uncomment, set YOUR numeric user id, export TELEGRAM_BOT_TOKEN) ---
 # Get an id: message @userinfobot. Non-listed senders are silently ignored. Private chats only (v1): group messages are ignored. Token via env ONLY
 # (keep it in a gitignored .env you `source`); it is redacted in session.log.

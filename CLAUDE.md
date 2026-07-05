@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` (bridge + src-reorg + dev-tools all merged), **381/381 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` (**voice STT shipped** — Telegram voice messages transcribed to text; no new tool binary), **405/405 tests** (ASan+UBSan + **TSan** clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **15 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command`, self-describing) · **tool capability
@@ -174,6 +174,29 @@ it touches are still alive (see the member comment). A telegram-only roster (no 
 block on `wait()`. Pieces: `src/module/telegram_module.cpp`, `include/hades/{module/telegram_module.h,
 turn_gate.h,telegram/*}`, `src/telegram/*`, `app/{agent_wiring,hades_main}.*`, `tests/test_telegram_*.cpp`,
 `tests/test_turn_gate.cpp`. **LIVE-VALIDATED 2026-07-03** (Vaios: real bot, phone→reply working).
+
+### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
+Speech-to-text so a Telegram **voice** message is transcribed to text and drives a normal turn. **Source-
+agnostic provider seam** (Vaios's requirement — a clip transcribes the same from Telegram or a future local
+mic), EXACTLY the embedding-provider precedent: one `SttProvider` interface, two transports —
+**`provider = http`** (OpenAI-compat multipart `POST <base>/audio/transcriptions`, PPQ whisper, DEFAULT, over
+an injected `SttHttpClient` seam so tests use no socket) and **`provider = command`** (a local whisper/whisper.cpp
+wrapper — `tools/whisper_reference.sh`, one-shot via `run_subprocess`, NO shell, transcript off stdout, audio path
+appended last). **English-only v1** (`language = en`; http sends it as a form field, command bakes `-l en` into the
+wrapper). **Opt-in: no `Stt` block → `Agent.stt == nullptr`, Telegram stays text-only** (no `Module =` line needed —
+the block's presence is the switch; `resolve_stt` in `app/agent_wiring.cpp`). The seam is injected into **user-facing
+front-ends only** — **the Bridge is NEVER given one** (agent↔agent stays text; a peer cannot send audio). TelegramModule
+gained `SttProvider* stt_` + `handle_voice_`: on a `voice` update it `getFile`+downloads the `.oga`→temp→transcribe→
+`USER_MESSAGE`, on the **poll thread** (off-bus, no Executor), **fail-soft** (any transcribe error → a "didn't catch that"
+text reply, no turn; never crashes). **Teardown order:** `Agent::stt` is declared BEFORE `telegram` so it is destroyed
+AFTER it — the telegram dtor joins the poll thread, which may be mid-`transcribe()` touching the provider (do NOT reorder).
+`Stt { provider endpoint model api_key_env language timeout_s command }` block (all documented in `docs/manifest-reference.md`
+§11); dev.hades ships it **COMMENTED** (text-only default runnable without a whisper backend). Pieces:
+`src/stt/stt_providers.cpp`, `include/hades/stt/*`, `app/agent_wiring.cpp` (`resolve_stt` + inject), `src/apps/telegram/telegram.cpp`
+(`handle_voice_`/`set_stt`), `tools/whisper_reference.sh`, `tests/test_stt_{providers,wiring}.cpp`. Spec/plan:
+`docs/superpowers/{specs/2026-07-05-stt-voice-input-design.md,plans/2026-07-05-voice-stt.md}`. **TTS is the next voice half**
+(agent reply → speech → Telegram `sendVoice`, separate later spec; provider TBD piper/API behind a seam like STT).
+**Live-smoke pending** (Vaios: send a voice note to the bot with an uncommented `Stt` block + `HADES_API_KEY`).
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 
@@ -349,7 +372,7 @@ whitelist · peer presence via `/health` polling · ask offload (with tool-offlo
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (381/381, ~4.4s)
+nix develop --command ctest --test-dir build                 # test (405/405, ~4.4s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -482,9 +505,10 @@ certs / tunnel) no matter what; unofficial whatsapp-web.js is Node + QR + ToS-ri
 (`hyperdht-cpp`) — TLS/tunnel setup is a non-starter. (Future self-host-native multi-agent path = a
 **hyperdht-based Bridge transport** behind the bridge v2 "transport seam" — agent↔agent over DHT, no public IP,
 no certs. Parked.)
-**Voice = two independent parts. STT FIRST** (this spec), TTS is a separate later spec.
-- **STT — DESIGN APPROVED 2026-07-05** (spec `docs/superpowers/specs/2026-07-05-stt-voice-input-design.md`,
-  branch `feat/voice-stt` off `main` @ `5fe5f3c`). **Source-agnostic provider seam** (Vaios's requirement — a
+**Voice = two independent parts. STT FIRST** (SHIPPED), TTS is a separate later spec (still NEXT).
+- **STT — SHIPPED 2026-07-05, `feat/voice-stt`** (405/405, TSan clean; spec
+  `docs/superpowers/specs/2026-07-05-stt-voice-input-design.md`, off `main` @ `5fe5f3c`; see the **Voice STT**
+  subsection under Current state for the shipped detail). **Source-agnostic provider seam** (Vaios's requirement — a
   clip transcribes the same from Telegram or a future local mic), EXACTLY the embedding-provider precedent: one
   `SttProvider` interface, two transports — `provider = http` (OpenAI-compat `POST <base>/audio/transcriptions`,
   PPQ whisper, DEFAULT — same base-url gotcha as embedding's `/embeddings`) + `provider = command` (local
@@ -495,8 +519,9 @@ no certs. Parked.)
   injected into USER-FACING front-ends only — **Bridge excluded** (agent↔agent is text). TelegramModule (text-only
   today, skips `voice`) gains `SttProvider* stt_` + `handle_voice_`: `getFile`+download `.oga`→temp→transcribe→
   `USER_MESSAGE`, on the poll thread (off-bus, no Executor), fail-soft (bad transcribe → text reply, no turn).
-  `stt` declared before `telegram` in Agent (teardown: poll thread may be mid-transcribe). NEXT: writing-plans → SDD.
-- **TTS** (later spec) — agent reply text → speech → Telegram `sendVoice`. Provider TBD: `qwen3_tts_rs` or
+  `stt` declared before `telegram` in Agent (teardown: poll thread may be mid-transcribe). dev.hades ships the
+  `Stt` block COMMENTED (text-only default); reference wrapper `tools/whisper_reference.sh`; docs `manifest-reference.md` §11.
+- **TTS — NEXT (the other voice half)** (later spec) — agent reply text → speech → Telegram `sendVoice`. Provider TBD: `qwen3_tts_rs` or
   **piper** (local) vs API. Behind a seam like STT.
 Future self-host-native multi-agent: a **hyperdht-based Bridge transport** (bridge v2 "transport seam", agent↔agent
 over DHT, no public IP/certs) — the P2P path, parked.
@@ -602,6 +627,11 @@ in this doc, not the tree):
 - **Embedding `endpoint` must be the BASE url, NOT `.../embeddings`** — the HTTP provider appends `/embeddings`.
   PPQ: `endpoint = https://api.ppq.ai/v1` (→ `…/v1/embeddings`). Setting `…/v1/embeddings` → `…/embeddings/embeddings`
   → every embed fails → fail-soft (`EMBED_INDEX_DONE=false`, `RETRIEVED_MEMORY_SEMANTIC=""`, no cache file). Bit Vaios once.
+- **Stt `endpoint` is the BASE url too** (http provider) — it appends `/audio/transcriptions` (same footgun as
+  embedding's `/embeddings`). PPQ: `endpoint = https://api.ppq.ai/v1`. STT is opt-in (no `Stt` block → text-only,
+  `Agent.stt==nullptr`), fail-soft (bad transcribe → "didn't catch that", never a crash), and injected into
+  user-facing front-ends ONLY — the **Bridge is never given one** (a peer can't send audio). dev.hades ships the
+  `Stt` block COMMENTED.
 - **Embedding live-session exclusion is fixed at launch.** `/new` rotates the Arbiter's session but does NOT
   re-point the embedding module's `live_session_path_` (set once, before `on_attach`, to avoid a cross-thread
   write). So a periodic reindex after a `/new` may index the now-live post-`/new` session mid-write — parser-safe

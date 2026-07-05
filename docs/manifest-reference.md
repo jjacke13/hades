@@ -351,7 +351,39 @@ The dir is git-tracked in this repo (the agent writes skills at runtime → work
 
 ---
 
-## 11. `Bridge` block + `Peer` blocks
+## 11. `Stt` block
+
+`resolve_stt` (`app/agent_wiring.cpp`); providers in `src/stt/stt_providers.cpp`. **Opt-in: with no
+`Stt` block the agent is text-only** (`Agent.stt == nullptr`). When present, one `SttProvider` is built
+and injected into the **user-facing** front-end (Telegram v1) so a voice message is transcribed to text
+and drives a normal turn. The **Bridge is never given one** — agent↔agent traffic stays text (a peer
+cannot send audio). No `Module =` line is needed; the block's presence is the switch.
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `provider` | `http` (OpenAI-compat) or `command` (local wrapper). | `http` | Unknown value → `MalConfig`. |
+| `endpoint` | **Base** URL of the transcription API (http provider). | — | **Required for `http`** (empty → `MalConfig`). The provider appends `/audio/transcriptions`. |
+| `model` | Transcription model id (http provider). | `whisper-1` | Sent as the multipart `model` field. |
+| `api_key_env` | **Name of the env var** holding the STT key (http provider). | `HADES_API_KEY` | Resolved from the env; empty → sent with no bearer. Redacted in `session.log`. |
+| `language` | Spoken-language hint. English-only v1. | `en` | http: sent as the multipart `language` field. command: baked into the wrapper (`-l en`), this key is unused. |
+| `timeout_s` | Per-transcription timeout (HTTP call or subprocess). | `60` | Bad/0/garbage → default. |
+| `command` | Subprocess wrapper (command provider). | — | **Required for `command`** (empty → `MalConfig`). Whitespace-split into argv; the audio path is appended as the **last** arg. See `tools/whisper_reference.sh`. |
+
+**Gotchas.**
+- **`endpoint` must be the BASE url, NOT `.../audio/transcriptions`** — the http provider appends
+  `/audio/transcriptions` (the same base-url gotcha as embedding's `/embeddings`). PPQ:
+  `endpoint = https://api.ppq.ai/v1`.
+- **Fail-soft everywhere.** A non-2xx status, unparseable response, missing `text`, subprocess timeout,
+  non-zero exit, or empty transcript degrades to a "didn't catch that" reply — it never crashes a turn.
+- **`command` provider:** the wrapper must print ONLY the plain transcript to stdout; run with
+  `run_subprocess` (fork/exec, **no shell**). One-shot per clip (no warm child — voice notes are
+  human-paced). Language is the wrapper's job (English v1); adjust the reference script's binary/model.
+- **User-facing only / Bridge-excluded:** the seam is injected into Telegram (and future local-mic
+  front-ends), never the Bridge — a peer agent cannot transcribe audio through this agent.
+
+---
+
+## 12. `Bridge` block + `Peer` blocks
 
 `src/apps/bridge/bridge.cpp` (`on_start`) + `app/agent_wiring.cpp`. The `Bridge` block is the
 agent's **identity** and is read even without `Module = bridge` (the `ask_agent` tool needs
@@ -390,7 +422,7 @@ Rules (`wire_agent`): peer `<name>` must match `[A-Za-z0-9_-]{1,64}`; duplicate 
 
 ---
 
-## 12. `Arbiter` block
+## 13. `Arbiter` block
 
 `Module = arbiter` builds the Arbiter, but the **`Arbiter { … }` block is currently unread**. The
 `policy = v1` key in dev.hades is decorative (no code queries `m.of("Arbiter")`). It reserves the
