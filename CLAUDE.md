@@ -590,6 +590,31 @@ no certs. Parked.)
 Future self-host-native multi-agent: a **hyperdht-based Bridge transport** (bridge v2 "transport seam", agent↔agent
 over DHT, no public IP/certs) — the P2P path, parked.
 
+## NEXT (decided 2026-07-05 evening, Vaios): bridge-as-protocol + heartbeat/cron — brainstorm-first
+Two directions set after the aarch64/Pi + voice batch. BOTH brainstorm-first (not yet designed).
+1. **Bridge → a real protocol; standardize the blackboard variables.** Today agents share only session TEXT
+   (`/ask` = a turn; `/share` = an OPAQUE `PEER.<from>.<key>` value). Vaios wants agents to share MORE — e.g. an
+   agent advertises **what skills/tools/capabilities it has** by publishing them on its blackboard (note:
+   `SKILLS_ANNOUNCE` is ALREADY a blackboard var; the tool roster + capabilities are known too). **Core idea:
+   STANDARDIZE the well-known blackboard variables + value schemas** (a registry of canonical keys — identity,
+   skills, tools, capabilities, …) so the bridge can share/mirror STRUCTURED state across peers, not just text.
+   This makes the bridge protocol-like (typed, discoverable). **Directly fed by the agent-comms research**
+   (`docs/research/2026-07-05-agent-comms-landscape.md`): borrow-ables = **A2A agent-card** (capability discovery
+   at `/.well-known/agent.json`), **typed `/share` payloads** (a `type` field, FIPA-ontology idea), **`PEER.*`
+   prefix bus subscriptions** (reactive consume of peer-shared vars). So this un-parks 3 of the 5 recorded
+   bridge-v2 borrow ideas. Design Qs for brainstorm: which blackboard keys are "standard" (schema), how the bridge
+   selects/mirrors them (share-list → typed keys), discovery (agent-card vs a WELL_KNOWN vars query), backward-compat
+   with `/ask`+`/share`.
+2. **Heartbeat / cron — the agent acts ON ITS OWN.** Today hades is purely EVENT-DRIVEN (a turn fires only on
+   `USER_MESSAGE` / peer `/ask`). Vaios wants a **self-trigger**: periodic or scheduled internal turns so the agent
+   does background/proactive work (monitoring, scheduled tasks, "wake up and check X"). MOOS analog = a timer-driven
+   app / `Iterate()` at a rate. Design Qs for brainstorm: tick source (a timer thread posting a `HEARTBEAT`/`TICK`
+   bus event → Arbiter runs a self-turn, serialized through the **TurnGate** like every front-end); scheduling model
+   (fixed interval vs cron-expressions vs one-shot delays; a `Cron`/`Heartbeat` manifest block); WHAT the agent does
+   on a tick (a configured prompt/task? run a skill? check a condition?); guardrails (budget objective + capability
+   gates still apply to self-turns; a runaway-loop cap; `TURN_ORIGIN = heartbeat`); interaction with idle-timeout +
+   the offload model. This is the "autonomy" leg — turns hades from reactive assistant into a standing agent.
+
 ## Other open work
 Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
 aren't announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
