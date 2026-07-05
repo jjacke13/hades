@@ -40,9 +40,9 @@ namespace {
 void run_share_push(Blackboard* bb, std::shared_ptr<BridgeHttp> http, const std::string& name,
                     const std::string& secret,
                     const std::map<std::string, std::string>& peers, const std::string& key,
-                    const nlohmann::json& value) {
+                    const nlohmann::json& value, const std::string& type = kShareTypeRaw) {
   try {
-    const std::string body = build_share(name, key, value).dump();
+    const std::string body = build_share(name, key, value, type).dump();
     for (const auto& [peer, url] : peers) {
       try {
         auto [status, resp] = http->post_json(url + "/share", body, secret, 10.0);
@@ -212,12 +212,34 @@ void BridgeModule::on_attach(Blackboard& bb) {
       std::map<std::string, std::string> peers = peers_;
       const nlohmann::json value = e.value;
       auto job = [bb, http, name, secret, peers, key, value] {
-        run_share_push(bb, http, name, secret, peers, key, value);
+        run_share_push(bb, http, name, secret, peers, key, value, kShareTypeRaw);
       };
       if (executor_) executor_->submit(job);
       else job();
     });
   }
+  // Self-announce: push our card to all peers now, and again whenever our skills change. A
+  // late-booting peer thereby announces itself to peers already up (any boot order); the
+  // re-announce keeps a peer's mirrored card fresh when this agent gains/loses a skill.
+  bb.subscribe("SKILLS_ANNOUNCE", [this](const Entry&) { announce_card_(); });
+  announce_card_();
+}
+
+void BridgeModule::announce_card_() {
+  if (peers_.empty()) return;                          // nobody to tell
+  // Snapshot into a value-only job (captures NO `this` — the Executor may drain it AFTER
+  // ~BridgeModule; same teardown-safety as run_share_push). Runs on the pump thread here, so
+  // reading the members + card_json() is safe; the job owns everything it touches.
+  Blackboard* bb = bb_;
+  std::shared_ptr<BridgeHttp> http = http_;
+  std::string name = name_, secret = secret_;
+  std::map<std::string, std::string> peers = peers_;
+  const nlohmann::json card = card_json();
+  auto job = [bb, http, name, secret, peers, card] {
+    run_share_push(bb, http, name, secret, peers, kCardKey, card, kShareTypeCard);
+  };
+  if (executor_) executor_->submit(job);
+  else job();
 }
 
 bool BridgeModule::authorized_(const std::string& presented_secret,

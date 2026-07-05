@@ -89,6 +89,10 @@ class BridgeModule : public Module {
   bool authorized_(const std::string& presented_secret, const std::string& from) const;
   std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
   double effective_timeout_() const;
+  // Push self-announce: snapshot the card + push targets into a value-only job (captures NO
+  // `this` — teardown-safe like run_share_push) and POST it as a type=card /share to every peer.
+  // Called once at on_attach (boot announce) and on every SKILLS_ANNOUNCE (re-announce on change).
+  void announce_card_();
 
   std::string name_;                       // REQUIRED (valid_peer_name)
   std::string secret_;                     // resolved once (env or test injection)

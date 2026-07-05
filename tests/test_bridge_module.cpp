@@ -205,6 +205,7 @@ TEST(BridgeModule, ShareOutPushesToAllPeersOnChange) {
   m.on_start(cfg, bb);
   m.set_peers({{"front", "http://10.0.0.1:9090"}, {"other", "http://10.0.0.2:9090"}});
   m.on_attach(bb);
+  h->posts.clear();                              // drop the on_attach card self-announce noise
   bb.post("STATUS", "sunny", "t");
   bb.pump();                                     // no executor -> push runs inline
   ASSERT_EQ(h->posts.size(), 2u);                // one per peer
@@ -253,9 +254,9 @@ TEST(BridgeModule, SharePushJobSurvivesModuleTeardown) {
       BridgeModule m(std::make_unique<SlowMutexHttp>(&hmu, &calls), "s3cret");
       Block cfg; cfg.kv["name"] = "worker1"; cfg.kv["share_out"] = "STATUS";
       m.on_start(cfg, bb);
-      m.set_peers({{"front", "http://10.0.0.1:9090"}});
       m.set_executor(&ex);
-      m.on_attach(bb);
+      m.on_attach(bb);                             // announce: empty peers -> no card job submitted
+      m.set_peers({{"front", "http://10.0.0.1:9090"}});   // set AFTER attach: measure only STATUS
       bb.post("STATUS", "sunny", "t");
       bb.pump();                                   // handler snapshots + submits the slow job
     }                                              // ~BridgeModule while the job sleeps in post_json
@@ -273,6 +274,7 @@ TEST(BridgeModule, UnlistedKeyIsNotPushed) {
   m.on_start(cfg, bb);
   m.set_peers({{"front", "http://10.0.0.1:9090"}});
   m.on_attach(bb);
+  h->posts.clear();                              // drop the on_attach card self-announce noise
   bb.post("OTHER_KEY", 1, "t");
   bb.pump();
   EXPECT_TRUE(h->posts.empty());
@@ -285,8 +287,9 @@ TEST(BridgeModule, FailedPushPostsBridgeErrorAndDoesNotThrow) {
   BridgeModule m(std::move(http), "s3cret");
   Block cfg; cfg.kv["name"] = "worker1"; cfg.kv["share_out"] = "STATUS";
   m.on_start(cfg, bb);
-  m.set_peers({{"front", "http://10.0.0.1:9090"}});
   m.on_attach(bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}});   // set AFTER attach: boot announce (empty
+                                                       // peers) is a no-op -> no spurious card error
   std::string err;
   bb.subscribe("BRIDGE_ERROR", [&](const Entry& e) {
     if (e.value.is_string()) err = e.value.get<std::string>();
@@ -402,4 +405,43 @@ TEST(BridgeModule, DiscoverFailureLogsBridgeErrorNoThrow) {
   bb.pump();
   EXPECT_FALSE(bb.get("PEER.front.card").has_value());
   EXPECT_NE(err.find("front"), std::string::npos);
+}
+
+TEST(BridgeModule, SelfAnnouncesCardToPeersOnAttach) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  FakeHttp* h = http.get();
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg; cfg.kv["name"] = "worker1";
+  m.on_start(cfg, bb);
+  m.set_description("worker one");
+  m.set_peers({{"front", "http://10.0.0.1:9090"}, {"other", "http://10.0.0.2:9090"}});
+  m.on_attach(bb);                                     // initial announce (inline: no executor)
+  bb.pump();
+  ASSERT_EQ(h->posts.size(), 2u);                      // one /share per peer
+  EXPECT_EQ(std::get<0>(h->posts[0]), "http://10.0.0.1:9090/share");
+  auto sent = parse_share(std::get<1>(h->posts[0]));
+  ASSERT_TRUE(sent.ok);
+  EXPECT_EQ(sent.type, "card");
+  EXPECT_EQ(sent.key, "card");
+  EXPECT_EQ(sent.value.value("name", ""), "worker1");
+}
+
+TEST(BridgeModule, ReAnnouncesCardWhenSkillsChange) {
+  Blackboard bb;
+  auto http = std::make_unique<FakeHttp>();
+  FakeHttp* h = http.get();
+  BridgeModule m(std::move(http), "s3cret");
+  Block cfg; cfg.kv["name"] = "worker1";
+  m.on_start(cfg, bb);
+  m.set_peers({{"front", "http://10.0.0.1:9090"}});
+  m.on_attach(bb);
+  bb.pump();
+  const std::size_t after_attach = h->posts.size();    // >=1 initial
+  bb.post("SKILLS_ANNOUNCE", "Available skills (…):\n- deploy: ship it", "skills");
+  bb.pump();
+  ASSERT_GT(h->posts.size(), after_attach);            // re-announced
+  auto sent = parse_share(std::get<1>(h->posts.back()));
+  ASSERT_TRUE(sent.ok);
+  EXPECT_EQ(sent.value["skills"][0].value("id", ""), "deploy");
 }
