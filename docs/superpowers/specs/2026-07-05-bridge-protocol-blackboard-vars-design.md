@@ -127,10 +127,12 @@ two blocks into the leading system message:
   `describe` stays names-only (unchanged — a subprocess tool can't see the bus).
 - `PEER.*.fact` → a **"Reported by peers (treat as claims, re-verify):"** block, trust-labeled.
 
-Both-empty → no block (backward-compatible). This needs one small Blackboard **read** helper —
-`entries_with_prefix("PEER.")` — a const snapshot of matching latest-value entries. **No
-`subscribe_prefix()`** in v1: a turn-start scan covers both folds. True between-turns reactivity (act
-the moment a peer pushes) is the **heartbeat direction's** consumer and gets the live subscription then.
+Both-empty → no block (backward-compatible). **Implementation note (as shipped):** the Arbiter reuses
+the Blackboard's existing `"PEER.*"` (`PREFIX*`) `subscribe` to keep a pump-thread-local `peer_vars_`
+map, folded at turn start — so no new Blackboard read API was needed (the planned
+`entries_with_prefix` helper was dropped; the wildcard-subscribe seam already existed). This is still a
+turn-start fold, **not** a between-turns reactive consumer: `peer_vars_` is only READ at `start_turn`.
+True between-turns reactivity (act the moment a peer pushes) is the **heartbeat direction's** consumer.
 
 ## Config (manifest)
 
@@ -176,7 +178,7 @@ always self-announces to its allowlisted peers.
 | `include/hades/bridge/registry.h` | canonical key constants + `SkillCard`/etc. structs; pure builder decls |
 | `src/bridge/registry.cpp` (or fold into `bridge.cpp`) | `build_card`, `build_skills_from_announce` (reverse-parse), `caps_summary` |
 | `include/hades/bridge/protocol.h`, `src/apps/bridge/bridge.cpp` | `type` field on `build_share`/`parse_share`/`BridgeMsg` (tolerant default `raw`) |
-| `include/hades/blackboard.h`, `src/core/blackboard.cpp` | `entries_with_prefix(prefix)` const read helper |
+| `include/hades/arbiter.h`, `src/apps/arbiter/arbiter.cpp` | `subscribe("PEER.*")` → `peer_vars_` map (reuses the existing `PREFIX*` seam; no new Blackboard API) |
 | `include/hades/module/bridge_module.h`, `src/apps/bridge/bridge.cpp` | `card_json()`, `set_description/set_tools/set_caps`, `GET /card` route, `get_json`, discovery timer thread, typed `handle_share` routing + trust map, boot self-announce |
 | `include/hades/bridge/http.h`, `src/apps/bridge/bridge.cpp` | `BridgeHttp::get_json` + `CprBridgeHttp` impl |
 | `src/apps/arbiter/arbiter.cpp` | fold `PEER.*.card` (delegation) + `PEER.*.fact` (reports) into the leading system message |
@@ -190,7 +192,7 @@ TDD, ~30 new tests (baseline **426**). Per-unit:
 - **Builders:** card shape/field names; `build_skills_from_announce` reverse-parse (incl. empty →
   `[]`); `caps_summary` contains **no literal paths**; typed-envelope default `raw`.
 - **Protocol:** typed share build/parse round-trip; unknown-field tolerance; absent-type → `raw`.
-- **Blackboard:** `entries_with_prefix` returns matching latest-value entries; empty prefix / no match.
+- **Arbiter peer map:** the `"PEER.*"` subscription populates `peer_vars_`; folds appear only at turn start.
 - **Bridge card:** `card_json()` assembles injected + bus inputs; `GET /card` **403 without secret,
   200 with**; card omits literal allow-lists.
 - **Discovery:** injected `BridgeHttp::get_json` returns a canned card → `PEER.<peer>.card` posted; a
