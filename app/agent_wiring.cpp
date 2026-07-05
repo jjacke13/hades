@@ -26,6 +26,8 @@
 #include "hades/skills/scan.h"  // resolve_skills_dir
 #include "hades/stt/http_stt_provider.h"
 #include "hades/stt/command_stt_provider.h"
+#include "hades/tts/http_tts_provider.h"
+#include "hades/tts/command_tts_provider.h"
 #include "hades/module/memory_module.h"
 #include "hades/timeouts.h"  // kDefaultLlmTimeoutS / kDefaultTurnIdleTimeoutS
 namespace hades {
@@ -82,6 +84,30 @@ std::unique_ptr<SttProvider> resolve_stt(const Block& cfg) {
     return std::make_unique<CommandSttProvider>(split_ws_list(cmd), timeout_s);
   }
   throw MalConfig("Stt: unknown provider (want http|command): " + provider);
+}
+
+// Build the TTS provider from a `Tts` block. Empty block -> nullptr (opt-out). http requires endpoint;
+// command requires command; unknown provider -> MalConfig. HttpTtsProvider reuses cpr_http (JSON POST).
+std::unique_ptr<TtsProvider> resolve_tts(const Block& cfg) {
+  if (cfg.kv.empty()) return nullptr;
+  const std::string provider = cfg.kv.count("provider") ? cfg.kv.at("provider") : "http";
+  const std::string model = cfg.kv.count("model") ? cfg.kv.at("model") : "tts-1";
+  const std::string voice = cfg.kv.count("voice") ? cfg.kv.at("voice") : "alloy";
+  double timeout_s = 60.0;
+  if (cfg.kv.count("timeout_s")) set_pos_double_on_string(cfg.kv.at("timeout_s"), timeout_s);
+  if (provider == "http") {
+    const std::string ep = cfg.kv.count("endpoint") ? cfg.kv.at("endpoint") : "";
+    if (ep.empty()) throw MalConfig("Tts provider=http requires an endpoint");
+    const std::string env = cfg.kv.count("api_key_env") ? cfg.kv.at("api_key_env") : "HADES_API_KEY";
+    const char* key = std::getenv(env.c_str());
+    return std::make_unique<HttpTtsProvider>(ep, key ? key : "", model, voice, cpr_http(timeout_s));
+  }
+  if (provider == "command") {
+    const std::string cmd = cfg.kv.count("command") ? cfg.kv.at("command") : "";
+    if (cmd.empty()) throw MalConfig("Tts provider=command requires a command");
+    return std::make_unique<CommandTtsProvider>(split_ws_list(cmd), timeout_s);
+  }
+  throw MalConfig("Tts: unknown provider (want http|command): " + provider);
 }
 
 // Map one Objective block onto a concrete Objective. Unknown types are skipped
@@ -143,7 +169,8 @@ void wire_agent(Agent& a,
                 const Block& telegram_cfg = Block{},
                 const Block& bridge_cfg = Block{},
                 const std::vector<Block>& peer_blocks = {},
-                const Block& stt_cfg = Block{}) {
+                const Block& stt_cfg = Block{},
+                const Block& tts_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -320,19 +347,27 @@ void wire_agent(Agent& a,
     a.bridge->on_attach(bb);
   }
 
-  // STT provider (opt-in Stt block): build once and inject into the user-facing front-end.
-  // The Bridge is NEVER given one — agent<->agent stays text. resolve_stt returns null for the
-  // test overload's empty block, so existing tests are unaffected.
+  // STT/TTS providers (opt-in Stt/Tts blocks): build once and inject into the user-facing front-end.
+  // The Bridge is NEVER given one — agent<->agent stays text. resolve_* returns null for the test
+  // overload's empty blocks, so existing tests are unaffected.
   a.stt = resolve_stt(stt_cfg);
+  a.tts = resolve_tts(tts_cfg);
+  std::size_t cfg_tts_max_chars = 0;   // 0 -> leave the module default (4000)
+  if (tts_cfg.kv.count("max_chars")) {
+    try { cfg_tts_max_chars = static_cast<std::size_t>(std::stoul(tts_cfg.kv.at("max_chars"))); }
+    catch (...) { cfg_tts_max_chars = 0; }   // garbage -> keep the default
+  }
 
   // 6) Telegram front-end: config (MalConfig on missing allow_users / token env) + captures.
   //    The poll thread is NOT started here — hades_main calls start_polling() explicitly, so
-  //    tests and non-interactive builds never spawn a surprise thread. set_stt runs BEFORE
+  //    tests and non-interactive builds never spawn a surprise thread. set_stt/set_tts run BEFORE
   //    on_attach (and the poll thread only starts in hades_main after wire_agent returns), so
-  //    the provider pointer is live before any voice message can be handled.
+  //    the provider pointers are live before any voice message can be handled.
   if (a.telegram) {
     a.telegram->set_turn_gate(a.gate.get());
     if (a.stt) a.telegram->set_stt(a.stt.get());
+    if (a.tts) a.telegram->set_tts(a.tts.get());
+    if (a.tts && cfg_tts_max_chars > 0) a.telegram->set_tts_max_chars(cfg_tts_max_chars);
     a.telegram->on_start(telegram_cfg, bb);
     a.telegram->on_attach(bb);
   }
@@ -442,6 +477,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const auto peer_blocks = m.of("Peer");
   const auto stt_blocks = m.of("Stt");
   const Block stt_cfg = stt_blocks.empty() ? Block{} : stt_blocks.front();
+  const auto tts_blocks = m.of("Tts");
+  const Block tts_cfg = tts_blocks.empty() ? Block{} : tts_blocks.front();
 
   // Live path only: own a small worker pool and offload the blocking LLM call onto it so
   // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
@@ -459,7 +496,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // Pass the resolved live-session path through so wire_agent sets it on the embedding module
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
-             skills_cfg, telegram_cfg, bridge_cfg, peer_blocks, stt_cfg);
+             skills_cfg, telegram_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
