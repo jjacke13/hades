@@ -388,3 +388,24 @@ TEST(TelegramModule, VoiceTurnWithNoTtsProviderStaysText) {
   ASSERT_EQ(r.api->sent.size(), 1u);
   EXPECT_TRUE(r.api->voices.empty());                         // tts_ null -> text only
 }
+
+TEST(TelegramModule, SpeakFlagDoesNotLeakVoiceToNextTypedTurn) {
+  // Regression: a voice turn sets speak_reply_; the per-turn RAII Reset must clear it so a
+  // FOLLOWING typed turn in the same batch does NOT get spoken. Both turns in one poll batch.
+  Rig r;                                   // echo agent
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "hello", "", ""};
+  r.mod->set_stt(stt.get());
+  auto tts = std::make_unique<FakeTts>();
+  tts->ret = {true, "OGGDATA", ""};
+  r.mod->set_tts(tts.get());
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC"), msg(2, 42, 42, "typed")});
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 2u);                          // both replies as text
+  EXPECT_EQ(r.api->sent[0].second, "echo:hello");            // voice turn
+  EXPECT_EQ(r.api->sent[1].second, "echo:typed");            // typed turn
+  ASSERT_EQ(r.api->voices.size(), 1u);                        // ONLY the voice turn spoke
+  EXPECT_EQ(r.api->voices[0].second, "OGGDATA");
+}
