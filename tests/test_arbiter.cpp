@@ -875,3 +875,58 @@ TEST(Arbiter, NonStringSkillsAnnounceIsIgnored) {
   bb.pump();
   EXPECT_EQ(req["messages"][0]["content"].get<std::string>(), "SOUL TEXT");
 }
+
+TEST(Arbiter, FoldsPeerCardAndFactIntoSystemMessage) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL");
+  a.on_attach(bb);
+  bb.post("PEER.hades1.card",
+          {{"name", "hades1"},
+           {"skills", {{{"id", "deploy"}, {"description", "ship"}}}},
+           {"caps", {{"net", "public"}}}}, "bridge");
+  bb.post("PEER.hades1.fact.weather",
+          {{"from", "hades1"}, {"trust", "trusted"}, {"text", "sunny"}}, "bridge");
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(req.is_null());
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("Peers you can delegate to"), std::string::npos);
+  EXPECT_NE(sys.find("hades1"), std::string::npos);
+  EXPECT_NE(sys.find("deploy"), std::string::npos);
+  EXPECT_NE(sys.find("Reported by peers"), std::string::npos);
+  EXPECT_NE(sys.find("sunny"), std::string::npos);
+}
+
+TEST(Arbiter, UntrustedPeerFactLabeledUnverified) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL");
+  a.on_attach(bb);
+  bb.post("PEER.x.fact.claim",
+          {{"from", "x"}, {"trust", "untrusted"}, {"text", "the sky is green"}}, "bridge");
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("unverified"), std::string::npos);
+  EXPECT_NE(sys.find("the sky is green"), std::string::npos);
+}
+
+TEST(Arbiter, NoPeerVarsInjectsNoPeerBlocks) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL");
+  a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_EQ(sys.find("Peers you can delegate to"), std::string::npos);
+  EXPECT_EQ(sys.find("Reported by peers"), std::string::npos);
+  EXPECT_EQ(sys, "SOUL");
+}

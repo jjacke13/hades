@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -81,6 +82,7 @@ private:
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm
+  std::map<std::string, nlohmann::json> peer_vars_;   // PEER.* latest values (bridge discovery/share)
   int steps_ = 0;               // tool-call steps within the current turn (reset on USER_MESSAGE)
   // Per-user-turn freshness stamp: bumped on each USER_MESSAGE (NOT on tool-loop continuations),
   // stamped onto every LLM_REQUEST, and matched on LLM_RESPONSE so a timed-out turn's late
