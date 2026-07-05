@@ -3,6 +3,7 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include "hades/bridge/protocol.h"
+#include "hades/bridge/registry.h"   // kShareTypeCard
 using namespace hades;
 
 TEST(BridgeProtocol, ValidPeerNameGate) {
@@ -62,4 +63,28 @@ TEST(BridgeProtocol, ParseShareRejectsBadInput) {
 
 TEST(BridgeProtocol, PeerBusKeyFormat) {
   EXPECT_EQ(peer_bus_key("front", "STATUS"), "PEER.front.STATUS");
+}
+
+TEST(BridgeProtocol, ShareTypeDefaultsToRawWhenAbsent) {
+  // A body with no "type" field (the pre-feature wire form) parses as raw.
+  auto j = nlohmann::json{{"v", kBridgeProtocolV}, {"from", "a"}, {"key", "K"}, {"value", 1}};
+  BridgeMsg m = parse_share(j.dump());
+  ASSERT_TRUE(m.ok);
+  EXPECT_EQ(m.type, "raw");
+}
+
+TEST(BridgeProtocol, ShareTypeRoundTrips) {
+  BridgeMsg m = parse_share(build_share("a", "card", {{"name", "a"}}, kShareTypeCard).dump());
+  ASSERT_TRUE(m.ok);
+  EXPECT_EQ(m.type, "card");
+  EXPECT_EQ(m.key, "card");
+  EXPECT_EQ(m.value.value("name", ""), "a");
+}
+
+TEST(BridgeProtocol, ShareTypeNonStringIsRaw) {
+  auto j = nlohmann::json{{"v", kBridgeProtocolV}, {"from", "a"}, {"key", "K"},
+                          {"value", 1}, {"type", 42}};
+  BridgeMsg m = parse_share(j.dump());
+  ASSERT_TRUE(m.ok);
+  EXPECT_EQ(m.type, "raw");   // tolerant: bad type degrades, does not reject
 }

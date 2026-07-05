@@ -296,8 +296,8 @@ nlohmann::json build_ask(const std::string& from, long long hops, const std::str
 }
 
 nlohmann::json build_share(const std::string& from, const std::string& key,
-                           const nlohmann::json& value) {
-  return {{"v", kBridgeProtocolV}, {"from", from}, {"key", key}, {"value", value}};
+                           const nlohmann::json& value, const std::string& type) {
+  return {{"v", kBridgeProtocolV}, {"from", from}, {"key", key}, {"value", value}, {"type", type}};
 }
 
 BridgeMsg parse_ask(const std::string& body) {
@@ -335,6 +335,8 @@ BridgeMsg parse_share(const std::string& body) {
   auto val = j.find("value");
   if (val == j.end()) { m.error = "missing value"; return m; }
   m.value = *val;
+  auto ty = j.find("type");                       // tolerant: absent / non-string -> "raw"
+  m.type = (ty != j.end() && ty->is_string()) ? ty->get<std::string>() : "raw";
   m.ok = true;
   return m;
 }

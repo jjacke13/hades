@@ -38,11 +38,12 @@ struct BridgeMsg {
   std::string message;    // /ask only; non-empty
   std::string key;        // /share only; non-empty, no whitespace/control chars
   nlohmann::json value;   // /share only
+  std::string type = "raw";   // /share only: "card" | "fact" | "raw" (default; absent -> raw)
 };
 
 nlohmann::json build_ask(const std::string& from, long long hops, const std::string& message);
 nlohmann::json build_share(const std::string& from, const std::string& key,
-                           const nlohmann::json& value);
+                           const nlohmann::json& value, const std::string& type = "raw");
 BridgeMsg parse_ask(const std::string& body);
 BridgeMsg parse_share(const std::string& body);
 
