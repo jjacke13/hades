@@ -185,7 +185,8 @@ Spend is metered from `Session.price_per_mtok` × tokens. Embeddings are **not**
 
 ### `avoid_destructive`
 Confirm-gates destructive shell idioms (`rm -r` — which also covers `rm -rf` — plus `mkfs`,
-`dd if=`, fork-bomb, `> /dev/`, `shutdown`, `reboot`, `chmod -R 000`; 9 substring patterns) and
+`dd if=`, fork-bomb, `> /dev/`, `shutdown`, `reboot`, `chmod -R 000`; 9 entries — 8 idioms,
+`rm -rf`/`rm -r` both listed) and
 **always confirm-gates `write_file`**. Best-effort heuristic, not a security boundary.
 
 | Key | What it does |
@@ -441,7 +442,7 @@ agent's **identity** and is read even without `Module = bridge` (the `ask_agent`
 |---|---|---|
 | `name` | This agent's peer name (embedded in `PEER.<name>.` keys and the `peer:<name>` turn origin). **REQUIRED** when the module is rostered; must match `[A-Za-z0-9_-]{1,64}`. | — (invalid/missing → `MalConfig`) |
 | `description` | One-line persona shown in this agent's `/card` (its `description` field). | the bridge `name` |
-| `host` | Listener bind address. | `127.0.0.1` |
+| `host` | Listener bind address. **Cross-machine peers need `0.0.0.0`** (or the LAN IP) — the loopback default refuses LAN connections before any firewall matters. And the port must be reachable inbound on each machine: NixOS → `networking.firewall.allowedTCPPorts`; Raspberry Pi OS Lite ships no firewall. Traffic flows both ways (each peer pulls `/card` and pushes `/ask`/`/share`), so **both** ends need this. LAN-only — don't port-forward it; every endpoint is secret-gated. | `127.0.0.1` |
 | `port` | Listener port; **`0` = ephemeral** (bind any free port; tests use this). Out-of-range → `9090`. | `9090` |
 | `secret_env` | Env var name for the shared bridge secret. **Must be set** in the env when the module is rostered (unset/empty → `MalConfig`). | `HADES_BRIDGE_SECRET` |
 | `share_out` | Whitespace-separated bus keys to push to all peers on change (`/share`). | empty |
