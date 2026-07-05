@@ -41,34 +41,37 @@ consumer, a local-mic front-end later injects the same provider.
 ### The seam (`include/hades/stt/`, `src/stt/`)
 
 ```cpp
-struct SttResult { bool ok; std::string text; std::string language; std::string error; };
+struct SttResult { bool ok = false; std::string text; std::string language; std::string error; };
 
 class SttProvider {                       // include/hades/stt/provider.h
  public:
   virtual ~SttProvider() = default;
-  // Transcribe the audio file at `audio_path`. `lang_hint` empty = auto-detect.
-  // NEVER throws — any failure returns {ok:false, error:…}.
-  virtual SttResult transcribe(const std::string& audio_path,
-                               const std::string& lang_hint) = 0;
+  // Transcribe the audio file at `audio_path`. NEVER throws — any failure returns
+  // {ok:false, error:…}. Language is fixed at construction (English v1), not a per-call arg.
+  virtual SttResult transcribe(const std::string& audio_path) = 0;
 };
 ```
 
 Two implementations in **one TU** `src/stt/stt_providers.cpp` (ponytail: fewest files, mirrors
 `src/apps/embedding_memory/providers.cpp`):
 
-1. **`HttpSttProvider`** — cpr multipart `POST <endpoint>/audio/transcriptions`
-   (`cpr::Multipart{{"file", cpr::File{audio_path}}, {"model", model}, {"language", hint?}}`),
-   `Authorization: Bearer <api_key>` from the env var → parse JSON `{"text":…}` (+ optional
-   `language`). Non-2xx / unparseable → `{ok:false}`. **Endpoint is the BASE url**, provider appends
-   `/audio/transcriptions` — SAME gotcha as embedding's `/embeddings` (`endpoint = https://api.ppq.ai/v1`).
-   Redirects off (SSRF-hardening precedent). `timeout_s` → cpr timeout.
-2. **`CommandSttProvider`** — `run_subprocess(argv + [audio_path], timeout_s)` (core, no shell),
-   read the **plain transcript from stdout** (trimmed), non-zero exit / empty stdout → `{ok:false}`.
-   The `lang_hint` is passed to the child as env `STT_LANGUAGE` (the wrapper may use `-l "$STT_LANGUAGE"`
-   or ignore it) — keeps the argv contract "last arg = audio path" clean. Ship a reference wrapper
-   `tools/whisper_reference.sh` (whisper.cpp: `whisper-cli -f <audio> -nt -otxt` → transcript to
-   stdout), documented like `tools/embed_reference.py`. One-shot per clip — **no warm child** (voice
-   notes are human-paced; warm mode is a v2 seam).
+1. **`HttpSttProvider`** — POSTs a multipart form to `<endpoint>/audio/transcriptions` over an
+   **injected `SttHttpClient` seam** (like the embedding provider's injected `HttpClient` — tests
+   supply a fake returning canned JSON, no socket; the glibc-getaddrinfo TSan caveat is why the seam
+   is injected). Fields: `file` (the audio), `model`, `language` (when non-empty), `Authorization:
+   Bearer <api_key>` from the env var → parse JSON `{"text":…}` (+ optional `language`). Non-2xx /
+   unparseable / missing `text` → `{ok:false}`. **Endpoint is the BASE url**, provider appends
+   `/audio/transcriptions` — SAME gotcha as embedding's `/embeddings` (`endpoint =
+   https://api.ppq.ai/v1`). The real transport `cpr_stt_http(timeout_s)` uses
+   `cpr::Multipart{{"file", cpr::File{path}}, {"model", …}, {"language", …}}`, redirects off
+   (SSRF-hardening precedent), `timeout_s` → cpr timeout.
+2. **`CommandSttProvider`** — `run_subprocess(argv + [audio_path], "", timeout_s)` (core, no shell),
+   read the **plain transcript from stdout** (trimmed), non-zero exit / timeout / empty stdout →
+   `{ok:false}`. `run_subprocess` has no env-passing, and v1 is English-only, so language is **baked
+   into the wrapper** (not threaded through) — the argv contract is simply "last arg = audio path".
+   Ship a reference wrapper `tools/whisper_reference.sh` (whisper.cpp: `whisper-cli -l en -f <audio>
+   -nt -otxt` → transcript to stdout), documented like `tools/embed_reference.py`. One-shot per clip
+   — **no warm child** (voice notes are human-paced; warm mode is a v2 seam).
 
 ### Config (`Stt` block, mirrors `Embedding`, opt-in)
 
@@ -108,7 +111,7 @@ Stt
   1. `stt_ == nullptr` → text reply `voice input isn't enabled`, done.
   2. `getFile` + download → write to a temp file (`std::filesystem::temp_directory_path` + unique
      name, `.oga`; ffmpeg/whisper read any format). RAII-unlinked on all exits.
-  3. `stt_->transcribe(temp, lang)` → on `ok` with non-empty text: `drive_turn_(chat_id,
+  3. `stt_->transcribe(temp)` → on `ok` with non-empty text: `drive_turn_(chat_id,
      nlohmann::json(text), "USER_MESSAGE")` (identical to `handle_text_`). Runs **on the poll thread** (already off the
      bus) → **no Executor**. The whole block is try/catch-guarded.
 - Auth/DM guards unchanged: allowlist + `chat_id == from_id` apply to voice exactly as to text.
