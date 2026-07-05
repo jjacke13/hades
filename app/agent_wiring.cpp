@@ -64,7 +64,7 @@ std::vector<std::string> split_comma_list(const std::string& v) {
 std::unique_ptr<SttProvider> resolve_stt(const Block& cfg) {
   if (cfg.kv.empty()) return nullptr;
   const std::string provider = cfg.kv.count("provider") ? cfg.kv.at("provider") : "http";
-  const std::string model = cfg.kv.count("model") ? cfg.kv.at("model") : "whisper-1";
+  const std::string model = cfg.kv.count("model") ? cfg.kv.at("model") : "nova-3";
   const std::string language = cfg.kv.count("language") ? cfg.kv.at("language") : "en";
   double timeout_s = 60.0;
   if (cfg.kv.count("timeout_s")) set_pos_double_on_string(cfg.kv.at("timeout_s"), timeout_s);

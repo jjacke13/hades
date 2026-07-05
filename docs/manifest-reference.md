@@ -363,7 +363,7 @@ cannot send audio). No `Module =` line is needed; the block's presence is the sw
 |---|---|---|---|
 | `provider` | `http` (OpenAI-compat) or `command` (local wrapper). | `http` | Unknown value → `MalConfig`. |
 | `endpoint` | **Base** URL of the transcription API (http provider). | — | **Required for `http`** (empty → `MalConfig`). The provider appends `/audio/transcriptions`. |
-| `model` | Transcription model id (http provider). | `whisper-1` | Sent as the multipart `model` field. |
+| `model` | Transcription model id (http provider). | `nova-3` | Sent as the multipart `model` field. `nova-3` is PPQ's Deepgram-backed STT model; use `whisper-1` only against an OpenAI-proper `/audio/transcriptions`. |
 | `api_key_env` | **Name of the env var** holding the STT key (http provider). | `HADES_API_KEY` | Resolved from the env; empty → sent with no bearer. Redacted in `session.log`. |
 | `language` | Spoken-language hint. English-only v1. | `en` | http: sent as the multipart `language` field. command: ignored by hades — bake the language flag into your wrapper script (`-l en`). |
 | `timeout_s` | Per-transcription timeout (HTTP call or subprocess). | `60` | Bad/0/garbage → default. |
@@ -373,6 +373,11 @@ cannot send audio). No `Module =` line is needed; the block's presence is the sw
 - **`endpoint` must be the BASE url, NOT `.../audio/transcriptions`** — the http provider appends
   `/audio/transcriptions` (the same base-url gotcha as embedding's `/embeddings`). PPQ:
   `endpoint = https://api.ppq.ai/v1`.
+- **PPQ `model = nova-3`** (Deepgram Nova-3, PPQ's default STT model) — NOT `whisper-1`. PPQ params:
+  `file`, `model`, `language` (`en` or `multi`), optional `response_format`/`prompt`; returns `{"text":…}`.
+- **Audio format:** Telegram voice notes are **OGG/Opus** (`.oga`); PPQ's documented format list
+  (mp3/mp4/mpeg/mpga/m4a/wav/webm, max 25 MB) omits ogg. Deepgram accepts Ogg-Opus in practice, but if
+  PPQ rejects a clip, transcode the temp file to wav/mp3 before upload (a v2 seam — not built).
 - **Fail-soft everywhere.** A non-2xx status, unparseable response, missing `text`, subprocess timeout,
   non-zero exit, or empty transcript degrades to a "didn't catch that" reply — it never crashes a turn.
 - **`command` provider:** the wrapper must print ONLY the plain transcript to stdout; run with
