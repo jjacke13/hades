@@ -176,10 +176,16 @@ turn_gate.h,telegram/*}`, `src/telegram/*`, `app/{agent_wiring,hades_main}.*`, `
 `tests/test_turn_gate.cpp`. **LIVE-VALIDATED 2026-07-03** (Vaios: real bot, phone→reply working).
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
+**LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
+**PPQ STT model = `nova-3`** (Deepgram Nova-3, PPQ's default), NOT `whisper-1` (that's OpenAI-proper) — the
+`resolve_stt` default is `nova-3` as of `385a55e` (was whisper-1; a real bug — PPQ STT is Deepgram). **Telegram's
+`.oga` (OGG/Opus) uploads fine to PPQ/Deepgram** despite ogg being absent from PPQ's documented format list —
+no transcode needed (v2 fallback if a backend ever 415s: transcode `.oga`→wav). PPQ params: `file`/`model`/`language`
+(`en`|`multi`); we omit `response_format` → default `json` → `{"text":…}`.
 Speech-to-text so a Telegram **voice** message is transcribed to text and drives a normal turn. **Source-
 agnostic provider seam** (Vaios's requirement — a clip transcribes the same from Telegram or a future local
 mic), EXACTLY the embedding-provider precedent: one `SttProvider` interface, two transports —
-**`provider = http`** (OpenAI-compat multipart `POST <base>/audio/transcriptions`, PPQ whisper, DEFAULT, over
+**`provider = http`** (OpenAI-compat multipart `POST <base>/audio/transcriptions`, PPQ nova-3, DEFAULT, over
 an injected `SttHttpClient` seam so tests use no socket) and **`provider = command`** (a local whisper/whisper.cpp
 wrapper — `tools/whisper_reference.sh`, one-shot via `run_subprocess`, NO shell, transcript off stdout, audio path
 appended last). **English-only v1** (`language = en`; http sends it as a form field, command bakes `-l en` into the
