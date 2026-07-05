@@ -119,6 +119,11 @@ target_link_libraries(hades-git-read PRIVATE hades_core)            # run_subpro
 target_sources(hades_tests PRIVATE tests/test_git_read_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE GIT_READ_BIN="$<TARGET_FILE:hades-git-read>")
 add_dependencies(hades_tests hades-git-read)
+add_executable(hades-run-command tools/run_command_main.cpp)
+target_link_libraries(hades-run-command PRIVATE hades_core)         # run_subprocess
+target_sources(hades_tests PRIVATE tests/test_run_command_tool.cpp)
+target_compile_definitions(hades_tests PRIVATE RUN_COMMAND_BIN="$<TARGET_FILE:hades-run-command>")
+add_dependencies(hades_tests hades-run-command)
 target_sources(hades_core PRIVATE src/behaviors/standard_behaviors.cpp)
 target_sources(hades_core PRIVATE src/behaviors/capability_policy.cpp)
 target_sources(hades_tests PRIVATE tests/test_objectives.cpp)
