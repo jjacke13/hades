@@ -11,6 +11,12 @@
         nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
     in
     {
+      # aarch64 static cross build for Raspberry Pi OS Lite (Debian aarch64): musl, fully static
+      # -> runs on the Pi with zero deps. `nix build .#hades-aarch64-static` -> result/ (scp + run).
+      packages.x86_64-linux.hades-aarch64-static =
+        (import nixpkgs { system = "x86_64-linux"; })
+          .pkgsCross.aarch64-multiplatform.pkgsStatic.callPackage ./package.nix { };
+
       devShells = forAllSystems (pkgs: {
         # Plain mkShell (NOT an FHS env): FHS sandboxes the network namespace,
         # which would interfere with tool subprocesses / sockets — use the host

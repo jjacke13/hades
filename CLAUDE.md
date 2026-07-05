@@ -418,6 +418,24 @@ Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,lis
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
 **readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
+### aarch64 static cross-build (shipped 2026-07-05, `feat/aarch64-cross`) — run on a Raspberry Pi / Debian aarch64
+```bash
+nix build .#hades-aarch64-static     # -> result/ (fully static musl aarch64; builds the static dep tree)
+scp -rL result/ pi:hades/            # deploy: one dir, ZERO deps on the Pi
+# on the Pi:  cd hades; export HADES_API_KEY=...; ./bin/hades pi.hades
+```
+`package.nix` = `stdenv.mkDerivation` (cmake/ninja; `doCheck=false`; **builds only the 17 shipped binaries** via
+`ninjaFlags`, skipping `hades_tests`/gtest-static); the flake output
+`packages.x86_64-linux.hades-aarch64-static = pkgsCross.aarch64-multiplatform.pkgsStatic.callPackage ./package.nix`
+builds it. **pkgsStatic = musl, FULLY STATIC** (`ldd` → "not a dynamic executable") → runs on bare Debian aarch64
+with no libc-version-mismatch risk. `$out` IS the deploy dir: `bin/` (17 binaries) + `web/ prompts/ tools/*.{sh,py}`
++ **`pi.hades`** (a clean Pi manifest with **deploy-relative** tool paths `./bin/hades-*`, `webroot=web`,
+`prompts/soul.md`; core modules on, serve/telegram/stt/tts/bridge commented — command STT/TTS wrappers need
+whisper/piper ON the Pi, http providers need nothing). `libcpr-static` builds fine under musl cross (the feared part).
+Smoke here (no Pi): `qemu-aarch64 result/bin/hades` runs (ELF machine `0xb7`). **VERIFIED 2026-07-05** (static +
+aarch64 + qemu-exec + tool `describe`). Live-on-Pi pending Vaios. Non-goals: `.deb`, systemd unit, auto-deploy.
+Pieces: `package.nix`, `flake.nix` (packages output), `manifests/pi.hades`. Spec: `docs/superpowers/specs/2026-07-05-aarch64-static-cross-design.md`.
+
 ## How it's built (process)
 Spec → plan → TDD, on feature branches merged ff to `main`. Specs/plans in `docs/superpowers/`;
 SDD ledger + per-task reports in `.superpowers/sdd/` (gitignored). Every change: build + `ctest` green

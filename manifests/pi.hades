@@ -1,0 +1,95 @@
+# hades — Raspberry Pi deploy manifest.
+# Run from the deploy dir root:  export HADES_API_KEY=...  ;  ./bin/hades pi.hades
+# All paths are relative to the deploy dir (bin/ web/ prompts/ tools/ live here).
+Session
+{
+  provider       = openai_compat
+  endpoint       = https://api.ppq.ai/v1
+  model          = gpt-5.5
+  api_key_env    = HADES_API_KEY
+  price_per_mtok = 5.0
+  system_prompt_file = prompts/soul.md
+  memory_file        = memory/facts.md
+  llm_timeout_s       = 600
+  turn_idle_timeout_s = 900
+  sessions_dir         = .hades/sessions
+  history_budget_chars = 120000
+}
+Module = llm
+Module = tool_runner
+Module = memory
+Module = chat
+Module = arbiter
+Tool = fs         { native = ./bin/hades-fs-read }
+Tool = shell      { native = ./bin/hades-shell }
+Tool = write_file { native = ./bin/hades-write-file }
+Tool = list_dir   { native = ./bin/hades-list-dir }
+Tool = http_fetch { native = ./bin/hades-http-fetch }
+Tool = save_memory { native = ./bin/hades-save-memory }
+Tool = pin_fact    { native = ./bin/hades-pin-fact }
+Tool = use_skill  { native = ./bin/hades-use-skill }
+Tool = save_skill { native = ./bin/hades-save-skill }
+Tool = grep       { native = ./bin/hades-grep }
+Tool = glob       { native = ./bin/hades-glob }
+Tool = edit_file  { native = ./bin/hades-edit-file }
+Tool = git_read   { native = ./bin/hades-git-read }
+Tool = run_command
+{
+  native    = ./bin/hades-run-command
+  timeout_s = 600
+}
+Memory
+{
+  store = .hades/memory.jsonl
+  top_n = 5
+}
+Arbiter { policy = v1 }
+Objective = stay_on_budget   { hard_cap_usd = 1.0 }
+Objective = capability_policy
+{
+  fs_read_allow     = ./workspace ./prompts
+  fs_deny           = /etc /root .env secrets/ .ssh/ .git/credentials id_rsa
+  fs_write_allow    = ./workspace
+  block_private_net = true
+  confirm_unscoped  = true
+}
+Objective = avoid_destructive { veto = true }
+
+# --- Optional: web UI. Uncomment; host 0.0.0.0 to reach it over the LAN. ---
+# Module = serve
+# Serve
+# {
+#   host    = 127.0.0.1
+#   port    = 8080
+#   webroot = web
+# }
+
+# --- Optional: Telegram front-end. Uncomment; export TELEGRAM_BOT_TOKEN; set YOUR numeric id. ---
+# Module = telegram
+# Telegram
+# {
+#   token_env      = TELEGRAM_BOT_TOKEN
+#   allow_users    = 000000000
+#   poll_timeout_s = 50
+# }
+
+# --- Optional: voice STT (PPQ, no local backend needed). Uncomment. ---
+# Stt
+# {
+#   provider    = http
+#   endpoint    = https://api.ppq.ai/v1
+#   model       = nova-3
+#   api_key_env = HADES_API_KEY
+#   language    = en
+# }
+
+# --- Optional: voice TTS (PPQ). Uncomment (needs Telegram + Stt for the voice-in→voice-out loop). ---
+# Tts
+# {
+#   provider    = http
+#   endpoint    = https://api.ppq.ai/v1
+#   model       = deepgram_aura_2
+#   voice       = aura-2-arcas-en
+#   api_key_env = HADES_API_KEY
+#   max_chars   = 2000
+# }
