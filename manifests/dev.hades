@@ -145,6 +145,16 @@ Embedding {
    #share_out     =
    max_hops      = 1
    ask_timeout_s = 180
+   #  description         = "hades1 primary agent"  # card persona one-liner (default = name)
+   #  discover_interval_s = 300                      # peer-card /card re-pull seconds; 0 = boot pull only
  }
  Peer = hades2 { url = http://127.0.0.1:9091 }
+ # A peer with a trust tier — untrusted peers' shared facts are folded as "unverified claim from".
+ # NOTE: MUST be a multi-line block — a packed `Peer = x { url = ..  trust = .. }` line fails LOUD
+ # (the one-kv-per-line manifest guard). Default trust is "trusted".
+ # Peer = watcher
+ # {
+ #   url   = http://10.0.0.9:9090
+ #   trust = untrusted
+ # }
  Tool = ask_agent { native = ./build/hades-ask-agent }
