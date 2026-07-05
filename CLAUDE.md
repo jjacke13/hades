@@ -432,8 +432,11 @@ with no libc-version-mismatch risk. `$out` IS the deploy dir: `bin/` (17 binarie
 + **`pi.hades`** (a clean Pi manifest with **deploy-relative** tool paths `./bin/hades-*`, `webroot=web`,
 `prompts/soul.md`; core modules on, serve/telegram/stt/tts/bridge commented — command STT/TTS wrappers need
 whisper/piper ON the Pi, http providers need nothing). `libcpr-static` builds fine under musl cross (the feared part).
-Smoke here (no Pi): `qemu-aarch64 result/bin/hades` runs (ELF machine `0xb7`). **VERIFIED 2026-07-05** (static +
-aarch64 + qemu-exec + tool `describe`). Live-on-Pi pending Vaios. Non-goals: `.deb`, systemd unit, auto-deploy.
+Smoke here (no Pi): `qemu-aarch64 result/bin/hades` runs (ELF machine `0xb7`). **LIVE-VALIDATED on real Pi0 hardware
+2026-07-05** (Vaios: `scp`'d the 60MB deploy, `uname -m`=aarch64, all 17 binaries present, `hades-fs-read describe`
+→ valid JSON, and **HTTPS `http_fetch https://example.com` → 200 WITHOUT any `SSL_CERT_FILE`** — the Nix static curl
+finds Debian's `/etc/ssl/certs` CA bundle on its own, so the feared CA-cert gotcha is MOOT; TLS works zero-config).
+Only the live LLM turn is left (needs `HADES_API_KEY` on the Pi). Non-goals: `.deb`, systemd unit, auto-deploy.
 Pieces: `package.nix`, `flake.nix` (packages output), `manifests/pi.hades`. Spec: `docs/superpowers/specs/2026-07-05-aarch64-static-cross-design.md`.
 
 ## How it's built (process)
