@@ -40,6 +40,23 @@ std::vector<std::string> split_ws_list(const std::string& v) {
   return out;
 }
 
+// Split a manifest value on commas, trimming each entry (exec_allow command prefixes carry
+// interior spaces, so the whitespace list-splitter cannot be used for them).
+std::vector<std::string> split_comma_list(const std::string& v) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (start <= v.size()) {
+    std::size_t comma = v.find(',', start);
+    std::string item = v.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+    const auto a = item.find_first_not_of(" \t");
+    const auto b = item.find_last_not_of(" \t");
+    if (a != std::string::npos) out.push_back(item.substr(a, b - a + 1));
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return out;
+}
+
 // Map one Objective block onto a concrete Objective. Unknown types are skipped
 // (the manifest parser already collected a warning); we never throw here so a
 // stray block can't take down the whole graph.
@@ -56,6 +73,9 @@ std::unique_ptr<Objective> make_objective(const Block& b) {
     CapabilityScope sc;
     if (b.kv.count("fs_read_allow"))  sc.fs_read_allow  = split_ws_list(b.kv.at("fs_read_allow"));
     if (b.kv.count("fs_deny"))        sc.fs_deny        = split_ws_list(b.kv.at("fs_deny"));
+    if (b.kv.count("fs_write_allow")) sc.fs_write_allow = split_ws_list(b.kv.at("fs_write_allow"));
+    // exec_allow prefixes contain spaces -> COMMA-separated (the one non-whitespace list).
+    if (b.kv.count("exec_allow"))     sc.exec_allow     = split_comma_list(b.kv.at("exec_allow"));
     if (b.kv.count("net_deny_hosts")) sc.net_deny_hosts = split_ws_list(b.kv.at("net_deny_hosts"));
     if (b.kv.count("block_private_net"))
       set_bool_on_string(b.kv.at("block_private_net"), sc.block_private_net);

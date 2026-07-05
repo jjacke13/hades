@@ -264,3 +264,114 @@ TEST(CapabilityPolicy, AskAgentHasPeerAskCapabilityAndIsAllowed) {
   a.args = {{"peer", "front"}, {"message", "hi"}};
   EXPECT_FALSE(p.veto(bb, a).vetoed);
 }
+
+namespace {
+Action tool_call(const std::string& tool, nlohmann::json args) {
+  Action a;
+  a.kind = Action::Kind::ToolCall;
+  a.tool = tool;
+  a.args = std::move(args);
+  return a;
+}
+}  // namespace
+
+TEST(CapabilityPolicy, NewDevToolCapabilityRows) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("grep"), Capability::FsRead);
+  EXPECT_EQ(CapabilityPolicy::capability_of("glob"), Capability::FsRead);
+  EXPECT_EQ(CapabilityPolicy::capability_of("edit_file"), Capability::FsWrite);
+  EXPECT_EQ(CapabilityPolicy::capability_of("git_read"), Capability::GitRead);
+  EXPECT_EQ(CapabilityPolicy::capability_of("run_command"), Capability::ExecScoped);
+}
+
+TEST(CapabilityPolicy, GrepRidesFsReadScopes) {
+  CapabilityScope sc;
+  sc.fs_read_allow = {"./workspace"};
+  sc.fs_deny = {".env"};
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  EXPECT_FALSE(p.veto(bb, tool_call("grep", {{"pattern", "x"}, {"path", "./workspace/src"}})).vetoed);
+  auto denied = p.veto(bb, tool_call("grep", {{"pattern", "x"}, {"path", "./.env"}}));
+  EXPECT_TRUE(denied.vetoed);
+  EXPECT_FALSE(denied.needs_confirm);              // hard veto
+  auto outside = p.veto(bb, tool_call("glob", {{"pattern", "*"}, {"path", "/etc"}}));
+  EXPECT_TRUE(outside.vetoed);                     // confirm_unscoped default true
+  EXPECT_TRUE(outside.needs_confirm);
+}
+
+TEST(CapabilityPolicy, FsWriteAllowScope) {
+  CapabilityScope sc;
+  sc.fs_write_allow = {"./workspace"};
+  sc.fs_deny = {".env"};
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  // inside scope -> allow, for BOTH write tools
+  EXPECT_FALSE(p.veto(bb, tool_call("edit_file",
+      {{"path", "./workspace/a.cpp"}, {"old_string", "x"}, {"new_string", "y"}})).vetoed);
+  EXPECT_FALSE(p.veto(bb, tool_call("write_file",
+      {{"path", "./workspace/b.txt"}, {"content", "c"}})).vetoed);
+  // boundary-aware: sibling dir does NOT match
+  auto sib = p.veto(bb, tool_call("edit_file",
+      {{"path", "./workspace-backup/a"}, {"old_string", "x"}, {"new_string", "y"}}));
+  EXPECT_TRUE(sib.vetoed);
+  EXPECT_TRUE(sib.needs_confirm);
+  // .. escape -> confirm even "inside"
+  auto esc = p.veto(bb, tool_call("edit_file",
+      {{"path", "./workspace/../secrets"}, {"old_string", "x"}, {"new_string", "y"}}));
+  EXPECT_TRUE(esc.vetoed);
+  EXPECT_TRUE(esc.needs_confirm);
+  // deny still wins over allow
+  sc.fs_write_allow = {"./"};
+  CapabilityPolicy p2(sc);
+  auto den = p2.veto(bb, tool_call("write_file", {{"path", "./.env"}, {"content", "x"}}));
+  EXPECT_TRUE(den.vetoed);
+  EXPECT_FALSE(den.needs_confirm);
+}
+
+TEST(CapabilityPolicy, FsWriteEmptyScopeKeepsTodayBehavior) {
+  CapabilityScope sc;                              // no fs_write_allow
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  auto v = p.veto(bb, tool_call("write_file", {{"path", "./anything"}, {"content", "c"}}));
+  EXPECT_TRUE(v.vetoed);
+  EXPECT_TRUE(v.needs_confirm);                    // confirm, exactly as before
+}
+
+TEST(CapabilityPolicy, GitReadAlwaysAllowed) {
+  CapabilityScope sc;
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  EXPECT_FALSE(p.veto(bb, tool_call("git_read", {{"op", "status"}})).vetoed);
+}
+
+TEST(CapabilityPolicy, ExecScopedPrefixAndMetachars) {
+  CapabilityScope sc;
+  sc.exec_allow = {"ctest --test-dir build", "cmake --build build", "ctest"};
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  // exact prefix at token boundary -> allow
+  EXPECT_FALSE(p.veto(bb, tool_call("run_command", {{"command", "ctest --test-dir build -R Foo"}})).vetoed);
+  EXPECT_FALSE(p.veto(bb, tool_call("run_command", {{"command", "ctest"}})).vetoed);
+  // token boundary: prefix+garbage is NOT a match
+  auto evil = p.veto(bb, tool_call("run_command", {{"command", "ctest-evil"}}));
+  EXPECT_TRUE(evil.vetoed);
+  EXPECT_TRUE(evil.needs_confirm);
+  // metachars -> confirm even when the prefix matches
+  for (const char* c : {"ctest; rm -rf /", "ctest | tee x", "ctest $(evil)", "ctest `evil`",
+                        "ctest > /dev/null", "ctest & sleep 9"}) {
+    auto v = p.veto(bb, tool_call("run_command", {{"command", c}}));
+    EXPECT_TRUE(v.vetoed) << c;
+    EXPECT_TRUE(v.needs_confirm) << c;
+  }
+  // unlisted command -> confirm
+  auto un = p.veto(bb, tool_call("run_command", {{"command", "make install"}}));
+  EXPECT_TRUE(un.vetoed);
+  EXPECT_TRUE(un.needs_confirm);
+  // empty scope -> everything confirms
+  CapabilityPolicy p0{CapabilityScope{}};
+  auto e = p0.veto(bb, tool_call("run_command", {{"command", "ctest"}}));
+  EXPECT_TRUE(e.vetoed);
+  EXPECT_TRUE(e.needs_confirm);
+  // non-string command -> fail-closed confirm, no throw
+  auto ns = p.veto(bb, tool_call("run_command", {{"command", 42}}));
+  EXPECT_TRUE(ns.vetoed);
+}

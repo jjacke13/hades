@@ -133,6 +133,23 @@ bool looks_numeric_obfuscated(const std::string& h) {
   return false;
 }
 
+// run_command never invokes a shell (whitespace-split argv + execvp), so these characters have
+// no meaning to IT — but their presence signals shell-idiom intent the operator's prefix list
+// cannot have vetted; fail closed to confirm.
+bool has_shell_metachar(const std::string& c) {
+  return c.find_first_of(";|&$`()<>\n") != std::string::npos;
+}
+// Token-boundary prefix match: "ctest" matches "ctest" and "ctest --x", never "ctest-evil".
+bool exec_allow_match(const std::string& cmd, const std::vector<std::string>& prefixes) {
+  for (const auto& p : prefixes) {
+    if (p.empty()) continue;
+    if (cmd == p) return true;
+    if (cmd.size() > p.size() && cmd.compare(0, p.size(), p) == 0 && cmd[p.size()] == ' ')
+      return true;
+  }
+  return false;
+}
+
 VetoResult allow()                          { return {}; }
 VetoResult deny(const std::string& why)     { return {true, why, false}; }
 VetoResult confirm(const std::string& why)  { return {true, why, true}; }
@@ -142,8 +159,9 @@ VetoResult confirm(const std::string& why)  { return {true, why, true}; }
 CapabilityPolicy::CapabilityPolicy(CapabilityScope scope) : scope_(std::move(scope)) {
   // Canonicalize the path scopes once so prefix matching is consistent with the canon'd
   // request path (e.g. allow "./" and deny ".env" -> "./" / "./.env"). Hosts are untouched.
-  for (auto& p : scope_.fs_read_allow) p = canon_path(p);
-  for (auto& p : scope_.fs_deny)       p = canon_path(p);
+  for (auto& p : scope_.fs_read_allow)  p = canon_path(p);
+  for (auto& p : scope_.fs_write_allow) p = canon_path(p);  // exec_allow are commands, NOT paths
+  for (auto& p : scope_.fs_deny)        p = canon_path(p);
 }
 
 Capability CapabilityPolicy::capability_of(const std::string& tool) {
@@ -155,6 +173,10 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "use_skill")                               return Capability::SkillRead;
   if (tool == "save_skill")                              return Capability::SkillWrite;
   if (tool == "ask_agent")                               return Capability::PeerAsk;
+  if (tool == "grep" || tool == "glob")                  return Capability::FsRead;
+  if (tool == "edit_file")                               return Capability::FsWrite;
+  if (tool == "git_read")                                return Capability::GitRead;
+  if (tool == "run_command")                             return Capability::ExecScoped;
   return Capability::Unknown;
 }
 
@@ -213,7 +235,11 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
       std::string path = canon_path(str_arg(a.args, "path"));
       if (any_prefix(path, scope_.fs_deny))
         return deny("write to a denied path: " + path);
-      return confirm("fs_write (" + a.tool + ") overwrites a file: " + path);
+      if (escapes_base(path))                           // '..' may escape the allow root
+        return confirm("fs_write escapes its base via '..': " + path);
+      if (allow_match(path, scope_.fs_write_allow))     // boundary-aware (no sibling over-match)
+        return allow();
+      return confirm("fs_write (" + a.tool + ") modifies a file outside fs_write_allow: " + path);
     }
     case Capability::FsRead: {
       std::string path = canon_path(str_arg(a.args, "path"));
@@ -253,6 +279,20 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
       // whatever the request causes — those are the real protection. Distinct capability so a
       // future policy can confirm-gate outbound asks with zero code (SkillWrite precedent).
       return allow();
+    case Capability::GitRead:
+      // Read-only by construction: the tool runs `git` with a FIXED argv per op (status/diff/
+      // log), never a shell, rejects leading-dash paths and passes `--` before pathspecs.
+      return allow();
+    case Capability::ExecScoped: {
+      const std::string cmd = str_arg(a.args, "command");
+      if (cmd.empty())
+        return confirm("run_command with a missing/non-string command");
+      if (has_shell_metachar(cmd))
+        return confirm("run_command with shell metacharacters: " + cmd);
+      if (exec_allow_match(cmd, scope_.exec_allow))
+        return allow();
+      return confirm("run_command outside exec_allow: " + cmd);
+    }
     case Capability::Unknown:
     default:
       return confirm("unknown tool '" + a.tool + "': capability undeclared");

@@ -14,7 +14,7 @@ namespace hades {
 
 // The kinds of authority a tool action can exercise. Authoritative source is the built-in
 // capability_of() table; an unknown tool maps to Unknown (-> confirm-gated).
-enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, SkillRead, SkillWrite, PeerAsk, Unknown };
+enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, SkillRead, SkillWrite, PeerAsk, GitRead, ExecScoped, Unknown };
 
 // Operator-supplied bounds (from the `Objective = capability_policy { … }` manifest block).
 // Path lists are lexically-normalized prefixes (leading "./" and "." components collapsed before
@@ -23,6 +23,15 @@ struct CapabilityScope {
   std::vector<std::string> fs_read_allow;     // prefixes fs_read/list_dir may read silently
   std::vector<std::string> fs_deny;           // prefixes hard-vetoed for BOTH fs_read AND fs_write
                                               // (key file, /etc, secrets) — was fs_read_deny
+  std::vector<std::string> fs_write_allow;    // prefixes write_file/edit_file may write WITHOUT
+                                              // confirm (fs_deny still hard-vetoes; empty ->
+                                              // every write confirms, the pre-scope behavior)
+  std::vector<std::string> exec_allow;        // run_command COMMAND PREFIXES allowed without
+                                              // confirm. COMMA-separated in the manifest
+                                              // (prefixes contain spaces). Matched at a token
+                                              // boundary; commands with shell metacharacters
+                                              // always confirm (run_command never uses a shell,
+                                              // and prefix matching is only sound that way).
   std::vector<std::string> net_deny_hosts;    // extra explicit host substrings hard-vetoed
   bool block_private_net = true;              // hard-veto loopback + RFC1918 + link-local
   bool confirm_unscoped  = true;              // out-of-allow-scope read -> confirm (else hard-veto)
