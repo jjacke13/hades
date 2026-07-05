@@ -476,23 +476,30 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 6. **Freshness:** `/new` does NOT re-point `live_session_path_` (documented gotcha) — a proper session-lifecycle rethink.
 (GET /history — DONE `e916084`. Memory embeddings — DONE `20ba94c`. Memory-injection framing — DONE `678a248`.)
 
-## NEXT (decided 2026-07-05, Vaios): two new front-end apps — WhatsApp + Voice (brainstorm-first)
-Both are **Modules** on the proven front-end pattern (Telegram precedent): a Module that posts `USER_MESSAGE` →
-`run_until(reply|confirm)` → replies, serialized by the shared **TurnGate**, `my_turn_` turn-owner guard, per-app
-secret via env var (redacted), confirm-gating over the app, teardown via explicit start (not `on_attach`).
-- **WhatsApp** — the key design fork to settle in brainstorm: transport. WhatsApp Cloud API (official) is
-  **webhook-push, NOT long-poll** like Telegram — needs an inbound public HTTPS endpoint (reuse the httplib
-  listener pattern from serve/bridge), a verify-token handshake, and message-status callbacks; vs an unofficial
-  library (whatsapp-web.js — Node, QR-login, ToS-risky) — decide official-Cloud-API vs unofficial. Allowlist +
-  DM-only carry over from Telegram. So WhatsApp is Telegram-shaped on the AGENT side but webhook-shaped on the
-  TRANSPORT side (the httplib inbound seam already exists twice — serve + bridge).
-- **Voice** — bigger departure, two sub-questions for brainstorm: (1) **shape** — a new LOCAL front-end
-  (mic→STT→USER_MESSAGE→reply→TTS→speaker) vs voice-notes OVER a chat app (Telegram/WhatsApp voice message →
-  STT → turn → TTS reply); (2) **providers** — STT/TTS behind a seam like the LLM/embedding providers.
-  **Vaios has his OWN ASR: `qwen3_asr_rs` (Rust, ~/Desktop/repos/qwen3_asr_rs)** — a natural STT backend to wire
-  via the subprocess-provider pattern (embedding-provider precedent). TTS provider TBD (piper/local vs API).
-  Likely lands as a provider seam + a front-end Module, keeping the bus single-threaded (STT/TTS offloaded to the
-  Executor like the LLM call).
+## NEXT (decided 2026-07-05, Vaios): Voice — STT + TTS (brainstorm-first)
+**WhatsApp DROPPED** (2026-07-05): Cloud API is webhook-push → mandatory inbound public HTTPS endpoint (TLS
+certs / tunnel) no matter what; unofficial whatsapp-web.js is Node + QR + ToS-risky. Vaios is P2P/self-host
+(`hyperdht-cpp`) — TLS/tunnel setup is a non-starter. (Future self-host-native multi-agent path = a
+**hyperdht-based Bridge transport** behind the bridge v2 "transport seam" — agent↔agent over DHT, no public IP,
+no certs. Parked.)
+**Voice = two independent parts. STT FIRST** (this spec), TTS is a separate later spec.
+- **STT — DESIGN APPROVED 2026-07-05** (spec `docs/superpowers/specs/2026-07-05-stt-voice-input-design.md`,
+  branch `feat/voice-stt` off `main` @ `5fe5f3c`). **Source-agnostic provider seam** (Vaios's requirement — a
+  clip transcribes the same from Telegram or a future local mic), EXACTLY the embedding-provider precedent: one
+  `SttProvider` interface, two transports — `provider = http` (OpenAI-compat `POST <base>/audio/transcriptions`,
+  PPQ whisper, DEFAULT — same base-url gotcha as embedding's `/embeddings`) + `provider = command` (local
+  **whisper**/whisper.cpp via a reference wrapper `tools/whisper_reference.sh`, one-shot, no warm child).
+  **`qwen3_asr_rs` DROPPED** — forked experiment, NOT Vaios's. **English-only v1** (`language = en`; auto-detect
+  deferred). `Stt { provider endpoint model api_key_env language timeout_s command }` block, opt-in (no block →
+  `Agent.stt==nullptr`, Telegram stays text-only). Seam
+  injected into USER-FACING front-ends only — **Bridge excluded** (agent↔agent is text). TelegramModule (text-only
+  today, skips `voice`) gains `SttProvider* stt_` + `handle_voice_`: `getFile`+download `.oga`→temp→transcribe→
+  `USER_MESSAGE`, on the poll thread (off-bus, no Executor), fail-soft (bad transcribe → text reply, no turn).
+  `stt` declared before `telegram` in Agent (teardown: poll thread may be mid-transcribe). NEXT: writing-plans → SDD.
+- **TTS** (later spec) — agent reply text → speech → Telegram `sendVoice`. Provider TBD: `qwen3_tts_rs` or
+  **piper** (local) vs API. Behind a seam like STT.
+Future self-host-native multi-agent: a **hyperdht-based Bridge transport** (bridge v2 "transport seam", agent↔agent
+over DHT, no public IP/certs) — the P2P path, parked.
 
 ## Other open work
 Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
