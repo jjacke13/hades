@@ -21,6 +21,7 @@
 #include "hades/config.h"
 #include "hades/launcher.h"                       // MalConfig
 #include "hades/stt/provider.h"                   // SttProvider / SttResult
+#include "hades/tts/provider.h"                   // TtsProvider / TtsResult
 #include "hades/telegram/cpr_telegram_api.h"
 #include "hades/telegram/parse.h"                 // split_message
 #include "hades/timeouts.h"                       // kDefaultTurnIdleTimeoutS
@@ -102,7 +103,8 @@ void TelegramModule::drive_turn_(long long chat_id, const nlohmann::json& post_v
   my_turn_ = true;
   // RAII reset declared AFTER the lock: runs BEFORE the mutex releases on EVERY exit path —
   // a handler throw propagating out of run_until must not leave my_turn_ true with the gate free.
-  struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
+  struct Reset { bool& mine; bool& speak; ~Reset() { mine = false; speak = false; } }
+      reset{my_turn_, speak_reply_};
   got_reply_ = false;
   last_reply_.clear();
   pending_confirm_ = nullptr;
@@ -118,7 +120,22 @@ void TelegramModule::drive_turn_(long long chat_id, const nlohmann::json& post_v
     return;
   }
   if (got_reply_) {
-    send_reply_(chat_id, last_reply_);
+    send_reply_(chat_id, last_reply_);   // text is the anchor — ALWAYS sent first
+    // Mirror modality: only a voice-origin turn speaks, only when a provider is set and the reply
+    // is not too long. Best-effort — a synth/send failure logs and leaves the text as the reply.
+    if (speak_reply_ && tts_ && last_reply_.size() <= tts_max_chars_) {
+      try {
+        TtsResult tr = tts_->synthesize(last_reply_);
+        if (tr.ok && !tr.audio.empty()) {
+          if (!api_->send_voice(chat_id, tr.audio))
+            std::cerr << "hades: telegram sendVoice failed (text reply already delivered)\n";
+        } else {
+          std::cerr << "hades: telegram TTS skipped (" << tr.error << ")\n";
+        }
+      } catch (const std::exception& e) {
+        std::cerr << "hades: telegram TTS error: " << e.what() << " (text reply delivered)\n";
+      }
+    }
     return;
   }
   // Confirm-gated: send the inline keyboard and remember what we are waiting for. The
@@ -181,6 +198,7 @@ void TelegramModule::handle_voice_(const TgUpdate& u) {
     }
     const std::string text = trim_ws(r.text);
     if (text.empty()) { send_reply_(u.chat_id, "didn't catch that"); return; }
+    speak_reply_ = true;   // mirror modality: this turn came from voice -> speak the reply
     drive_turn_(u.chat_id, nlohmann::json(text), "USER_MESSAGE");
   } catch (const std::exception& e) {
     send_reply_(u.chat_id, std::string("voice error: ") + e.what());

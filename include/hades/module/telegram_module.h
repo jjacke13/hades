@@ -13,6 +13,7 @@
 #pragma once
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -25,6 +26,7 @@
 namespace hades {
 class Blackboard;
 class SttProvider;
+class TtsProvider;
 
 class TelegramModule : public Module {
  public:
@@ -42,6 +44,10 @@ class TelegramModule : public Module {
   // Optional STT provider (source-agnostic seam). Null -> voice updates get an "isn't enabled"
   // nudge. Injected by wire_agent from the Stt block; owned by the Agent (outlives the poll thread).
   void set_stt(SttProvider* s) { stt_ = s; }
+  // Optional TTS provider (voice-out). Null -> replies stay text-only. Injected by wire_agent from
+  // the Tts block; owned by the Agent (outlives the poll thread). Speaks only on voice-origin turns.
+  void set_tts(TtsProvider* t) { tts_ = t; }
+  void set_tts_max_chars(std::size_t n) { tts_max_chars_ = n; }
 
   void start_polling();   // spawn the poll loop (called by hades_main when rostered)
   void wait();            // join the poll thread (telegram-only roster blocks here; Ctrl-C exits)
@@ -62,6 +68,9 @@ class TelegramModule : public Module {
 
   std::unique_ptr<TelegramApi> api_;
   SttProvider* stt_ = nullptr;   // non-owning; Agent owns it, declared before telegram (teardown)
+  TtsProvider* tts_ = nullptr;             // non-owning; Agent owns it, declared before telegram
+  std::size_t tts_max_chars_ = 4000;       // replies longer than this skip TTS
+  bool speak_reply_ = false;               // set only in handle_voice_; reset each turn (mirror modality)
   Blackboard* bb_ = nullptr;
   TurnGate* gate_ = nullptr;
   TurnGate local_gate_;

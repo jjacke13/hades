@@ -8,6 +8,7 @@
 #include "hades/launcher.h"          // MalConfig
 #include "hades/module/telegram_module.h"
 #include "hades/stt/provider.h"
+#include "hades/tts/provider.h"
 using namespace hades;
 
 namespace {
@@ -53,6 +54,12 @@ struct FakeStt : SttProvider {
     last_path = audio_path;
     return ret;
   }
+};
+
+struct FakeTts : TtsProvider {
+  TtsResult ret;
+  std::string last_text;
+  TtsResult synthesize(const std::string& text) override { last_text = text; return ret; }
 };
 
 TgUpdate voice(long long uid, long long from, long long chat, const std::string& fid) {
@@ -296,4 +303,88 @@ TEST(TelegramModule, VoiceDownloadFailureReplies) {
   r.mod->poll_once();
   ASSERT_EQ(r.api->sent.size(), 1u);
   EXPECT_NE(r.api->sent[0].second.find("couldn't"), std::string::npos);
+}
+
+TEST(TelegramModule, VoiceTurnSpeaksReplyAfterText) {
+  Rig r;                                   // echo agent: reply = "echo:<transcript>"
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "hello", "", ""};
+  r.mod->set_stt(stt.get());
+  auto tts = std::make_unique<FakeTts>();
+  tts->ret = {true, "OGGDATA", ""};
+  FakeTts* tp = tts.get();
+  r.mod->set_tts(tp);
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_EQ(r.api->sent[0].second, "echo:hello");           // text sent (anchor)
+  ASSERT_EQ(r.api->voices.size(), 1u);                       // AND spoken
+  EXPECT_EQ(r.api->voices[0].second, "OGGDATA");
+  EXPECT_EQ(tp->last_text, "echo:hello");                    // synthesized the reply text
+}
+
+TEST(TelegramModule, TypedTurnDoesNotSpeak) {
+  Rig r;
+  auto tts = std::make_unique<FakeTts>();
+  tts->ret = {true, "OGGDATA", ""};
+  FakeTts* tp = tts.get();
+  r.mod->set_tts(tp);
+  r.api->batches.push_back({msg(1, 42, 42, "hi")});           // typed
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 1u);                          // text reply
+  EXPECT_TRUE(r.api->voices.empty());                         // NO voice
+  EXPECT_TRUE(tp->last_text.empty());                         // synthesize never called
+}
+
+TEST(TelegramModule, TtsFailureLeavesTextOnly) {
+  Rig r;
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "hello", "", ""};
+  r.mod->set_stt(stt.get());
+  auto tts = std::make_unique<FakeTts>();
+  tts->ret = {false, "", "backend down"};
+  r.mod->set_tts(tts.get());
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 1u);                          // text still sent
+  EXPECT_TRUE(r.api->voices.empty());                         // no voice on synth failure
+}
+
+TEST(TelegramModule, LongReplySkipsTts) {
+  Rig r(false);   // no echo; we post our own long reply
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "hello", "", ""};
+  r.mod->set_stt(stt.get());
+  auto tts = std::make_unique<FakeTts>();
+  tts->ret = {true, "OGGDATA", ""};
+  FakeTts* tp = tts.get();
+  r.mod->set_tts(tp);
+  r.mod->set_tts_max_chars(5);                                // tiny cap
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) {
+    r.bb.post("ASSISTANT_MESSAGE", "this reply is far too long", "t");
+  });
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 1u);                          // text sent
+  EXPECT_TRUE(r.api->voices.empty());                         // over cap -> no TTS
+  EXPECT_TRUE(tp->last_text.empty());                         // synthesize not called
+}
+
+TEST(TelegramModule, VoiceTurnWithNoTtsProviderStaysText) {
+  Rig r;
+  auto stt = std::make_unique<FakeStt>();
+  stt->ret = {true, "hello", "", ""};
+  r.mod->set_stt(stt.get());                                  // STT set, TTS not
+  r.api->file_path_ret = "voice/f.oga";
+  r.api->download_ret = "bytes";
+  r.api->batches.push_back({voice(1, 42, 42, "AwAC")});
+  r.mod->poll_once();
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_TRUE(r.api->voices.empty());                         // tts_ null -> text only
 }
