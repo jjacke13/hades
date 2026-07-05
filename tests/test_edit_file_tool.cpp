@@ -1,5 +1,6 @@
 // tests/test_edit_file_tool.cpp — drive hades-edit-file over the native protocol
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +58,16 @@ TEST(EditFileTool, ReplaceAll) {
   ASSERT_TRUE(j.value("ok", false));
   EXPECT_EQ(j["result"].value("replacements", 0), 3);
   EXPECT_EQ(slurp(p), "y y y\n");
+}
+
+TEST(EditFileTool, PreservesFileMode) {
+  const std::string p = mk_file("mode", "alpha beta gamma\n");
+  ASSERT_EQ(::chmod(p.c_str(), 0750), 0);
+  auto j = edit({{"path", p}, {"old_string", "beta"}, {"new_string", "BETA"}});
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  struct stat st{};
+  ASSERT_EQ(::stat(p.c_str(), &st), 0);
+  EXPECT_EQ(st.st_mode & 07777, 0750u);
 }
 
 TEST(EditFileTool, FailClosedPaths) {

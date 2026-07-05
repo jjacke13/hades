@@ -6,6 +6,9 @@
 // alternative to whole-file write_file: old_string must match EXACTLY ONCE unless replace_all.
 // Capability-gated upstream as FsWrite (fs_write_allow scope / confirm). Fail-closed: any
 // malformed input, missing file, zero or ambiguous match -> ok:false, file untouched.
+// If path is a symlink, the rename REPLACES THE SYMLINK with a regular file (target untouched)
+// — lexical-path v1 semantics, matching the capability model's documented symlink gap.
+#include <sys/stat.h>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -96,6 +99,10 @@ int main() {
           std::remove(tmp.c_str());
           out = {{"ok", false}, {"result", {{"error", "cannot write: " + path}}}};
         } else {
+          // Preserve the original file's mode: the tmp was created with the umask default, and
+          // rename would otherwise silently drop exec bits / tighten-or-loosen permissions.
+          struct stat st{};
+          if (::stat(path.c_str(), &st) == 0) ::chmod(tmp.c_str(), st.st_mode);
           std::filesystem::rename(tmp, path, ec);
           if (ec) {
             std::remove(tmp.c_str());
