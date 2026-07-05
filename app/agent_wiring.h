@@ -22,6 +22,7 @@
 #include "hades/module/skills_module.h"
 #include "hades/module/telegram_module.h"
 #include "hades/module/bridge_module.h"
+#include "hades/stt/provider.h"
 #include "hades/turn_gate.h"
 #include "hades/arbiter.h"
 namespace hades {
@@ -67,6 +68,10 @@ struct Agent {
   // listener while the Executor and every module an in-flight /ask turn touches are still
   // alive. Do NOT reorder (see the executor/telegram comments).
   std::unique_ptr<BridgeModule> bridge;
+  // Optional STT provider (source-agnostic voice-input seam), injected into user-facing front-ends
+  // (Telegram v1). Declared BEFORE telegram so it is destroyed AFTER it — the telegram dtor joins
+  // the poll thread, which may be mid-transcribe() touching this. Do NOT move below telegram.
+  std::unique_ptr<SttProvider> stt;
   // Telegram front-end. LAST member => destroyed FIRST: its dtor stop+joins the poll thread,
   // and an in-flight telegram-driven turn must finish (or hit the idle ceiling) while the
   // executor and every module it touches are still alive. Do NOT move below-declared members
