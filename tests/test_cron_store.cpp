@@ -75,3 +75,17 @@ TEST(CronStore, MakeTaskIdFormat) {
   EXPECT_EQ(make_task_id(1751900000, 0xa3f9), "t1751900000-a3f9");
   EXPECT_EQ(make_task_id(5, 0x000f), "t5-000f");
 }
+
+TEST(CronStore, FoldSkipsTypeCorruptLineWithoutThrowing) {
+  std::string s = add_record({"a1", "one", "cron", "*/5 * * * *", 0, "p1", true, 100}) + "\n" +
+                  std::string(R"({"op":"add","id":"bad","name":123,"kind":"cron"})") + "\n";
+  std::vector<CronTask> v;
+  EXPECT_NO_THROW(v = fold_cron_store(s));
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_EQ(v[0].id, "a1");
+}
+
+TEST(CronStore, ParseAtIsoOutOfRangeRejected) {
+  EXPECT_FALSE(parse_at("2030-13-40T25:99", 0).has_value());
+  EXPECT_TRUE(parse_at("2030-06-15T09:30", 0).has_value());
+}

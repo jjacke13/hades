@@ -31,11 +31,15 @@ std::vector<CronTask> fold_cron_store(const std::string& jsonl_text) {
     if (line.empty()) continue;
     auto j = nlohmann::json::parse(line, nullptr, false);
     if (j.is_discarded() || !j.is_object()) continue;      // tolerant: skip a torn/partial line
-    const std::string op = j.value("op", "");
-    const std::string id = j.value("id", "");
-    if (id.empty()) continue;
-    if (op == "add") active[id] = task_from_json(j);
-    else if (op == "cancel" || op == "done") active.erase(id);
+    try {
+      const std::string op = j.value("op", "");
+      const std::string id = j.value("id", "");
+      if (id.empty()) continue;
+      if (op == "add") active[id] = task_from_json(j);
+      else if (op == "cancel" || op == "done") active.erase(id);
+    } catch (const nlohmann::json::exception&) {
+      continue;   // tolerant: a wrong-typed field on an otherwise well-formed line skips the line
+    }
   }
   std::vector<CronTask> out;
   out.reserve(active.size());
@@ -69,6 +73,8 @@ std::string compact_cron_store(const std::string& jsonl_text) {
 std::optional<long long> parse_at(const std::string& at, long long now_epoch) {
   int y, mo, d, h, mi, s = 0;
   if (std::sscanf(at.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &s) >= 5) {
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h < 0 || h >= 24 || mi < 0 || mi >= 60 || s < 0 || s >= 60)
+      return std::nullopt;   // reject before mktime silently normalizes an out-of-range field
     std::tm tm{};
     tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
     tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s; tm.tm_isdst = -1;
