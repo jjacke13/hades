@@ -1,9 +1,14 @@
 // tests/test_heartbeat_module.cpp — HeartbeatModule: tick() fires gated self-turns, notify, guards
 #include <gtest/gtest.h>
+#include <unistd.h>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include "hades/blackboard.h"
+#include "hades/heartbeat/cron_store.h"
 #include "hades/module/heartbeat_module.h"
 #include "hades/turn_gate.h"
 using namespace hades;
@@ -181,4 +186,85 @@ TEST(Heartbeat, DeniedConfirmNoteInNotifiedReply) {
   mod.tick(at(0, 0));
   EXPECT_NE(got.find("auto-denied"), std::string::npos);
   EXPECT_NE(got.find("did the safe part"), std::string::npos);   // reply preserved
+}
+
+namespace {
+std::string cron_store_path(const char* tag) {
+  const std::string p = (std::filesystem::path(::testing::TempDir()) /
+                         ("hbstore_" + std::string(tag) + "_" + std::to_string(::getpid()) + ".jsonl")).string();
+  std::filesystem::remove(p);
+  return p;
+}
+void write_store(const std::string& path, const std::string& contents) {
+  std::ofstream f(path, std::ios::trunc); f << contents;
+}
+long long local_epoch(const std::tm& t) { std::tm c = t; return static_cast<long long>(std::mktime(&c)); }
+}  // namespace
+
+TEST(Heartbeat, DynamicCronEntryFires) {
+  Rig r;
+  const std::string store = cron_store_path("dyncron");
+  write_store(store, add_record({"d1", "watch", "cron", "*/10 * * * *", 0, "check X", false, 1}) + "\n");
+  r.mod.set_cron_store(store);
+  int turns = 0;
+  r.bb.subscribe("TURN_ORIGIN", [&](const Entry& e) {
+    if (e.value.is_string() && e.value.get<std::string>() == "heartbeat:watch") ++turns;
+  });
+  r.mod.tick(at(10, 4));   // */10 matches -> reloaded dynamic entry fires
+  EXPECT_EQ(turns, 1);
+}
+
+TEST(Heartbeat, OneShotFiresOnceThenDoneRecorded) {
+  Rig r;
+  const std::string store = cron_store_path("once");
+  std::tm now = at(30, 9);
+  long long past = local_epoch(now) - 60;   // due one minute ago
+  write_store(store, add_record({"o1", "remind", "once", "", past, "ping", false, 5}) + "\n");
+  r.mod.set_cron_store(store);
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.tick(now);                 // now_epoch >= fire_epoch -> fires
+  EXPECT_EQ(turns, 1);
+  // a done record was appended -> the task folds away
+  std::ifstream f(store); std::stringstream s; s << f.rdbuf();
+  EXPECT_TRUE(fold_cron_store(s.str()).empty());
+  r.mod.tick(at(31, 9));           // next minute, reloads -> gone -> no re-fire
+  EXPECT_EQ(turns, 1);
+}
+
+TEST(Heartbeat, DynamicDedupSameMinuteAcrossReload) {
+  Rig r;
+  const std::string store = cron_store_path("dedup");
+  write_store(store, add_record({"d1", "w", "cron", "* * * * *", 0, "c", false, 1}) + "\n");
+  r.mod.set_cron_store(store);
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.tick(at(0, 0));
+  r.mod.tick(at(0, 0));   // same minute, reloads again -> last_fired_by_id carries -> no double fire
+  EXPECT_EQ(turns, 1);
+}
+
+TEST(Heartbeat, StaticAndDynamicCoexist) {
+  Rig r;
+  const std::string store = cron_store_path("coexist");
+  write_store(store, add_record({"d1", "dyn", "cron", "* * * * *", 0, "c", false, 1}) + "\n");
+  r.mod.set_cron_store(store);
+  r.mod.add_entry({"stat", "* * * * *", "s", false, -1});   // static entry (5-field init still valid)
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.tick(at(0, 0));
+  EXPECT_EQ(turns, 2);   // both fired
+}
+
+TEST(Heartbeat, OverdueOneShotCatchUpFires) {
+  Rig r;
+  const std::string store = cron_store_path("overdue");
+  std::tm now = at(0, 12);
+  long long long_ago = local_epoch(now) - 3 * 24 * 3600;   // 3 days overdue
+  write_store(store, add_record({"o1", "late", "once", "", long_ago, "still do it", false, 1}) + "\n");
+  r.mod.set_cron_store(store);
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.tick(now);
+  EXPECT_EQ(turns, 1);   // catch-up fires, not dropped
 }

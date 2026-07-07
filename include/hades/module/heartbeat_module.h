@@ -10,6 +10,7 @@
 #pragma once
 #include <condition_variable>
 #include <ctime>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -21,10 +22,13 @@ class Blackboard;
 
 struct HeartbeatEntry {
   std::string name;
-  std::string schedule;              // 5-field cron
+  std::string schedule;              // 5-field cron (cron kind)
   std::string prompt;                // resolved (inline or from prompt_file) at wiring
   bool notify = false;
   long long last_fired_minute = -1;  // per-entry minute-stamp dedup
+  std::string id;                    // dynamic tasks only ("" for static manifest entries)
+  bool one_shot = false;             // fire once at fire_epoch, then done
+  long long fire_epoch = 0;          // local epoch seconds (one_shot)
 };
 
 class HeartbeatModule : public Module {
@@ -34,6 +38,7 @@ class HeartbeatModule : public Module {
   void add_entry(HeartbeatEntry e) { entries_.push_back(std::move(e)); }
   void set_turn_gate(TurnGate* g) { gate_ = g; }
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
+  void set_cron_store(std::string path) { cron_store_ = std::move(path); }
 
   void tick(const std::tm& now);     // TEST SEAM: fire due entries for this wall-clock minute
   void start();                       // spawn the timer thread (hades_main; idempotent)
@@ -42,10 +47,17 @@ class HeartbeatModule : public Module {
 
  private:
   void fire_(HeartbeatEntry& e);
+  void maybe_fire_(HeartbeatEntry& e, const std::tm& now, long long minute, long long now_epoch,
+                   bool dynamic);
+  void reload_dynamic_();
+  void load_and_compact_();
   std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
   double effective_timeout_() const;
 
   std::vector<HeartbeatEntry> entries_;
+  std::string cron_store_;
+  std::vector<HeartbeatEntry> dynamic_;
+  std::map<std::string, long long> last_fired_by_id_;   // dedup survives a reload
   Blackboard* bb_ = nullptr;
   TurnGate* gate_ = nullptr;
   TurnGate local_gate_;

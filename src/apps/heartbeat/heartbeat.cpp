@@ -3,8 +3,12 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include "hades/blackboard.h"
 #include "hades/heartbeat/cron.h"
+#include "hades/heartbeat/cron_store.h"
 #include "hades/timeouts.h"   // kDefaultTurnIdleTimeoutS
 namespace hades {
 namespace {
@@ -51,16 +55,58 @@ void HeartbeatModule::tick(const std::tm& now) {
   const long long minute =
       (static_cast<long long>(now.tm_year) * 100000000LL) + (now.tm_yday * 10000LL) +
       (now.tm_hour * 100LL) + now.tm_min;
-  for (auto& e : entries_) {
-    if (e.last_fired_minute == minute) continue;      // already handled this minute
-    if (!cron_matches(e.schedule, now)) continue;
-    e.last_fired_minute = minute;                     // consume the minute (fire OR skip-if-busy)
-    try {
-      fire_(e);
-    } catch (...) {
-      bb_->post("HEARTBEAT_ERROR", e.name + " tick threw", "heartbeat");
-    }
+  std::tm now_copy = now;
+  const long long now_epoch = static_cast<long long>(std::mktime(&now_copy));
+  if (!cron_store_.empty()) reload_dynamic_();          // pick up adds/cancels within one scan
+  for (auto& e : entries_) maybe_fire_(e, now, minute, now_epoch, /*dynamic=*/false);
+  for (auto& e : dynamic_) maybe_fire_(e, now, minute, now_epoch, /*dynamic=*/true);
+}
+
+void HeartbeatModule::maybe_fire_(HeartbeatEntry& e, const std::tm& now, long long minute,
+                                  long long now_epoch, bool dynamic) {
+  if (e.last_fired_minute == minute) return;             // already handled this minute (rescans)
+  const bool match = e.one_shot ? (e.fire_epoch != 0 && now_epoch >= e.fire_epoch)
+                                : cron_matches(e.schedule, now);
+  if (!match) return;
+  e.last_fired_minute = minute;                          // consume the minute (fire OR skip-if-busy)
+  if (dynamic) last_fired_by_id_[e.id] = minute;         // carry the stamp across the next reload
+  try {
+    fire_(e);
+  } catch (...) {
+    bb_->post("HEARTBEAT_ERROR", e.name + " tick threw", "heartbeat");
   }
+  if (dynamic && e.one_shot && !cron_store_.empty()) {   // one-shot done -> tombstone, never re-fires
+    std::ofstream f(cron_store_, std::ios::app);
+    if (f) f << done_record(e.id) << "\n";
+    last_fired_by_id_.erase(e.id);                       // gone after the next reload
+  }
+}
+
+void HeartbeatModule::reload_dynamic_() {
+  std::ifstream f(cron_store_);
+  if (!f) { dynamic_.clear(); return; }
+  std::stringstream ss; ss << f.rdbuf();
+  std::vector<HeartbeatEntry> rebuilt;
+  for (const auto& t : fold_cron_store(ss.str())) {
+    HeartbeatEntry e;
+    e.name = t.name; e.id = t.id; e.prompt = t.prompt; e.notify = t.notify;
+    e.one_shot = (t.kind == "once");
+    e.schedule = t.schedule; e.fire_epoch = t.fire_epoch;
+    auto it = last_fired_by_id_.find(t.id);
+    e.last_fired_minute = (it != last_fired_by_id_.end()) ? it->second : -1;
+    rebuilt.push_back(std::move(e));
+  }
+  dynamic_ = std::move(rebuilt);
+}
+
+void HeartbeatModule::load_and_compact_() {
+  if (cron_store_.empty()) return;
+  std::ifstream f(cron_store_);
+  if (!f) return;
+  std::stringstream ss; ss << f.rdbuf();
+  const std::string compacted = compact_cron_store(ss.str());
+  std::ofstream out(cron_store_, std::ios::trunc);       // sole writer at boot
+  if (out) out << compacted;
 }
 
 void HeartbeatModule::fire_(HeartbeatEntry& e) {
@@ -99,6 +145,7 @@ void HeartbeatModule::fire_(HeartbeatEntry& e) {
 
 void HeartbeatModule::start() {
   if (timer_thread_.joinable()) return;              // idempotent
+  load_and_compact_();                               // drop tombstones/superseded on boot
   timer_thread_ = std::thread([this] {
     std::unique_lock<std::mutex> lk(timer_mu_);
     while (!timer_stop_) {
