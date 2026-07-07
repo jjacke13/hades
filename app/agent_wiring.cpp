@@ -12,8 +12,10 @@
 
 #include "app/agent_wiring.h"
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include "hades/blackboard.h"
+#include "hades/heartbeat/cron.h"  // cron_valid
 #include "hades/launcher.h"  // Launcher + MalConfig
 #include "hades/llm/http.h"
 #include "hades/llm/openai_compat_provider.h"
@@ -171,7 +173,8 @@ void wire_agent(Agent& a,
                 const Block& bridge_cfg = Block{},
                 const std::vector<Block>& peer_blocks = {},
                 const Block& stt_cfg = Block{},
-                const Block& tts_cfg = Block{}) {
+                const Block& tts_cfg = Block{},
+                const std::vector<Block>& heartbeat_blocks = {}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -397,6 +400,38 @@ void wire_agent(Agent& a,
     a.telegram->on_start(telegram_cfg, bb);
     a.telegram->on_attach(bb);
   }
+
+  // 7) Heartbeat: parse each Heartbeat block into an entry (cron-validated; prompt inline or from
+  //    file), inject the shared gate + idle timeout, then attach. The timer thread is NOT started
+  //    here — hades_main calls start() after wiring (no surprise threads in tests).
+  if (a.heartbeat) {
+    for (const auto& b : heartbeat_blocks) {
+      HeartbeatEntry e;
+      e.name = b.name;
+      e.schedule = b.kv.count("schedule") ? b.kv.at("schedule") : "";
+      if (!cron_valid(e.schedule))
+        throw MalConfig("Heartbeat \"" + b.name + "\": invalid cron schedule: " + e.schedule);
+      if (b.kv.count("prompt")) {
+        e.prompt = b.kv.at("prompt");
+      } else if (b.kv.count("prompt_file")) {
+        std::ifstream pf(b.kv.at("prompt_file"));
+        if (!pf) throw MalConfig("Heartbeat \"" + b.name + "\": cannot read prompt_file: " +
+                                 b.kv.at("prompt_file"));
+        std::stringstream ss; ss << pf.rdbuf();
+        e.prompt = ss.str();
+      } else {
+        throw MalConfig("Heartbeat \"" + b.name + "\": requires prompt or prompt_file");
+      }
+      if (e.prompt.empty())
+        throw MalConfig("Heartbeat \"" + b.name + "\": empty prompt");
+      if (b.kv.count("notify")) set_bool_on_string(b.kv.at("notify"), e.notify);
+      a.heartbeat->add_entry(std::move(e));
+    }
+    a.heartbeat->set_turn_gate(a.gate.get());
+    // Idle timeout is applied by the Manifest overload after wire_agent returns (alongside the
+    // other front-ends), the one place turn_idle_timeout_s is resolved.
+    a.heartbeat->on_attach(bb);
+  }
 }
 
 }  // namespace
@@ -476,6 +511,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
   launcher.register_factory("telegram",    []{ return std::make_unique<TelegramModule>(); });
   launcher.register_factory("bridge",      []{ return std::make_unique<BridgeModule>(); });
+  launcher.register_factory("heartbeat",   []{ return std::make_unique<HeartbeatModule>(); });
   launcher.instantiate(m);   // MalConfig on unknown Module type
 
   Agent a;
@@ -489,6 +525,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
   a.telegram = take_as<TelegramModule>(launcher, "telegram");
   a.bridge  = take_as<BridgeModule>(launcher, "bridge");
+  a.heartbeat = take_as<HeartbeatModule>(launcher, "heartbeat");
 
   const auto mem_blocks = m.of("Memory");
   const Block memory = mem_blocks.empty() ? Block{} : mem_blocks.front();
@@ -505,6 +542,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block stt_cfg = stt_blocks.empty() ? Block{} : stt_blocks.front();
   const auto tts_blocks = m.of("Tts");
   const Block tts_cfg = tts_blocks.empty() ? Block{} : tts_blocks.front();
+  const auto heartbeat_blocks = m.of("Heartbeat");
 
   // Live path only: own a small worker pool and offload the blocking LLM call onto it so
   // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
@@ -522,7 +560,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // Pass the resolved live-session path through so wire_agent sets it on the embedding module
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
-             skills_cfg, telegram_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg);
+             skills_cfg, telegram_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg, heartbeat_blocks);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
@@ -531,6 +569,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   if (a.serve) a.serve->set_collect_timeout_s(turn_idle_timeout_s);
   if (a.telegram) a.telegram->set_turn_timeout_s(turn_idle_timeout_s);
   if (a.bridge) a.bridge->set_turn_timeout_s(turn_idle_timeout_s);
+  if (a.heartbeat) a.heartbeat->set_turn_timeout_s(turn_idle_timeout_s);
   return a;
 }
 

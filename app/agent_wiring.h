@@ -22,6 +22,7 @@
 #include "hades/module/skills_module.h"
 #include "hades/module/telegram_module.h"
 #include "hades/module/bridge_module.h"
+#include "hades/module/heartbeat_module.h"
 #include "hades/stt/provider.h"
 #include "hades/tts/provider.h"
 #include "hades/turn_gate.h"
@@ -82,6 +83,10 @@ struct Agent {
   // executor and every module it touches are still alive. Do NOT move below-declared members
   // above it. (executor stays after the plain modules for the same reason — see its comment.)
   std::unique_ptr<TelegramModule> telegram;
+  // Cron self-trigger. Declared LAST => destroyed FIRST: its timer thread joins while the Telegram
+  // notify sink + Executor + Arbiter + ToolRunner + Blackboard are all still alive (a tick drives a
+  // full turn through them, and may notify via Telegram). Do NOT move above telegram.
+  std::unique_ptr<HeartbeatModule> heartbeat;
 };
 
 // Build the full agent graph onto `bb`, injecting `llm` as the provider. Each

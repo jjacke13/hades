@@ -173,6 +173,10 @@ int main(int argc, char** argv) {
       agent.bridge->start_discovery();   // boot pull + periodic /card refresh (after wiring)
     }
 
+    // Heartbeat: spawn the cron timer thread AFTER the full graph is wired (same rule as the
+    // telegram/bridge threads — no surprise threads in tests). Ticks serialize through the TurnGate.
+    if (agent.heartbeat) agent.heartbeat->start();
+
     if (serve) {
       if (!agent.serve) { std::cerr << "hades: no `serve` module in the manifest Module roster\n"; return 1; }
       const ServeConfig cfg = resolve_serve_config(manifest, cli_port);
@@ -185,6 +189,9 @@ int main(int argc, char** argv) {
     } else if (agent.bridge) {
       std::cerr << "hades: bridge-only roster — serving peers (Ctrl-C to exit)\n";
       agent.bridge->wait();                                  // blocks on the listener thread
+    } else if (agent.heartbeat) {
+      std::cerr << "hades: heartbeat-only roster — running scheduled turns (Ctrl-C to exit)\n";
+      agent.heartbeat->wait();                               // blocks on the timer thread
     } else {
       std::cerr << "hades: no `chat` module in the manifest Module roster\n";
       return 1;
