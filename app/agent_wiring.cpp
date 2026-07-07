@@ -16,12 +16,14 @@
 #include <sstream>
 #include "hades/blackboard.h"
 #include "hades/heartbeat/cron.h"  // cron_valid
+#include "hades/heartbeat/cron_store.h"  // (self-scheduling store path resolution)
 #include "hades/launcher.h"  // Launcher + MalConfig
 #include "hades/llm/http.h"
 #include "hades/llm/openai_compat_provider.h"
 #include "hades/objective/avoid_destructive.h"
 #include "hades/objective/capability_policy.h"
 #include "hades/objective/peer_loop_guard.h"
+#include "hades/objective/self_schedule_guard.h"
 #include "hades/objective/stay_on_budget.h"
 #include "hades/bridge/protocol.h"  // valid_peer_name
 #include "hades/bridge/registry.h"  // caps_summary
@@ -196,6 +198,24 @@ void wire_agent(Agent& a,
   const std::string skills_dir = resolve_skills_dir(skills_cfg);
   reject_ws(skills_dir, "skills dir");
 
+  // Self-scheduling config lives in the UNNAMED `Heartbeat { }` block (a NAMED block is an entry).
+  std::string cron_store = ".hades/cron.jsonl";
+  bool allow_self_schedule = false;
+  long long max_tasks = 20, min_interval_s = 60;
+  auto parse_ll = [](const std::string& s, long long def) {
+    try { return std::stoll(s); } catch (...) { return def; }
+  };
+  for (const auto& b : heartbeat_blocks) {
+    if (!b.name.empty()) continue;                       // config block only
+    if (b.kv.count("cron_store")) cron_store = b.kv.at("cron_store");
+    if (b.kv.count("allow_self_schedule")) set_bool_on_string(b.kv.at("allow_self_schedule"), allow_self_schedule);
+    if (b.kv.count("max_tasks")) max_tasks = parse_ll(b.kv.at("max_tasks"), max_tasks);
+    if (b.kv.count("min_interval_s")) min_interval_s = parse_ll(b.kv.at("min_interval_s"), min_interval_s);
+  }
+  reject_ws(cron_store, "cron_store");
+  bool has_schedule_task = false;
+  for (const auto& t : tools) if (t.name == "schedule_task") has_schedule_task = true;
+
   // Bridge identity + peer roster. The Bridge BLOCK is the agent's bridge identity (name/
   // secret/timeout) — needed by the ask_agent tool even without the listener module; the
   // bridge MODULE is only the inbound listener. Fail fast on a mis-wiring, BEFORE any
@@ -255,6 +275,11 @@ void wire_agent(Agent& a,
       // error instead of being killed mid-write (single source: Bridge.ask_timeout_s).
       t.kv["timeout_s"] = fmt(ask_timeout_s + 10);
     }
+    else if (t.name == "schedule_task" && t.kv.count("native"))
+      t.kv["native"] = t.kv["native"] + " " + cron_store + " " + std::to_string(max_tasks) +
+                       " " + std::to_string(min_interval_s);
+    else if ((t.name == "list_tasks" || t.name == "cancel_task") && t.kv.count("native"))
+      t.kv["native"] = t.kv["native"] + " " + cron_store;
     tools_resolved.push_back(std::move(t));
   }
 
@@ -319,6 +344,11 @@ void wire_agent(Agent& a,
     // must never ask_agent onward — the A<->B mutual-wait deadlock. Registered FIRST so its
     // hard veto short-circuits before any manifest objective.
     if (a.bridge) a.arbiter->add_objective(std::make_unique<PeerLoopGuard>());
+    // Self-scheduling guard: contains the runaway-recursion risk — a heartbeat-origin turn may
+    // create new tasks only when the operator opted in (allow_self_schedule). Registered when the
+    // heartbeat module + the schedule_task tool are both present (nothing to gate otherwise).
+    if (a.heartbeat && has_schedule_task)
+      a.arbiter->add_objective(std::make_unique<SelfScheduleGuard>(allow_self_schedule));
     for (const auto& ob : objectives)
       if (auto o = make_objective(ob)) a.arbiter->add_objective(std::move(o));
     a.arbiter->on_attach(bb);
@@ -406,6 +436,7 @@ void wire_agent(Agent& a,
   //    here — hades_main calls start() after wiring (no surprise threads in tests).
   if (a.heartbeat) {
     for (const auto& b : heartbeat_blocks) {
+      if (b.name.empty()) continue;   // the UNNAMED block is self-scheduling config, not an entry
       HeartbeatEntry e;
       e.name = b.name;
       e.schedule = b.kv.count("schedule") ? b.kv.at("schedule") : "";
@@ -428,6 +459,7 @@ void wire_agent(Agent& a,
       a.heartbeat->add_entry(std::move(e));
     }
     a.heartbeat->set_turn_gate(a.gate.get());
+    a.heartbeat->set_cron_store(cron_store);
     // Idle timeout is applied by the Manifest overload after wire_agent returns (alongside the
     // other front-ends), the one place turn_idle_timeout_s is resolved.
     a.heartbeat->on_attach(bb);
