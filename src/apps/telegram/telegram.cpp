@@ -99,7 +99,10 @@ void TelegramModule::on_attach(Blackboard& bb) {
       text = e.value.get<std::string>();
     if (text.empty()) return;
     for (long long id : allow_) {
-      try { api_->send_message(id, text); } catch (...) { /* fail-soft */ }
+      try {
+        if (!api_->send_message(id, text))
+          std::cerr << "hades: telegram notify send failed (user " << id << ")\n";
+      } catch (...) { /* fail-soft */ }
     }
   });
 }
