@@ -158,3 +158,22 @@ Embedding {
  #   trust = untrusted
  # }
  Tool = ask_agent { native = ./build/hades-ask-agent }
+
+# --- Heartbeat: cron self-triggered turns (the agent acts on its own). Module + >=1 Heartbeat
+# block. Each entry fires a normal gated turn on its cron schedule (machine-local time). notify=true
+# forwards the reply to you (Telegram) UNLESS the agent replies exactly SILENT; notify=false runs a
+# silent background task (tool actions are the output). A tick can call any tool (incl. ask_agent);
+# confirm-band actions are AUTO-DENIED (no human present); a tick is skipped if a turn is running. ---
+# Module = heartbeat
+# Heartbeat = monitor
+# {
+#   schedule = */10 * * * *          # every 10 min. cron: min hour dom month dow (* N A-B */N A,B)
+#   prompt   = Check pi0 is reachable and healthy (ask it). Reply exactly SILENT if all is fine.
+#   notify   = true                  # needs Module = telegram rostered to actually deliver
+# }
+# Heartbeat = daily
+# {
+#   schedule    = 0 6 * * *          # 06:00 daily (machine-local time)
+#   prompt_file = prompts/daily_summary.txt   # use prompt_file for long prompts or any with an '='
+#   notify      = false
+# }
