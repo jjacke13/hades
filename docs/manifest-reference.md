@@ -719,7 +719,11 @@ both present; it guards only the create path — `list_tasks`/`cancel_task` are 
 (like cron; no timezone key in v1). The store **persists across restarts** — a one-shot whose time passed
 while the process was down fires once on the next boot scan (catch-up), then completes. `notify` behaves
 exactly as for a static entry (`NOTIFY_USER` → Telegram, `SILENT` sentinel), so a `notify = true` dynamic
-task still needs `Module = telegram` to deliver.
+task still needs `Module = telegram` to deliver. Delivery is **at-least-once**: the `done` record is written
+*after* a one-shot's turn runs, so a crash in that window (or a same-minute process restart for a recurring
+task, whose per-minute dedup is in-memory) can re-fire it once — write tasks whose action is idempotent, or
+tolerant of a rare repeat. The store is compacted only on boot; between boots it grows append-only (a v2
+concern for a very high-frequency self-scheduling agent).
 
 ---
 
