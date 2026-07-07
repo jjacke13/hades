@@ -389,6 +389,38 @@ TEST(TelegramModule, VoiceTurnWithNoTtsProviderStaysText) {
   EXPECT_TRUE(r.api->voices.empty());                         // tts_ null -> text only
 }
 
+TEST(TelegramModule, NotifyUserSendsToAllowedUsers) {
+  // A heartbeat (or anything) posts NOTIFY_USER -> pushed to EVERY allowed user. Not my_turn_-gated;
+  // fires on a plain post+pump with no turn. allow_ is a std::set<long long> -> iterated sorted.
+  Blackboard bb;
+  auto a = std::make_unique<FakeApi>();
+  FakeApi* api = a.get();
+  auto mod = std::make_unique<TelegramModule>(std::move(a));
+  Block cfg; cfg.kv["allow_users"] = "111 222";
+  mod->on_start(cfg, bb);
+  mod->on_attach(bb);
+  bb.post("NOTIFY_USER", {{"text", "pi0 down"}, {"from", "heartbeat:mon"}}, "heartbeat");
+  bb.pump();
+  ASSERT_EQ(api->sent.size(), 2u);              // one per allowed user
+  EXPECT_EQ(api->sent[0].first, 111);
+  EXPECT_EQ(api->sent[0].second, "pi0 down");
+  EXPECT_EQ(api->sent[1].first, 222);
+  EXPECT_EQ(api->sent[1].second, "pi0 down");
+}
+
+TEST(TelegramModule, NotifyUserEmptyTextSendsNothing) {
+  Blackboard bb;
+  auto a = std::make_unique<FakeApi>();
+  FakeApi* api = a.get();
+  auto mod = std::make_unique<TelegramModule>(std::move(a));
+  Block cfg; cfg.kv["allow_users"] = "111 222";
+  mod->on_start(cfg, bb);
+  mod->on_attach(bb);
+  bb.post("NOTIFY_USER", {{"from", "heartbeat:mon"}}, "heartbeat");   // object, no "text"
+  bb.pump();
+  EXPECT_TRUE(api->sent.empty());
+}
+
 TEST(TelegramModule, SpeakFlagDoesNotLeakVoiceToNextTypedTurn) {
   // Regression: a voice turn sets speak_reply_; the per-turn RAII Reset must clear it so a
   // FOLLOWING typed turn in the same batch does NOT get spoken. Both turns in one poll batch.

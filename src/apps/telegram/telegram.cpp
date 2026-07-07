@@ -87,6 +87,21 @@ void TelegramModule::on_attach(Blackboard& bb) {
     if (!my_turn_ || !e.value.is_object()) return;
     pending_confirm_ = e.value;
   });
+  // Notify sink: a HeartbeatModule (or anything) posts NOTIFY_USER -> push to every allowed user.
+  // NOT my_turn_-gated (it's an unsolicited push, not a turn reply). Best-effort / fail-soft — a
+  // failed send must never crash the pump/timer thread.
+  bb.subscribe("NOTIFY_USER", [this](const Entry& e) {
+    if (!api_) return;
+    std::string text;
+    if (e.value.is_object())
+      text = e.value.value("text", "");
+    else if (e.value.is_string())
+      text = e.value.get<std::string>();
+    if (text.empty()) return;
+    for (long long id : allow_) {
+      try { api_->send_message(id, text); } catch (...) { /* fail-soft */ }
+    }
+  });
 }
 
 void TelegramModule::send_reply_(long long chat_id, const std::string& text) {
