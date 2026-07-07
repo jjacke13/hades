@@ -315,6 +315,32 @@ per minute via a year+yday+hour+min stamp), fires a **self-turn**.
 - **Live-smoke pending** (Vaios: roster `Module = heartbeat` + a `*/1 * * * *` entry, confirm the self-turn fires and
   `notify`/`SILENT` gate delivery).
 
+### NEXT (decided 2026-07-07, Vaios — build after `/compact`, brainstorm-first): SELF-SCHEDULING — agent creates its own cron/one-shot tasks
+Vaios's ask: is the cron/heartbeat available as a **tool** for the agent? Today **NO** — `Heartbeat` blocks are
+**manifest-static** (parsed once in `wire_agent`, no runtime mutation, no tool). The next feature = let the agent
+**schedule its own future turns** at runtime ("check back in 10 min" / "remind me tomorrow 9am" / "stop that monitor").
+Maps to Claude Code's **`CronCreate`/`CronList`/`CronDelete`** tools + `ScheduleWakeup` + KAIROS dynamic subs (see the
+`docs/research/2026-07-05-agent-comms-landscape.md` gap-analysis + the CC-tool notes in the edit/write-staleness backlog).
+**Brainstorm-first (spec→plan→SDD).** Design seeds already worked out:
+- **The hard constraint:** hades tools are **stateless subprocesses** — a `schedule_task` tool CANNOT reach the running
+  `HeartbeatModule` to add an entry. Path (mirrors `save_memory`/`pin_fact`): a **persistence file** (e.g.
+  `.hades/cron.jsonl`) the tool appends to (single source of truth via wired argv, like the memory/skills tools), and the
+  `HeartbeatModule` **loads it on boot + re-reads it in its ~30s tick-scan** so adds/cancels take effect live. Dynamic
+  entries **coexist** with the static `Heartbeat` manifest blocks.
+- **Tools (3, à la CC):** `schedule_task` (create — recurring **cron** OR **one-shot** "in N min"/"at <ISO>"), `list_tasks`
+  (id + schedule + prompt + notify), `cancel_task` (by id).
+- **One-shot turns** are NEW (current cron is recurring-only): fire once → auto-remove. This is the "remind me at 3pm" case.
+- **Guardrails (the sharp part — a self-scheduling agent is a runaway risk):** min interval (no every-second self-schedule),
+  a **cap on active self-scheduled tasks**, `stay_on_budget` still bounds cost, capability/confirm gate on the schedule
+  **tool itself**, an opt-in switch (e.g. `Heartbeat { allow_self_schedule = true }` or a rostered-tool gate) so an agent
+  can't self-schedule unless the operator allowed it. A self-scheduled tick is still a normal gated self-turn
+  (`TURN_ORIGIN=heartbeat:<name>`, confirm auto-denied, skip-if-busy). Recursion risk: a tick scheduling MORE tasks → the
+  cap + budget must contain it.
+- **Open Qs for the brainstorm:** cron.jsonl entry schema (`{id, schedule|at, prompt, notify, one_shot}`); cancel mechanics
+  (tombstone vs rewrite); persistence dir + `--resume` interaction; whether one-shot/at needs the deferred `tz` key;
+  how `list_tasks` surfaces both static + dynamic entries; per-agent opt-in shape.
+Relates to the deferred reactive `when=` trigger (a self-scheduled reactive watch) and complements the static heartbeat.
+
 ### Two memory layers (MemGPT-style, both agent-writable)
 
 ### Two memory layers (MemGPT-style, both agent-writable)
