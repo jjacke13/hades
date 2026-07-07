@@ -669,6 +669,24 @@ persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate
 inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn
 can't read out the receiver's full memory — see the Bridge SECURITY note).
 
+### edit/write staleness guard (backlog — from the Claude Code tool gap-analysis, 2026-07-07)
+Steal Claude Code's **read-before-edit / lost-update guard**: today `write_file` blind-truncates and `edit_file`
+replaces on the CURRENT file bytes with no check that the LLM's `old_string` was formed against the file's
+current on-disk state — a concurrent/self-triggered change between the read and the edit silently clobbers.
+(NOTE: the OTHER CC edit contract — `old_string` must match **exactly once** unless `replace_all` — is **ALREADY
+enforced** in `tools/edit_file_main.cpp`: `count==0`→not-found, `count>1 && !replace_all`→error. Don't re-add.)
+The gap = staleness only. hades tools are **stateless subprocesses** (can't see conversation history), so this
+is NOT a pure tool tweak — two options: **(a)** Arbiter-level — track which files were `fs_read` this turn/session
++ their mtime/hash, gate `edit_file`/`write_file` on a matching prior read (refuse/confirm if the file changed
+since); or **(b)** version-token protocol — `fs_read` returns an mtime+hash token, `edit_file`/`write_file` take
+an optional `expect_version` and refuse on mismatch (opt-in, tool-local, but needs the Arbiter to thread the
+token). Matters MORE once heartbeat/cron lands (a self-turn editing a file a human just changed). Low urgency
+today (single-threaded turns, human-paced); queue behind heartbeat. **Gap-analysis convergence worth noting:** the
+leaked CC daemon **"KAIROS"** (periodic `<tick>` → decide-whether-to-act, append-only daily logs, webhook subs) is
+essentially our direction-2 heartbeat — independent design confirmation. And CC's `Monitor` (stream a command's
+output / a WebSocket back mid-conversation) = the reactive "act when peer state changes" consumer we deferred from
+the bridge → fold into the heartbeat brainstorm.
+
 ### Codebase-organization + docs backlog (Vaios 2026-07-04 — revisit, not yet scheduled)
 Three intents about making the **MOOS-IvP mapping legible in the source layout itself** (today the mapping lives
 in this doc, not the tree):
