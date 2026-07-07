@@ -113,6 +113,13 @@ target_link_libraries(hades-ask-agent PRIVATE hades_core)            # protocol 
 target_sources(hades_tests PRIVATE tests/test_ask_agent_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE ASK_AGENT_BIN="$<TARGET_FILE:hades-ask-agent>")
 add_dependencies(hades_tests hades-ask-agent)
+add_executable(hades-schedule-task tools/schedule_task_main.cpp
+               src/apps/heartbeat/cron_store.cpp src/apps/heartbeat/cron.cpp)
+target_link_libraries(hades-schedule-task PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(hades-schedule-task PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_sources(hades_tests PRIVATE tests/test_schedule_task_tool.cpp)
+target_compile_definitions(hades_tests PRIVATE SCHEDULE_TASK_BIN="$<TARGET_FILE:hades-schedule-task>")
+add_dependencies(hades_tests hades-schedule-task)
 add_executable(hades-grep tools/grep_main.cpp)
 target_link_libraries(hades-grep PRIVATE nlohmann_json::nlohmann_json)
 add_executable(hades-glob tools/glob_main.cpp)
