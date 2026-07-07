@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below), **450/450 tests** (ASan+UBSan + **TSan** 132/132 clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below), **470/470 tests** (ASan+UBSan + **TSan** 145/145 clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **15 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command`, self-describing) · **tool capability
@@ -270,6 +270,42 @@ old `/ask`+`/share` behavior unchanged). **Two channels:**
 Docs: `docs/manifest-reference.md` §13 (card schema, `/share` `type` field, receiver bus vars, security);
 `prompts/soul.md` "## Peers" (delegate-by-advertised-capability + treat "Reported by peers" as re-verify claims).
 
+### Heartbeat / cron (self-triggered turns) — shipped 2026-07-07, `feat/heartbeat`, 470/470 (TSan 145/145)
+The **autonomy leg**: hades stops being purely event-driven and runs its OWN turns on a schedule. **Inert unless
+the roster lists `Module = heartbeat`** (omit → `Agent.heartbeat==nullptr`, zero coupling; the test `build_agent`
+overload is unaffected). `HeartbeatModule` (`src/apps/heartbeat/heartbeat.cpp`) owns a timer thread that wakes
+**~every 30s** and, for each `Heartbeat = <name>` block whose **5-field cron** (`min hour dom month dow`;
+`src/apps/heartbeat/cron.cpp`, pure `cron_matches`/`cron_valid`) matches the **machine-LOCAL** minute (deduped once
+per minute via a year+yday+hour+min stamp), fires a **self-turn**.
+- **A tick is a NORMAL gated turn** (`TURN_ORIGIN = heartbeat:<name>` then a `USER_MESSAGE` = the entry prompt):
+  the full system prompt (soul + core memory + skills + `PEER.*` folds), all objectives (`capability_policy` /
+  `avoid_destructive` / `stay_on_budget`), any tool. `PeerLoopGuard` blocks only `peer:*` origins, so **a heartbeat
+  CAN delegate** via `ask_agent`. **Confirm-band actions are AUTO-DENIED** (no human to approve — mirrors the bridge
+  peer-turn auto-deny). The Eventlog records every tick → `hades-scope` is the activity log.
+- **Skip-if-busy, never queued:** the tick `try_lock`s the shared **TurnGate**; if a human/peer turn holds it the tick
+  is **skipped** for that minute (`HEARTBEAT_SKIPPED`), never queued — heartbeats don't pile up behind a conversation.
+- **notify (per-entry, default false):** `notify=false` → the reply is **dropped** (a silent scheduled task — the tool
+  actions ARE the output). `notify=true` → the trimmed reply is posted to **`NOTIFY_USER`** and forwarded **unless it
+  is empty or exactly `SILENT`** (the prompt convention: reply `SILENT` when there's nothing to report). **Sink =
+  Telegram (v1):** `TelegramModule` subscribes `NOTIFY_USER` → `send_message` to `allow_users`. A `notify=true`
+  heartbeat with **no telegram rostered** posts `NOTIFY_USER` but nothing delivers it — want notifications ⇒ roster
+  telegram.
+- **New bus keys:** `NOTIFY_USER` (`{text, from}`), `HEARTBEAT_SKIPPED` (entry name), `HEARTBEAT_ERROR` (name +
+  reason); new `TURN_ORIGIN` value `heartbeat:<name>`.
+- **Block keys** (`Heartbeat = <name>` block; parsed in `wire_agent`): `schedule` (REQUIRED; bad cron → `MalConfig`;
+  supports `* N A-B A-B/N */N` + comma lists, AND across fields, minute resolution), `prompt` (inline) **OR**
+  `prompt_file` (path; one REQUIRED; unreadable/empty → `MalConfig`), `notify` (bool). Teardown: the timer thread is
+  started by `hades_main` (`start()`, AFTER wiring — tests spawn no thread) and stop+joined in the dtor. Docs:
+  `docs/manifest-reference.md` §15; example prompt `prompts/daily_summary.txt`. Spec/plan:
+  `docs/superpowers/{specs/2026-07-07-heartbeat-cron-design.md,plans/2026-07-07-heartbeat-cron.md}`.
+- **Gotchas:** an inline `prompt` containing an `=` (e.g. `set x = 5`) trips the one-kv-per-line parser →
+  `MalConfig`, binary refuses to boot ⇒ **use `prompt_file` for any prompt with an `=` or multiple lines** (cron
+  values are `=`-free, always safe inline). Cron is **machine-local TZ** — set the box's TZ deliberately. `notify=true`
+  delivers **only** if `telegram` is rostered. **v2 next:** a reactive `when = <condition>` trigger (act when a bus/peer
+  var changes) — the deferred Monitor-style `PEER.*` consumer; today it's schedule-only.
+- **Live-smoke pending** (Vaios: roster `Module = heartbeat` + a `*/1 * * * *` entry, confirm the self-turn fires and
+  `notify`/`SILENT` gate delivery).
+
 ### Two memory layers (MemGPT-style, both agent-writable)
 
 ### Two memory layers (MemGPT-style, both agent-writable)
@@ -450,7 +486,7 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (450/450, ~4.4s)
+nix develop --command ctest --test-dir build                 # test (470/470, ~4.4s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -650,7 +686,10 @@ Two directions set after the aarch64/Pi + voice batch. BOTH brainstorm-first (no
    bridge-v2 borrow ideas. Design Qs for brainstorm: which blackboard keys are "standard" (schema), how the bridge
    selects/mirrors them (share-list → typed keys), discovery (agent-card vs a WELL_KNOWN vars query), backward-compat
    with `/ask`+`/share`.
-2. **Heartbeat / cron — the agent acts ON ITS OWN.** Today hades is purely EVENT-DRIVEN (a turn fires only on
+2. **Heartbeat / cron — the agent acts ON ITS OWN. — SHIPPED 2026-07-07, `feat/heartbeat`** (timer → cron →
+   gated self-turn; notify/drop with a SILENT sentinel; Telegram `NOTIFY_USER` sink — see the **Heartbeat / cron**
+   subsection under Current state). The original brainstorm follows for the record / v2 seams. Today hades is purely
+   EVENT-DRIVEN (a turn fires only on
    `USER_MESSAGE` / peer `/ask`). Vaios wants a **self-trigger**: periodic or scheduled internal turns so the agent
    does background/proactive work (monitoring, scheduled tasks, "wake up and check X"). MOOS analog = a timer-driven
    app / `Iterate()` at a rate. Design Qs for brainstorm: tick source (a timer thread posting a `HEARTBEAT`/`TICK`
@@ -779,6 +818,16 @@ in this doc, not the tree):
   **fails loud** (`MalConfig`) on `Peer = watcher { url = …  trust = untrusted }`; write `url`/`trust` on
   separate lines. `type=raw`/absent keeps legacy `/share` (`PEER.<from>.<key>`); rename-on-arrival holds for
   all types (no peer can write a local bus key).
+- **Heartbeat** (`Module = heartbeat`): a tick is a normal gated self-turn (`TURN_ORIGIN=heartbeat:<name>`) — all
+  objectives apply, confirm-band actions **auto-deny** (no human), a tick clashing with a live human/peer turn is
+  **skipped** (`HEARTBEAT_SKIPPED`, try_lock on the TurnGate), never queued. **Inline `prompt` with an `=` (`set x
+  = 5`) → one-kv-per-line parser fails loud (`MalConfig`), binary won't boot ⇒ use `prompt_file`** for any prompt
+  with an `=` or multiple lines (cron values are `=`-free, safe inline). Cron is **machine-LOCAL TZ** (5-field
+  `min hour dom month dow`, AND across fields, minute resolution) — set the box's TZ deliberately. `notify=true`
+  delivers via `NOTIFY_USER` → **Telegram only (v1)**, so **needs `Module = telegram` rostered** or nothing shows;
+  reply is dropped when empty or exactly `SILENT`. Timer thread started by `hades_main` after wiring (not
+  `on_attach` → tests spawn none). v2 next: a reactive `when = <condition>` trigger (the deferred Monitor-style
+  `PEER.*` consumer); today schedule-only.
 - Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so

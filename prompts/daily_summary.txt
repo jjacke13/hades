@@ -1,0 +1,3 @@
+Summarize what happened in our conversations over the last day: decisions made, tasks
+completed, and anything still open. Save the summary with save_memory so future sessions
+recall it. Then reply exactly SILENT (this is a background task; do not notify).

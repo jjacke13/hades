@@ -84,6 +84,7 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 | `serve` | HTTP/web front-end (`--serve`). | `--serve` errors "no serve module". |
 | `telegram` | Telegram long-poll bot (reads `Telegram` block). | No bot. |
 | `bridge` | Agent↔agent HTTP listener (reads `Bridge` block). | No inbound peer surface. |
+| `heartbeat` | Cron timer that fires the agent's own turns (reads `Heartbeat` blocks). | No self-triggered turns; the agent is purely event-driven. |
 
 **Front-end requirement.** After building, the binary needs *some* front-end or it errors:
 `--serve` uses `serve`; otherwise it runs `chat`'s REPL; if there is no `chat`, it blocks on
@@ -349,6 +350,9 @@ The dir is git-tracked in this repo (the agent writes skills at runtime → work
   replays. The poll offset is in-memory (a crash mid-turn loses the update id).
 - The dtor's join can wait up to one `poll_timeout_s` cycle, so `/quit` can feel slow — shorten
   `poll_timeout_s` if that matters.
+- **Notify sink.** TelegramModule subscribes **`NOTIFY_USER`** and pushes each such message to every
+  `allow_users` id — this is the delivery path for a `notify = true` `Heartbeat` (see §15). A
+  notifying heartbeat with no `telegram` rostered posts `NOTIFY_USER` but nothing delivers it.
 
 ---
 
@@ -532,6 +536,130 @@ literal allowlist; a peer can never write a non-`PEER.*` local bus key (rename-o
 `Module = arbiter` builds the Arbiter, but the **`Arbiter { … }` block is currently unread**. The
 `policy = v1` key in dev.hades is decorative (no code queries `m.of("Arbiter")`). It reserves the
 block for future config; today it does nothing.
+
+---
+
+## 15. `Heartbeat` blocks — `Heartbeat = <name> { … }`
+
+`src/apps/heartbeat/heartbeat.cpp` (`HeartbeatModule`), `src/apps/heartbeat/cron.cpp` (the matcher),
+wiring in `app/agent_wiring.cpp`. Requires **`Module = heartbeat`** (opt-in; omit → `agent.heartbeat
+== nullptr`, no self-turns — the agent stays purely event-driven, a turn fires only on a human/peer
+message).
+
+This is the **autonomy leg**: the agent acts on its own. The module owns a timer thread that wakes
+~every 30 s and, for each `Heartbeat` entry whose 5-field cron matches the current machine-local
+minute (deduped so an entry fires at most once per minute), fires a **self-turn**. One
+`Heartbeat = <name>` block = one scheduled task; roster as many as you like.
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `schedule` | 5-field cron `min hour dom month dow`. **REQUIRED.** | — | An invalid expression → `MalConfig` at launch. See the cron subset below. |
+| `prompt` | The task text sent as the turn's user message (inline). | — | One of `prompt`/`prompt_file` is **REQUIRED** (neither → `MalConfig`). **See the `=` footgun below** — an inline prompt containing `=` will refuse to boot. |
+| `prompt_file` | Path to a file whose contents are the task text. | — | Alternative to `prompt`. Unreadable path → `MalConfig`; the resolved text being empty → `MalConfig`. cwd-relative. Use this for any prompt with an `=` or multiple lines. |
+| `notify` | Whether the tick's reply is delivered to the user. | `false` | `false` → the reply is dropped (a silent background task — the tool actions *are* the output). `true` → the reply is forwarded (see the notify flow below). |
+
+If both `prompt` and `prompt_file` are given, `prompt` wins.
+
+### The cron subset
+
+`schedule` is a **standard 5-field cron** expression: `minute hour day-of-month month day-of-week`,
+separated by whitespace. Each field supports:
+
+- `*` — every value;
+- `N` — a literal (`30`, `6`);
+- `A-B` — an inclusive range (`9-17`);
+- `A-B/N` and `*/N` — a stepped range / every-Nth (`*/10` = every 10th, `0-30/5`);
+- comma lists — `1,15,45` (any of the above, joined).
+
+Fields are **ANDed** (all five must match; the Vixie dom-OR-dow quirk is intentionally *not*
+implemented). Resolution is **one minute** — the finest schedule is a specific minute. Times are
+**machine-local** (evaluated against `localtime_r`), so a `0 6 * * *` daily task fires at 06:00 in
+the host's timezone — set the box's TZ deliberately. A malformed expression (wrong field count, a
+range out of order, garbage) is rejected loud at launch (`MalConfig`), never silently.
+
+### What a tick is — a normal gated turn
+
+A tick is an **ordinary Arbiter turn**, not a privileged one. It posts `TURN_ORIGIN =
+heartbeat:<name>` then a `USER_MESSAGE` carrying the entry's prompt, and runs the turn through the
+same machinery every front-end uses:
+
+- **Full context.** The agent gets the whole system prompt (soul + core memory + skills roster +
+  `PEER.*` folds) and may call **any tool**, including `ask_agent`. `PeerLoopGuard` only blocks
+  `peer:*` origins, so a heartbeat turn **can delegate** to a peer.
+- **Objectives apply.** `capability_policy`, `avoid_destructive`, and `stay_on_budget` gate a
+  self-turn exactly as they gate a human turn.
+- **Confirm-band actions are AUTO-DENIED.** There is no human to approve, so any action that would
+  raise a confirmation prompt is denied (with the same auto-deny behavior as a peer-driven bridge
+  turn). To let a heartbeat do something confirm-band, give it an *allowed* path in
+  `capability_policy` (e.g. an `exec_allow` prefix), not a prompt that hopes for approval.
+- **Skip-if-busy, never queued.** The tick `try_lock`s the shared **TurnGate**. If a human/peer turn
+  already holds it, the tick is **skipped** for that minute (a `HEARTBEAT_SKIPPED` bus post) rather
+  than queued — heartbeats never pile up behind a live conversation.
+- **Everything is logged.** Every tick (and skip/error) lands in the Eventlog → replay with
+  `hades-scope` to see what the agent did unattended.
+
+### The notify flow — `NOTIFY_USER` → Telegram, with a SILENT sentinel
+
+- **`notify = false`** (the default): the reply is **dropped**. The turn still ran and its tool calls
+  (a `save_memory`, an `edit_file`, an `http_fetch`) took effect — those side effects are the point.
+  Use this for maintenance tasks the user shouldn't be pinged about.
+- **`notify = true`**: the trimmed reply is posted to **`NOTIFY_USER`** and forwarded — **unless** it
+  is empty or exactly **`SILENT`**. The convention (bake it into the prompt) is: *reply `SILENT` when
+  there is nothing worth reporting*. So a monitor that checks a condition every 10 minutes stays quiet
+  on a normal check and only messages you when something is actually up.
+- **The sink is Telegram (v1).** `TelegramModule` subscribes `NOTIFY_USER` and sends the text to every
+  `allow_users` id (§10). **A `notify = true` heartbeat with no `telegram` module rostered posts
+  `NOTIFY_USER` but nothing delivers it** — if you want notifications, roster `telegram`.
+
+### The inline-prompt `=` footgun (read this)
+
+The manifest is **one-kv-per-line and fails loud** on ` word = word ` packed on a physical line (§1).
+An inline `prompt` whose text contains an `=` (e.g. `prompt = set the counter x = 5`) trips that
+detector → `MalConfig`, **the binary refuses to start**. Two ways out, and the second is the rule of
+thumb:
+
+- Cron values never contain `=`, so `schedule` is always safe inline.
+- **For any prompt that contains an `=`, spans multiple lines, or is more than a short sentence, use
+  `prompt_file`** and put the text in a file (see `prompts/daily_summary.txt` for a worked example).
+  A file has no parser constraints.
+
+### Bus keys & the turn origin
+
+New signals this module introduces (visible in the Eventlog / `hades-scope`):
+
+| Bus key | Value | When |
+|---|---|---|
+| `TURN_ORIGIN` | `heartbeat:<name>` | Posted at the start of each self-turn (a new origin value alongside `human` and `peer:<name>`). `PeerLoopGuard` treats it as non-peer, so the turn may call `ask_agent`. |
+| `NOTIFY_USER` | `{ text, from }` (`from = heartbeat:<name>`) | A `notify = true` tick whose reply is non-empty and not `SILENT`. The Telegram module (§10) is the sink. |
+| `HEARTBEAT_SKIPPED` | the entry name | The tick's minute matched but the TurnGate was held by a live human/peer turn (skip-if-busy). |
+| `HEARTBEAT_ERROR` | `<name> …` (the entry name + a reason) | The tick threw, or the self-turn hit its idle timeout. |
+
+### Worked example
+
+A monitor that pings you at most every 10 minutes (only when it finds something), plus a silent daily
+summary loaded from a file:
+
+```
+Module = heartbeat
+
+Heartbeat = disk_watch
+{
+  schedule = */10 * * * *
+  prompt   = Check free disk on this host with run_command. If any filesystem is over 90 percent full, report which one and the usage. Otherwise reply exactly SILENT.
+  notify   = true
+}
+
+Heartbeat = daily_summary
+{
+  schedule    = 0 6 * * *
+  prompt_file = prompts/daily_summary.txt
+  notify      = false
+}
+```
+
+The `disk_watch` prompt is a single sentence with no `=`, so inline is fine; it needs `Module =
+telegram` rostered for its notifications to arrive. `daily_summary` runs a background task (save a
+recap to memory) and, being `notify = false`, never pings the user regardless of what it replies.
 
 ---
 
