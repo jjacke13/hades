@@ -177,3 +177,19 @@ Embedding {
 #   prompt_file = prompts/daily_summary.txt   # use prompt_file for long prompts or any with an '='
 #   notify      = false
 # }
+
+# --- Self-scheduling: let the agent create its own cron/one-shot tasks at runtime (needs Module =
+# heartbeat above). Roster the 3 tools to enable. A HUMAN turn may schedule freely; a heartbeat TICK
+# may schedule only if allow_self_schedule = true (recursion guard). Tasks persist in cron_store and
+# coexist with the static Heartbeat entries above. A task is a PROMPT (to run a command, the prompt
+# tells the agent to call run_command). schedule_task takes one of: schedule (cron) / in_minutes / at. ---
+# Tool = schedule_task { native = ./build/hades-schedule-task }
+# Tool = list_tasks    { native = ./build/hades-list-tasks }
+# Tool = cancel_task   { native = ./build/hades-cancel-task }
+# Heartbeat
+# {
+#   cron_store          = .hades/cron.jsonl
+#   allow_self_schedule = false        # true = a heartbeat tick may create tasks too
+#   max_tasks           = 20
+#   min_interval_s      = 60
+# }

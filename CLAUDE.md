@@ -29,10 +29,10 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below), **470/470 tests** (ASan+UBSan + **TSan** 145/145 clean; suite ~4.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
-Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **15 tools**
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below), **511/511 tests** (ASan+UBSan + **TSan** 511/511 clean; suite ~5.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
-`grep glob edit_file git_read run_command`, self-describing) · **tool capability
+`grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run_command allow/confirm/deny + git_read read-only, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 **two memory layers** (core + archival, see below) · a **skills system** (loadable instruction packs, see below) ·
@@ -315,31 +315,44 @@ per minute via a year+yday+hour+min stamp), fires a **self-turn**.
 - **Live-smoke pending** (Vaios: roster `Module = heartbeat` + a `*/1 * * * *` entry, confirm the self-turn fires and
   `notify`/`SILENT` gate delivery).
 
-### NEXT (decided 2026-07-07, Vaios — build after `/compact`, brainstorm-first): SELF-SCHEDULING — agent creates its own cron/one-shot tasks
-Vaios's ask: is the cron/heartbeat available as a **tool** for the agent? Today **NO** — `Heartbeat` blocks are
-**manifest-static** (parsed once in `wire_agent`, no runtime mutation, no tool). The next feature = let the agent
-**schedule its own future turns** at runtime ("check back in 10 min" / "remind me tomorrow 9am" / "stop that monitor").
-Maps to Claude Code's **`CronCreate`/`CronList`/`CronDelete`** tools + `ScheduleWakeup` + KAIROS dynamic subs (see the
-`docs/research/2026-07-05-agent-comms-landscape.md` gap-analysis + the CC-tool notes in the edit/write-staleness backlog).
-**Brainstorm-first (spec→plan→SDD).** Design seeds already worked out:
-- **The hard constraint:** hades tools are **stateless subprocesses** — a `schedule_task` tool CANNOT reach the running
-  `HeartbeatModule` to add an entry. Path (mirrors `save_memory`/`pin_fact`): a **persistence file** (e.g.
-  `.hades/cron.jsonl`) the tool appends to (single source of truth via wired argv, like the memory/skills tools), and the
-  `HeartbeatModule` **loads it on boot + re-reads it in its ~30s tick-scan** so adds/cancels take effect live. Dynamic
-  entries **coexist** with the static `Heartbeat` manifest blocks.
-- **Tools (3, à la CC):** `schedule_task` (create — recurring **cron** OR **one-shot** "in N min"/"at <ISO>"), `list_tasks`
-  (id + schedule + prompt + notify), `cancel_task` (by id).
-- **One-shot turns** are NEW (current cron is recurring-only): fire once → auto-remove. This is the "remind me at 3pm" case.
-- **Guardrails (the sharp part — a self-scheduling agent is a runaway risk):** min interval (no every-second self-schedule),
-  a **cap on active self-scheduled tasks**, `stay_on_budget` still bounds cost, capability/confirm gate on the schedule
-  **tool itself**, an opt-in switch (e.g. `Heartbeat { allow_self_schedule = true }` or a rostered-tool gate) so an agent
-  can't self-schedule unless the operator allowed it. A self-scheduled tick is still a normal gated self-turn
-  (`TURN_ORIGIN=heartbeat:<name>`, confirm auto-denied, skip-if-busy). Recursion risk: a tick scheduling MORE tasks → the
-  cap + budget must contain it.
-- **Open Qs for the brainstorm:** cron.jsonl entry schema (`{id, schedule|at, prompt, notify, one_shot}`); cancel mechanics
-  (tombstone vs rewrite); persistence dir + `--resume` interaction; whether one-shot/at needs the deferred `tz` key;
-  how `list_tasks` surfaces both static + dynamic entries; per-agent opt-in shape.
-Relates to the deferred reactive `when=` trigger (a self-scheduled reactive watch) and complements the static heartbeat.
+### Self-scheduling (agent creates its own cron/one-shot tasks) — shipped 2026-07-07, `feat/self-scheduling`
+The agent **schedules its own future turns** at runtime via 3 native tools — the runtime-mutable complement to the
+manifest-static `Heartbeat = <name>` blocks (which are unchanged; dynamic + static coexist). Un-parks the CC
+`CronCreate`/`CronList`/`CronDelete` analogue.
+- **The constraint solved:** hades tools are **stateless subprocesses** — a tool can't reach the running `HeartbeatModule`.
+  Bridge = a **persistence file `.hades/cron.jsonl`** (append-only, `add`/`cancel`/`done` records folded by id — the
+  `memory.jsonl` pattern; path wired via argv, single source of truth). `HeartbeatModule` loads+**compacts on boot** and
+  **re-reads it every ~30s tick-scan** (`reload_dynamic_`), so adds/cancels take effect within one scan, no restart.
+  Dynamic tasks live in `dynamic_` (separate from static `entries_`); dedup keyed by task id across reloads
+  (`last_fired_by_id_`, pruned to the active set).
+- **A task is a PROMPT** (never a raw command — that would bypass the objective/gate layer + duplicate system cron). It
+  fires as the SAME gated self-turn a static heartbeat does (`TURN_ORIGIN=heartbeat:<name>`, all objectives, confirm
+  auto-denied). "Run a script" = a prompt that tells the agent to `run_command` (capability-gated).
+- **3 tools** (`tools/{schedule_task,list_tasks,cancel_task}_main.cpp`, each compiles `cron_store.cpp`+`cron.cpp` into
+  itself, no core link): **`schedule_task`** `{name, prompt, notify?, exactly one of schedule|in_minutes|at}` — cron
+  (recurring, `cron_valid`) OR one-shot (`in_minutes` relative / `at` absolute machine-local `YYYY-MM-DDTHH:MM`|`HH:MM` →
+  `fire_epoch`); **`list_tasks`** (active dynamic only — static entries are operator-owned, not in the store);
+  **`cancel_task`** `{id}` → tombstone.
+- **One-shot turns are NEW** (cron was recurring-only): fire once when `now_epoch >= fire_epoch` → the module appends a
+  `done` record (folds away next reload). **Skip-if-busy is honored** — a one-shot due while the TurnGate is held is NOT
+  tombstoned (retries next free tick; `fire_` returns whether it actually ran). **Catch-up on boot:** a one-shot whose
+  time passed while the process was down fires once on the next post-boot scan.
+- **Guardrails:** opt-in by **rostering** the tools + a `SelfScheduleGuard` objective (PeerLoopGuard mirror,
+  `src/behaviors/standard_behaviors.cpp`) that **hard-vetoes `schedule_task` on a `heartbeat:`-origin turn unless
+  `allow_self_schedule=true`** (default false → a tick can't breed more ticks; a **human**-origin turn always may). Caps
+  `max_tasks` (default 20) + `min_interval_s` (one-shot floor, default 60) enforced in the tool; `stay_on_budget` still
+  bounds cost. New `Capability::SelfSchedule` (→ allow; the guard + caps gate). `MalConfig` if `schedule_task` is rostered
+  without `Module = heartbeat` (silent no-op otherwise).
+- **Config = the UNNAMED `Heartbeat { cron_store allow_self_schedule max_tasks min_interval_s }` block** (a NAMED
+  `Heartbeat = <name>` block stays a static entry; the entry-parse loop skips `name==""`). Docs: `docs/manifest-reference.md`
+  §15 self-scheduling subsection; `prompts/soul.md` "## Scheduling your own work". Spec/plan:
+  `docs/superpowers/{specs/2026-07-07-self-scheduling-design.md,plans/2026-07-07-self-scheduling.md}`. Pieces:
+  `include/hades/heartbeat/cron_store.h`+`src/apps/heartbeat/cron_store.cpp` (pure fold/compact/serialize/parse_at/id),
+  `tools/{schedule_task,list_tasks,cancel_task}_main.cpp`, `include/hades/objective/self_schedule_guard.h`,
+  `src/apps/heartbeat/heartbeat.cpp` (reload/one-shot), `app/agent_wiring.cpp` (config split + argv + guard).
+- **Live-smoke pending** (Vaios: roster the 3 tools + `Module = heartbeat`; "remind me in 2 min", `list_tasks`, `cancel_task`).
+- **v2 seams:** raw-`command` kind (deliberately excluded — gate-preserving); static entries in `list_tasks`; `tz` key for
+  `at`; store compaction beyond boot; staleness-drop for long-overdue one-shots; the reactive `when=` trigger (self-scheduled watch).
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 
@@ -521,13 +534,13 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (470/470, ~4.4s)
+nix develop --command ctest --test-dir build                 # test (511/511, ~5.4s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
 ```
-Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill,ask-agent,grep,glob,edit-file,git-read,run-command}` (tools),
+Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill,ask-agent,grep,glob,edit-file,git-read,run-command,schedule-task,list-tasks,cancel-task}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
 **readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 

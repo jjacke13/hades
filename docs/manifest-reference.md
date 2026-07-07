@@ -661,6 +661,66 @@ The `disk_watch` prompt is a single sentence with no `=`, so inline is fine; it 
 telegram` rostered for its notifications to arrive. `daily_summary` runs a background task (save a
 recap to memory) and, being `notify = false`, never pings the user regardless of what it replies.
 
+### Self-scheduling — the agent creates its own tasks at runtime
+
+The `Heartbeat = <name>` blocks above are **operator-static** (parsed once at launch). Self-scheduling
+lets the **agent** create, list, and cancel its own scheduled turns *at runtime* via three tools, so a
+goal you set in conversation ("keep an eye on X, ping me if it drifts") can spawn its own monitors and
+reminders. Dynamic tasks are persisted in a store the `HeartbeatModule` re-reads on every ~30 s scan and
+**coexist** with the static `Heartbeat = <name>` entries.
+
+A scheduled task is a **prompt** (never a raw command): when it fires it drives the same gated self-turn
+a static heartbeat does (`TURN_ORIGIN = heartbeat:<name>`, all objectives, confirm auto-denied). To run a
+command, the prompt instructs the agent and it calls `run_command` — which passes `capability_policy` —
+so scheduled work stays inside the same gate as everything else.
+
+**Opt-in — roster the three tools** (absent → the agent cannot self-schedule):
+
+```
+Tool = schedule_task { native = ./build/hades-schedule-task }
+Tool = list_tasks    { native = ./build/hades-list-tasks }
+Tool = cancel_task   { native = ./build/hades-cancel-task }
+```
+
+**Config — the UNNAMED `Heartbeat { }` block** (distinct from the `Heartbeat = <name>` *entry* blocks):
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `cron_store` | Path to the dynamic-task store (append-only jsonl). | `.hades/cron.jsonl` | Whitespace in the path → `MalConfig` (it is appended to the tools' whitespace-split argv). The module compacts it on boot. |
+| `allow_self_schedule` | May a **heartbeat tick** create new tasks? | `false` | `false` → a heartbeat-origin turn is hard-vetoed from `schedule_task` (recursion contained); a **human**-origin turn may always schedule. `true` → a tick may schedule follow-ups too (escalation). |
+| `max_tasks` | Cap on active dynamic tasks. | `20` | `schedule_task` refuses (`ok:false`) when the active count is at the cap. |
+| `min_interval_s` | Floor for a one-shot's delay, seconds. | `60` | A one-shot `in_minutes` below this floor is refused. (Recurring cron is minute-resolution + deduped → an inherent 60 s/task floor.) |
+
+Rostering `schedule_task` **without** `Module = heartbeat` is a `MalConfig` (nothing would ever run the
+tasks). The gate is a `SelfScheduleGuard` objective, auto-registered when heartbeat + `schedule_task` are
+both present; it guards only the create path — `list_tasks`/`cancel_task` are always allowed.
+
+**The tools:**
+
+- **`schedule_task`** — `{ name, prompt, notify?, and exactly ONE of: schedule | in_minutes | at }`.
+  `schedule` = a 5-field cron (recurring, same subset as above). `in_minutes` = run once, N minutes from
+  now. `at` = run once at an absolute machine-local time, `YYYY-MM-DDTHH:MM` (or `HH:MM` = the next
+  occurrence). Returns the new task's `id`.
+- **`list_tasks`** — the agent's own active dynamic tasks (id, name, kind, timing, prompt, notify). Static
+  `Heartbeat = <name>` entries are operator-owned and **not** listed.
+- **`cancel_task`** — `{ id }` (from `list_tasks`) → removes it.
+
+**Store schema** (`.hades/cron.jsonl`, append-only, folded by id — an operator can read it):
+
+```
+{"op":"add","id":"t<epoch>-<hex>","name":"watch","kind":"cron","schedule":"*/15 * * * *","fire_epoch":null,"prompt":"…","notify":true,"created":1751900000}
+{"op":"add","id":"t<epoch>-<hex>","name":"remind","kind":"once","schedule":null,"fire_epoch":1751986800,"prompt":"…","notify":true,"created":1751900050}
+{"op":"cancel","id":"t<epoch>-<hex>"}    # cancel_task
+{"op":"done","id":"t<epoch>-<hex>"}      # the module, after a one-shot fires
+```
+
+**Gotchas:** the self-schedule config lives in the **unnamed** `Heartbeat { }` block — a `Heartbeat =
+<name> { }` block is always a static *entry* (and needs a `schedule`). `at`/`in_minutes` are **machine-local**
+(like cron; no timezone key in v1). The store **persists across restarts** — a one-shot whose time passed
+while the process was down fires once on the next boot scan (catch-up), then completes. `notify` behaves
+exactly as for a static entry (`NOTIFY_USER` → Telegram, `SILENT` sentinel), so a `notify = true` dynamic
+task still needs `Module = telegram` to deliver.
+
 ---
 
 ## Appendix A — CLI flags
