@@ -268,3 +268,29 @@ TEST(Heartbeat, OverdueOneShotCatchUpFires) {
   r.mod.tick(now);
   EXPECT_EQ(turns, 1);   // catch-up fires, not dropped
 }
+
+TEST(Heartbeat, OneShotSkippedWhenBusyRetriesNextTick) {
+  Rig r;
+  const std::string store = cron_store_path("busyonce");
+  std::tm now = at(30, 9);
+  long long past = local_epoch(now) - 60;   // due one minute ago
+  write_store(store, add_record({"o1", "remind", "once", "", past, "ping", false, 5}) + "\n");
+  r.mod.set_cron_store(store);
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  {
+    std::lock_guard<std::mutex> hold(r.gate.mu);   // a human turn holds the gate
+    r.mod.tick(now);                                // one-shot due, but gate busy -> SKIPPED, NOT tombstoned
+  }
+  EXPECT_EQ(turns, 0);
+  {
+    std::ifstream f(store); std::stringstream s; s << f.rdbuf();
+    EXPECT_EQ(fold_cron_store(s.str()).size(), 1u);   // still active -> not lost
+  }
+  r.mod.tick(at(31, 9));   // gate free next minute -> retries and fires
+  EXPECT_EQ(turns, 1);
+  {
+    std::ifstream f(store); std::stringstream s; s << f.rdbuf();
+    EXPECT_TRUE(fold_cron_store(s.str()).empty());   // now completed (done record)
+  }
+}

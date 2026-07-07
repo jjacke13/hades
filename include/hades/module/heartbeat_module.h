@@ -46,7 +46,7 @@ class HeartbeatModule : public Module {
   ~HeartbeatModule() override;        // stop + join
 
  private:
-  void fire_(HeartbeatEntry& e);
+  bool fire_(HeartbeatEntry& e);
   void maybe_fire_(HeartbeatEntry& e, const std::tm& now, long long minute, long long now_epoch,
                    bool dynamic);
   void reload_dynamic_();

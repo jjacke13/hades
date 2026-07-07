@@ -4,7 +4,9 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <map>
+#include <set>
 #include <sstream>
 #include "hades/blackboard.h"
 #include "hades/heartbeat/cron.h"
@@ -70,15 +72,18 @@ void HeartbeatModule::maybe_fire_(HeartbeatEntry& e, const std::tm& now, long lo
   if (!match) return;
   e.last_fired_minute = minute;                          // consume the minute (fire OR skip-if-busy)
   if (dynamic) last_fired_by_id_[e.id] = minute;         // carry the stamp across the next reload
+  bool ran = false;
   try {
-    fire_(e);
+    ran = fire_(e);
   } catch (...) {
     bb_->post("HEARTBEAT_ERROR", e.name + " tick threw", "heartbeat");
   }
-  if (dynamic && e.one_shot && !cron_store_.empty()) {   // one-shot done -> tombstone, never re-fires
+  if (dynamic && e.one_shot && ran && !cron_store_.empty()) {  // ONLY tombstone a one-shot that ACTUALLY ran
     std::ofstream f(cron_store_, std::ios::app);
-    if (f) f << done_record(e.id) << "\n";
-    last_fired_by_id_.erase(e.id);                       // gone after the next reload
+    if (f) {
+      f << done_record(e.id) << "\n";
+      last_fired_by_id_.erase(e.id);                     // only forget the stamp if the done record persisted
+    }
   }
 }
 
@@ -96,6 +101,11 @@ void HeartbeatModule::reload_dynamic_() {
     e.last_fired_minute = (it != last_fired_by_id_.end()) ? it->second : -1;
     rebuilt.push_back(std::move(e));
   }
+  // Prune dedup stamps for ids no longer active (a cancelled task folds out but left its stamp).
+  std::set<std::string> active_ids;
+  for (const auto& e : rebuilt) active_ids.insert(e.id);
+  for (auto it = last_fired_by_id_.begin(); it != last_fired_by_id_.end(); )
+    it = active_ids.count(it->first) ? std::next(it) : last_fired_by_id_.erase(it);
   dynamic_ = std::move(rebuilt);
 }
 
@@ -109,15 +119,15 @@ void HeartbeatModule::load_and_compact_() {
   if (out) out << compacted;
 }
 
-void HeartbeatModule::fire_(HeartbeatEntry& e) {
+bool HeartbeatModule::fire_(HeartbeatEntry& e) {
   std::unique_lock<std::mutex> lk(turn_mu_(), std::try_to_lock);
-  if (!lk.owns_lock()) {                              // a human/peer turn holds the gate -> skip
+  if (!lk.owns_lock()) {                              // a human/peer turn holds the gate -> skip (retry next tick)
     bb_->post("HEARTBEAT_SKIPPED", e.name, "heartbeat");
-    return;
+    return false;
   }
   if (confirm_outstanding_) {                         // async confirm freed the gate but pending_ set
     bb_->post("HEARTBEAT_SKIPPED", e.name + " (confirm pending)", "heartbeat");
-    return;
+    return false;
   }
   my_turn_ = true;
   struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
@@ -131,7 +141,7 @@ void HeartbeatModule::fire_(HeartbeatEntry& e) {
     bb_->post("TURN_ABANDONED", nlohmann::json::object(), "heartbeat");
     bb_->pump();
     bb_->post("HEARTBEAT_ERROR", e.name + " turn timed out", "heartbeat");
-    return;
+    return true;   // the turn WAS driven -> a one-shot must NOT retry/re-run on timeout
   }
   if (e.notify) {
     std::string r = trim(last_reply_);
@@ -141,6 +151,7 @@ void HeartbeatModule::fire_(HeartbeatEntry& e) {
       bb_->pump();   // dispatch to the notify sink on THIS thread while we still hold the gate
     }
   }
+  return true;
 }
 
 void HeartbeatModule::start() {
