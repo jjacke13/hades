@@ -55,6 +55,11 @@ class HeartbeatModule : public Module {
   bool my_turn_ = false;
   bool got_reply_ = false;
   bool denied_confirm_ = false;
+  // Set by ANY CONFIRM_REQUEST (human or ours), cleared on CONFIRM_RESPONSE/TURN_ABANDONED. Async
+  // confirms free the gate while a human's pending_ is still set, so a free gate != "no confirm
+  // pending"; a tick must also skip while this is true. Written in pump-thread handlers, read in
+  // fire_ under the gate -> gate-ordered.
+  bool confirm_outstanding_ = false;
   std::string last_reply_;
 
   std::thread timer_thread_;

@@ -28,8 +28,10 @@ void HeartbeatModule::on_attach(Blackboard& bb) {
     last_reply_ = e.value.get<std::string>();
     got_reply_ = true;
   });
-  // No human present -> auto-deny a confirm-band action inside our tick (mirror BridgeModule).
+  // Track an outstanding confirm ACROSS all front-ends (un-gated) so a tick skips while a human's
+  // async confirm is pending; then, if it's OUR tick, auto-deny (no human present, mirror Bridge).
   bb.subscribe("CONFIRM_REQUEST", [this](const Entry& e) {
+    confirm_outstanding_ = true;                       // ANY confirm (human or ours) blocks a tick
     if (!my_turn_ || !e.value.is_object()) return;
     denied_confirm_ = true;
     auto id = e.value.find("id");
@@ -38,6 +40,10 @@ void HeartbeatModule::on_attach(Blackboard& bb) {
                {"approved", false}},
               "heartbeat");
   });
+  // Any confirm resolved (human answer / our auto-deny) -> a tick may fire again.
+  bb.subscribe("CONFIRM_RESPONSE", [this](const Entry&) { confirm_outstanding_ = false; });
+  // An abandoned turn clears its dangling confirm, else the heartbeat would skip forever.
+  bb.subscribe("TURN_ABANDONED", [this](const Entry&) { confirm_outstanding_ = false; });
 }
 
 void HeartbeatModule::tick(const std::tm& now) {
@@ -63,6 +69,10 @@ void HeartbeatModule::fire_(HeartbeatEntry& e) {
     bb_->post("HEARTBEAT_SKIPPED", e.name, "heartbeat");
     return;
   }
+  if (confirm_outstanding_) {                         // async confirm freed the gate but pending_ set
+    bb_->post("HEARTBEAT_SKIPPED", e.name + " (confirm pending)", "heartbeat");
+    return;
+  }
   my_turn_ = true;
   struct Reset { bool& f; ~Reset() { f = false; } } reset{my_turn_};
   got_reply_ = false;
@@ -78,8 +88,9 @@ void HeartbeatModule::fire_(HeartbeatEntry& e) {
     return;
   }
   if (e.notify) {
-    const std::string r = trim(last_reply_);
-    if (!r.empty() && r != "SILENT") {
+    std::string r = trim(last_reply_);
+    if (!r.empty() && r != "SILENT") {                 // append the note AFTER the SILENT check
+      if (denied_confirm_) r += "\n[note: a confirm-band action was auto-denied — no human present]";
       bb_->post("NOTIFY_USER", {{"text", r}, {"from", "heartbeat:" + e.name}}, "heartbeat");
       bb_->pump();   // dispatch to the notify sink on THIS thread while we still hold the gate
     }

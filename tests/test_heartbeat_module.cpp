@@ -119,3 +119,66 @@ TEST(Heartbeat, NoEntryNoFire) {
   r.mod.tick(at(0, 0));
   EXPECT_EQ(turns, 0);
 }
+
+// A human confirm from ANOTHER front-end frees the gate but leaves the Arbiter's pending_ set (async
+// confirm). A tick must NOT fire into that window (else it clobbers the human's pending confirm).
+TEST(Heartbeat, SkipsWhenConfirmOutstanding) {
+  Rig r;
+  int user_msgs = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++user_msgs; });
+  bool skipped = false;
+  r.bb.subscribe("HEARTBEAT_SKIPPED", [&](const Entry&) { skipped = true; });
+  r.mod.add_entry({"mon", "* * * * *", "check", false, -1});
+
+  // Human confirm from another surface: posted OUTSIDE a tick, so my_turn_ is false.
+  r.bb.post("CONFIRM_REQUEST", {{"id", "h1"}, {"prompt", "approve?"}}, "arbiter");
+  r.bb.pump();
+
+  r.mod.tick(at(0, 0));   // gate is free, but a confirm is outstanding -> skip
+  r.bb.pump();
+  EXPECT_TRUE(skipped);
+  EXPECT_EQ(user_msgs, 0);   // the tick posted no USER_MESSAGE
+
+  // Human answers -> confirm resolved -> the next tick may fire.
+  r.bb.post("CONFIRM_RESPONSE", {{"id", "h1"}, {"approved", true}}, "arbiter");
+  r.bb.pump();
+  r.mod.tick(at(1, 0));   // next minute
+  EXPECT_EQ(user_msgs, 1);
+}
+
+// A dangling confirm from an ABANDONED turn must be cleared, else the heartbeat skips forever.
+TEST(Heartbeat, ConfirmOutstandingClearedOnAbandon) {
+  Rig r;
+  int user_msgs = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++user_msgs; });
+  r.mod.add_entry({"mon", "* * * * *", "check", false, -1});
+
+  r.bb.post("CONFIRM_REQUEST", {{"id", "h1"}, {"prompt", "?"}}, "arbiter");
+  r.bb.pump();
+  r.bb.post("TURN_ABANDONED", nlohmann::json::object(), "arbiter");
+  r.bb.pump();
+
+  r.mod.tick(at(0, 0));   // dangling confirm cleared -> fires
+  EXPECT_EQ(user_msgs, 1);
+}
+
+// A notify=true tick that auto-denies a confirm-band action surfaces a note in the notified reply.
+TEST(Heartbeat, DeniedConfirmNoteInNotifiedReply) {
+  Blackboard bb;
+  TurnGate gate;
+  HeartbeatModule mod;
+  mod.set_turn_gate(&gate);
+  mod.on_attach(bb);
+  std::string got;
+  bb.subscribe("NOTIFY_USER", [&](const Entry& e) { got = e.value.value("text", ""); });
+  // Scripted agent: raise a confirm during the tick, then reply a non-silent answer.
+  bb.subscribe("USER_MESSAGE", [&](const Entry&) {
+    bb.post("CONFIRM_REQUEST", {{"id", "c1"}, {"prompt", "rm?"}}, "arbiter");
+  });
+  bb.subscribe("CONFIRM_RESPONSE",
+               [&](const Entry&) { bb.post("ASSISTANT_MESSAGE", "did the safe part", "arbiter"); });
+  mod.add_entry({"mon", "* * * * *", "task", true, -1});   // notify=true
+  mod.tick(at(0, 0));
+  EXPECT_NE(got.find("auto-denied"), std::string::npos);
+  EXPECT_NE(got.find("did the safe part"), std::string::npos);   // reply preserved
+}
