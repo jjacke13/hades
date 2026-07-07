@@ -270,7 +270,16 @@ old `/ask`+`/share` behavior unchanged). **Two channels:**
 Docs: `docs/manifest-reference.md` §13 (card schema, `/share` `type` field, receiver bus vars, security);
 `prompts/soul.md` "## Peers" (delegate-by-advertised-capability + treat "Reported by peers" as re-verify claims).
 
-### Heartbeat / cron (self-triggered turns) — shipped 2026-07-07, `feat/heartbeat`, 470/470 (TSan 145/145)
+### Heartbeat / cron (self-triggered turns) — shipped 2026-07-07, `feat/heartbeat`, 473/473 (TSan 145/145)
+**LIVE-VALIDATED 2026-07-07 on the Pi Zero 2 W (`pi0`, aarch64 static build):** an every-minute `Heartbeat = smoke`
+(`notify = true`) fired a self-turn each minute and its reply arrived on Telegram — the full timer→gated-self-turn→
+Arbiter→LLM→NOTIFY_USER→Telegram path, cross-machine. Confirmed the three modes from the `notify` flag: `notify=false`
+= silent periodic autonomous work (tick runs a full turn incl. tool actions, reply dropped, no message); `notify=true`
+= same + reply pushed to Telegram unless the agent replies `SILENT` (so "report only on exceptions" = notify=true +
+"reply SILENT if all fine"). Telegram gotcha hit: **one bot token = one poller** — running telegram on both desktop
+and Pi with the same `TELEGRAM_BOT_TOKEN` → `getUpdates` 409 conflict; use separate tokens or stop one poller (the
+notify *send* doesn't conflict, only the two pollers). Autonomous-work caveat: a tick has no human → confirm-band
+AUTO-DENIED → it gets only its UNCONFIRMED powers; give it `fs_write_allow`/`exec_allow` scopes to act unattended.
 The **autonomy leg**: hades stops being purely event-driven and runs its OWN turns on a schedule. **Inert unless
 the roster lists `Module = heartbeat`** (omit → `Agent.heartbeat==nullptr`, zero coupling; the test `build_agent`
 overload is unaffected). `HeartbeatModule` (`src/apps/heartbeat/heartbeat.cpp`) owns a timer thread that wakes
