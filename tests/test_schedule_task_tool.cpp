@@ -95,6 +95,15 @@ TEST(ScheduleTaskTool, MaxTasksCapRefuses) {
   EXPECT_FALSE(j.value("ok", true));   // active count 1 >= cap 1
 }
 
+TEST(ScheduleTaskTool, ExtremeInMinutesRejectedNoUB) {
+  const std::string store = fresh_store("extreme");
+  auto j = call_sched(store, R"({"call":"schedule_task","args":{"name":"x","prompt":"p","in_minutes":1e20}})");
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_FALSE(fs::exists(store));   // rejected before any write
+  auto neg = call_sched(store, R"({"call":"schedule_task","args":{"name":"x","prompt":"p","in_minutes":-5}})");
+  EXPECT_FALSE(neg.value("ok", true));
+}
+
 TEST(ScheduleTaskTool, MissingArgsAndNonStringFailClosed) {
   const std::string store = fresh_store("bad");
   for (const char* raw : {

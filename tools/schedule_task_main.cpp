@@ -7,11 +7,14 @@
 // argv — never chosen by the LLM. Fail-closed: malformed/adversarial input returns ok:false, never
 // throws. A task is a PROMPT to a future gated self-turn (never a raw command).
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <nlohmann/json.hpp>
 #include "hades/heartbeat/cron.h"         // cron_valid
@@ -29,8 +32,10 @@ static std::string iso_local(long long epoch) {
 
 int main(int argc, char** argv) {
   const std::string store = argc > 1 ? argv[1] : ".hades/cron.jsonl";
-  const long long max_tasks = argc > 2 ? std::strtoll(argv[2], nullptr, 10) : 20;
-  const long long min_interval_s = argc > 3 ? std::strtoll(argv[3], nullptr, 10) : 60;
+  long long max_tasks = argc > 2 ? std::strtoll(argv[2], nullptr, 10) : 20;
+  long long min_interval_s = argc > 3 ? std::strtoll(argv[3], nullptr, 10) : 60;
+  if (max_tasks <= 0) max_tasks = 20;          // a wiring misconfig must not brick scheduling
+  if (min_interval_s < 0) min_interval_s = 60;
 
   std::string line;
   std::getline(std::cin, line);
@@ -101,6 +106,8 @@ int main(int argc, char** argv) {
     t.kind = "cron"; t.schedule = sched; when = sched;
   } else if (has_in) {
     const double mins = args["in_minutes"].get<double>();
+    if (!std::isfinite(mins) || mins < 0 || mins > 1e9)
+      return fail("in_minutes out of range");
     const long long delay = static_cast<long long>(mins * 60);
     if (delay < min_interval_s) return fail("in_minutes below the min interval floor");
     t.kind = "once"; t.fire_epoch = now + delay; when = iso_local(t.fire_epoch);
