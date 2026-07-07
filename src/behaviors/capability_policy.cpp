@@ -177,6 +177,8 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "edit_file")                               return Capability::FsWrite;
   if (tool == "git_read")                                return Capability::GitRead;
   if (tool == "run_command")                             return Capability::ExecScoped;
+  if (tool == "schedule_task" || tool == "list_tasks" || tool == "cancel_task")
+                                                         return Capability::SelfSchedule;
   return Capability::Unknown;
 }
 
@@ -293,6 +295,12 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
         return allow();
       return confirm("run_command outside exec_allow: " + cmd);
     }
+    case Capability::SelfSchedule:
+      // The agent's own task store: the store path + caps are fixed by wiring argv (never
+      // chosen by the LLM), and SelfScheduleGuard already contains the heartbeat-origin
+      // recursion risk. Distinct capability (SkillWrite precedent) so a future policy can
+      // confirm-gate scheduling with zero code.
+      return allow();
     case Capability::Unknown:
     default:
       return confirm("unknown tool '" + a.tool + "': capability undeclared");

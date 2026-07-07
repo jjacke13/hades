@@ -14,7 +14,7 @@ namespace hades {
 
 // The kinds of authority a tool action can exercise. Authoritative source is the built-in
 // capability_of() table; an unknown tool maps to Unknown (-> confirm-gated).
-enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, SkillRead, SkillWrite, PeerAsk, GitRead, ExecScoped, Unknown };
+enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, SkillRead, SkillWrite, PeerAsk, GitRead, ExecScoped, SelfSchedule, Unknown };
 
 // Operator-supplied bounds (from the `Objective = capability_policy { … }` manifest block).
 // Path lists are lexically-normalized prefixes (leading "./" and "." components collapsed before

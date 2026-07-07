@@ -10,6 +10,7 @@
 #include "hades/blackboard.h"
 #include "hades/objective/avoid_destructive.h"
 #include "hades/objective/peer_loop_guard.h"
+#include "hades/objective/self_schedule_guard.h"
 
 // ── USD budget hard cap (was src/objective/stay_on_budget.cpp) ──────────────────────────
 namespace hades {
@@ -49,6 +50,18 @@ VetoResult PeerLoopGuard::veto(const Blackboard& bb, const Action& a) const {
   auto e = bb.get("TURN_ORIGIN");
   if (e && e->value.is_string() && e->value.get<std::string>().rfind("peer:", 0) == 0)
     return {true, "peer-driven turn cannot ask another agent (loop guard)", false};
+  return {};
+}
+}  // namespace hades
+
+// ── no self-scheduling from a heartbeat-driven turn (recursion guard) ──────────────────────────
+namespace hades {
+VetoResult SelfScheduleGuard::veto(const Blackboard& bb, const Action& a) const {
+  if (a.kind != Action::Kind::ToolCall || a.tool != "schedule_task") return {};
+  if (allow_) return {};                                  // operator opted in: ticks may self-schedule
+  auto e = bb.get("TURN_ORIGIN");
+  if (e && e->value.is_string() && e->value.get<std::string>().rfind("heartbeat:", 0) == 0)
+    return {true, "a heartbeat-driven turn cannot self-schedule (allow_self_schedule=false)", false};
   return {};
 }
 }  // namespace hades
