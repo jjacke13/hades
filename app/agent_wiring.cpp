@@ -16,7 +16,6 @@
 #include <sstream>
 #include "hades/blackboard.h"
 #include "hades/heartbeat/cron.h"  // cron_valid
-#include "hades/heartbeat/cron_store.h"  // (self-scheduling store path resolution)
 #include "hades/launcher.h"  // Launcher + MalConfig
 #include "hades/llm/http.h"
 #include "hades/llm/openai_compat_provider.h"
@@ -212,9 +211,13 @@ void wire_agent(Agent& a,
     if (b.kv.count("max_tasks")) max_tasks = parse_ll(b.kv.at("max_tasks"), max_tasks);
     if (b.kv.count("min_interval_s")) min_interval_s = parse_ll(b.kv.at("min_interval_s"), min_interval_s);
   }
+  if (max_tasks <= 0) max_tasks = 20;          // 0/negative would silently disable scheduling
+  if (min_interval_s < 0) min_interval_s = 60;
   reject_ws(cron_store, "cron_store");
   bool has_schedule_task = false;
   for (const auto& t : tools) if (t.name == "schedule_task") has_schedule_task = true;
+  if (has_schedule_task && !a.heartbeat)
+    throw MalConfig("schedule_task tool requires Module = heartbeat (nothing runs scheduled tasks otherwise)");
 
   // Bridge identity + peer roster. The Bridge BLOCK is the agent's bridge identity (name/
   // secret/timeout) — needed by the ask_agent tool even without the listener module; the

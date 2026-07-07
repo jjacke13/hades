@@ -78,3 +78,13 @@ TEST(SelfSchedulingWiring, WhitespaceCronStoreThrows) {
   Manifest m = parse_manifest(manifest("/tmp/has space.jsonl"));
   EXPECT_THROW(build_agent(bb, m), MalConfig);
 }
+
+TEST(SelfSchedulingWiring, ScheduleTaskWithoutHeartbeatThrows) {
+  Blackboard bb;
+  Manifest m = parse_manifest(
+      std::string("Session\n{\n  model = m\n}\n") +
+      "Module = tool_runner\n" +
+      "Module = arbiter\n" +
+      "Tool = schedule_task { native = " + SCHEDULE_TASK_BIN + " }\n");
+  EXPECT_THROW(build_agent(bb, m), MalConfig);   // schedule_task rostered but no Module = heartbeat
+}
