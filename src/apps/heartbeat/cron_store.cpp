@@ -19,6 +19,9 @@ CronTask task_from_json(const nlohmann::json& j) {
   t.prompt   = j.value("prompt", "");
   t.notify   = j.value("notify", false);
   t.created  = j.value("created", 0LL);
+  if (j.contains("when") && j["when"].is_string()) t.when = j["when"].get<std::string>();
+  if (j.contains("cooldown_s") && j["cooldown_s"].is_number_integer())
+    t.cooldown_s = j["cooldown_s"].get<long long>();
   return t;
 }
 }  // namespace
@@ -54,7 +57,9 @@ std::string add_record(const CronTask& t) {
   nlohmann::json j{{"op", "add"}, {"id", t.id}, {"name", t.name}, {"kind", t.kind},
                    {"schedule", t.kind == "cron" ? nlohmann::json(t.schedule) : nlohmann::json()},
                    {"fire_epoch", t.kind == "once" ? nlohmann::json(t.fire_epoch) : nlohmann::json()},
-                   {"prompt", t.prompt}, {"notify", t.notify}, {"created", t.created}};
+                   {"prompt", t.prompt}, {"notify", t.notify}, {"created", t.created},
+                   {"when", t.kind == "when" ? nlohmann::json(t.when) : nlohmann::json()},
+                   {"cooldown_s", t.cooldown_s}};
   return j.dump();
 }
 std::string cancel_record(const std::string& id) {

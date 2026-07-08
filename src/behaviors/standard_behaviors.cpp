@@ -54,13 +54,19 @@ VetoResult PeerLoopGuard::veto(const Blackboard& bb, const Action& a) const {
 }
 }  // namespace hades
 
-// ── no self-scheduling from a heartbeat-driven turn (recursion guard) ──────────────────────────
+// ── no self-scheduling from a heartbeat-driven turn (recursion guard) + never from a peer ───────
 namespace hades {
 VetoResult SelfScheduleGuard::veto(const Blackboard& bb, const Action& a) const {
   if (a.kind != Action::Kind::ToolCall || a.tool != "schedule_task") return {};
-  if (allow_) return {};                                  // operator opted in: ticks may self-schedule
   auto e = bb.get("TURN_ORIGIN");
-  if (e && e->value.is_string() && e->value.get<std::string>().rfind("heartbeat:", 0) == 0)
+  const std::string origin =
+      (e && e->value.is_string()) ? e->value.get<std::string>() : std::string{};
+  // A peer must NEVER plant standing work on this agent — not switchable (bridge philosophy:
+  // peer powers = the receiver's unconfirmed powers, and standing tasks are excluded by design).
+  if (origin.rfind("peer:", 0) == 0)
+    return {true, "a peer-driven turn cannot schedule tasks on this agent", false};
+  if (allow_) return {};                                  // operator opted in: ticks may self-schedule
+  if (origin.rfind("heartbeat:", 0) == 0)
     return {true, "a heartbeat-driven turn cannot self-schedule (allow_self_schedule=false)", false};
   return {};
 }

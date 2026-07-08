@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "hades/heartbeat/cron_store.h"
 #include "hades/tool/subprocess.h"
 using namespace hades;
 namespace fs = std::filesystem;
@@ -115,4 +116,38 @@ TEST(ScheduleTaskTool, MissingArgsAndNonStringFailClosed) {
     ASSERT_FALSE(j.is_discarded()) << raw;
     EXPECT_FALSE(j.value("ok", true)) << raw;
   }
+}
+
+TEST(ScheduleTaskTool, WhenKindAccepted) {
+  const std::string store = fresh_store("when");
+  auto j = call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"watch","prompt":"check","when":"PEER.pi0.card changes","notify":true}})");
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  EXPECT_EQ(j["result"].value("kind", ""), "when");
+  EXPECT_EQ(j["result"].value("when", ""), "PEER.pi0.card changes");
+}
+
+TEST(ScheduleTaskTool, MalformedWhenRejected) {
+  const std::string store = fresh_store("badwhen");
+  auto j = call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"w","prompt":"p","when":"KEY frobnicates"}})");
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_FALSE(std::filesystem::exists(store));
+}
+
+TEST(ScheduleTaskTool, WhenJoinsExactlyOneSet) {
+  const std::string store = fresh_store("whenexcl");
+  auto j = call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"w","prompt":"p","when":"K changes","schedule":"* * * * *"}})");
+  EXPECT_FALSE(j.value("ok", true));   // two timing kinds -> refused
+}
+
+TEST(ScheduleTaskTool, WhenCooldownStoredAndDefaulted) {
+  const std::string store = fresh_store("cool");
+  ASSERT_TRUE(call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"w","prompt":"p","when":"K changes","cooldown_s":300}})").value("ok", false));
+  std::ifstream f(store); std::stringstream s; s << f.rdbuf();
+  auto v = hades::fold_cron_store(s.str());
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_EQ(v[0].cooldown_s, 300);
 }

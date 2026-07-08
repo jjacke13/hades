@@ -89,3 +89,27 @@ TEST(CronStore, ParseAtIsoOutOfRangeRejected) {
   EXPECT_FALSE(parse_at("2030-13-40T25:99", 0).has_value());
   EXPECT_TRUE(parse_at("2030-06-15T09:30", 0).has_value());
 }
+
+TEST(CronStore, WhenKindRoundTrips) {
+  CronTask t{"w1", "watch", "when", "", 0, "check it", true, 42};
+  t.when = "PEER.pi0.card changes";
+  t.cooldown_s = 120;
+  auto v = fold_cron_store(add_record(t) + "\n");
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_EQ(v[0].kind, "when");
+  EXPECT_EQ(v[0].when, "PEER.pi0.card changes");
+  EXPECT_EQ(v[0].cooldown_s, 120);
+  // non-when kinds serialize when as null and default cooldown
+  auto j = nlohmann::json::parse(add_record({"c1", "n", "cron", "* * * * *", 0, "p", false, 1}));
+  EXPECT_TRUE(j["when"].is_null());
+}
+
+TEST(CronStore, MissingWhenFieldsDefaultTolerantly) {
+  // A pre-when record (older store) folds with when="" and cooldown_s=60.
+  const char* old_rec =
+      R"({"op":"add","id":"a1","name":"n","kind":"cron","schedule":"* * * * *","fire_epoch":null,"prompt":"p","notify":false,"created":1})";
+  auto v = fold_cron_store(std::string(old_rec) + "\n");
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_TRUE(v[0].when.empty());
+  EXPECT_EQ(v[0].cooldown_s, 60);
+}

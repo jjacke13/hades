@@ -50,3 +50,12 @@ TEST(CapabilityPolicy, SelfScheduleToolsAreAllowed) {
   Blackboard bb;
   EXPECT_FALSE(p.veto(bb, sched("schedule_task")).vetoed);   // allow (guard + tool caps do the gating)
 }
+
+TEST(SelfScheduleGuard, PeerOriginAlwaysVetoed) {
+  Blackboard bb;
+  bb.post("TURN_ORIGIN", "peer:pi0", "bridge");
+  SelfScheduleGuard strict(false), permissive(true);
+  EXPECT_TRUE(strict.veto(bb, sched("schedule_task")).vetoed);
+  EXPECT_TRUE(permissive.veto(bb, sched("schedule_task")).vetoed);   // allow_self_schedule does NOT open peers
+  EXPECT_FALSE(permissive.veto(bb, sched("list_tasks")).vetoed);     // read path untouched
+}

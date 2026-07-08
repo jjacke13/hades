@@ -14,12 +14,14 @@ namespace hades {
 struct CronTask {
   std::string id;              // "t<epoch>-<hex4>"
   std::string name;            // agent-chosen label
-  std::string kind;            // "cron" | "once"
+  std::string kind;            // "cron" | "once" | "when"
   std::string schedule;        // 5-field cron (kind=="cron"); "" otherwise
   long long   fire_epoch = 0;  // local epoch seconds (kind=="once"); 0 otherwise
   std::string prompt;          // the self-turn prompt
   bool        notify = false;
   long long   created = 0;     // local epoch seconds at creation
+  std::string when;            // reactive condition (kind=="when"); "" otherwise
+  long long   cooldown_s = 60; // min seconds between fires (when kind)
 };
 
 // Replay append-only jsonl into the active set. add -> insert by id; cancel/done -> erase. Tolerant:

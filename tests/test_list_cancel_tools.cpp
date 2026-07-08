@@ -53,3 +53,14 @@ TEST(CancelTaskTool, CancelUnknownIdIsNotOk) {
   ProcResult r = run_subprocess({CANCEL_TASK_BIN, store}, R"({"call":"cancel_task","args":{"id":"ghost"}})", 30.0);
   EXPECT_FALSE(nlohmann::json::parse(r.out, nullptr, false).value("ok", true));
 }
+
+TEST(ListTasksTool, WhenKindShowsCondition) {
+  const char* rec =
+      R"({"op":"add","id":"w1","name":"watch","kind":"when","schedule":null,"fire_epoch":null,"when":"BUDGET_SPENT_USD above 0.8","cooldown_s":60,"prompt":"p","notify":true,"created":1})";
+  const std::string store = store_with("when", std::string(rec) + "\n");
+  ProcResult r = run_subprocess({LIST_TASKS_BIN, store}, R"({"call":"list_tasks"})", 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_TRUE(j.value("ok", false));
+  ASSERT_EQ(j["result"]["tasks"].size(), 1u);
+  EXPECT_EQ(j["result"]["tasks"][0].value("when", ""), "BUDGET_SPENT_USD above 0.8");
+}

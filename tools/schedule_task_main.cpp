@@ -1,11 +1,13 @@
 // tools/schedule_task_main.cpp — bundled schedule_task native tool binary
 //
 // Creates a scheduled task by APPENDING an add-record to the cron store (argv[1], fallback
-// .hades/cron.jsonl). One of schedule (5-field cron) | in_minutes (relative) | at (absolute local)
-// is required; kind is "cron" or "once". Caps: argv[2] max_tasks (refuse when the active count is at
-// the cap), argv[3] min_interval_s (one-shot delay floor). The store path + caps are fixed by wiring
-// argv — never chosen by the LLM. Fail-closed: malformed/adversarial input returns ok:false, never
-// throws. A task is a PROMPT to a future gated self-turn (never a raw command).
+// .hades/cron.jsonl). One of schedule (5-field cron) | in_minutes (relative) | at (absolute local) |
+// when (reactive blackboard condition, see hades/heartbeat/when.h) is required; kind is "cron",
+// "once", or "when". min_interval_s is NOT applied to when (it has its own cooldown_s instead). Caps:
+// argv[2] max_tasks (refuse when the active count is at the cap), argv[3] min_interval_s (one-shot
+// delay floor). The store path + caps are fixed by wiring argv — never chosen by the LLM. Fail-closed:
+// malformed/adversarial input returns ok:false, never throws. A task is a PROMPT to a future gated
+// self-turn (never a raw command).
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -19,6 +21,7 @@
 #include <nlohmann/json.hpp>
 #include "hades/heartbeat/cron.h"         // cron_valid
 #include "hades/heartbeat/cron_store.h"   // CronTask, fold_cron_store, add_record, parse_at, make_task_id
+#include "hades/heartbeat/when.h"         // when_valid
 
 using nlohmann::json;
 namespace fs = std::filesystem;
@@ -55,8 +58,10 @@ int main(int argc, char** argv) {
               "future self runs, gated as a normal turn — to run a command, say so in the prompt and "
               "you will call run_command then). Timing is exactly ONE of: schedule (5-field cron, "
               "recurring), in_minutes (run once, N minutes from now), at (run once, absolute "
-              "'YYYY-MM-DDTHH:MM' or 'HH:MM' local). notify=true forwards the reply to the user. Use "
-              "list_tasks/cancel_task to manage them."},
+              "'YYYY-MM-DDTHH:MM' or 'HH:MM' local), when (reactive: fire when a blackboard condition "
+              "holds — one of 'KEY changes', 'KEY is <v>', 'KEY not <v>', 'KEY above <n>', 'KEY below "
+              "<n>'; optional cooldown_s, default 60, sets the minimum seconds between fires). "
+              "notify=true forwards the reply to the user. Use list_tasks/cancel_task to manage them."},
              {"schema",
               {{"type", "object"},
                {"properties",
@@ -65,7 +70,9 @@ int main(int argc, char** argv) {
                  {"notify", {{"type", "boolean"}}},
                  {"schedule", {{"type", "string"}}},
                  {"in_minutes", {{"type", "number"}}},
-                 {"at", {{"type", "string"}}}}},
+                 {"at", {{"type", "string"}}},
+                 {"when", {{"type", "string"}}},
+                 {"cooldown_s", {{"type", "number"}}}}},
                {"required", required}}}}}};
     std::cout << out.dump() << std::endl;
     return 0;
@@ -90,8 +97,9 @@ int main(int argc, char** argv) {
   const bool has_sched = args.contains("schedule") && args["schedule"].is_string();
   const bool has_in    = args.contains("in_minutes") && args["in_minutes"].is_number();
   const bool has_at    = args.contains("at") && args["at"].is_string();
-  if (has_sched + has_in + has_at != 1)
-    return fail("provide exactly one of: schedule, in_minutes, at");
+  const bool has_when  = args.contains("when") && args["when"].is_string();
+  if (has_sched + has_in + has_at + has_when != 1)
+    return fail("provide exactly one of: schedule, in_minutes, at, when");
 
   const long long now =
       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -111,10 +119,19 @@ int main(int argc, char** argv) {
     const long long delay = static_cast<long long>(mins * 60);
     if (delay < min_interval_s) return fail("in_minutes below the min interval floor");
     t.kind = "once"; t.fire_epoch = now + delay; when = iso_local(t.fire_epoch);
-  } else {
+  } else if (has_at) {
     auto e = hades::parse_at(args["at"].get<std::string>(), now);
     if (!e) return fail("unparseable at (want YYYY-MM-DDTHH:MM or HH:MM)");
     t.kind = "once"; t.fire_epoch = *e; when = iso_local(t.fire_epoch);
+  } else {
+    const std::string expr = args["when"].get<std::string>();
+    if (!hades::when_valid(expr)) return fail("invalid when condition: " + expr);
+    t.kind = "when"; t.when = expr; when = expr;
+    if (args.contains("cooldown_s") && args["cooldown_s"].is_number()) {
+      const double cd = args["cooldown_s"].get<double>();
+      if (!std::isfinite(cd) || cd < 0) return fail("cooldown_s must be >= 0");
+      t.cooldown_s = static_cast<long long>(cd);
+    }
   }
 
   // Cap: refuse when the active set is already at max_tasks.
@@ -132,8 +149,7 @@ int main(int argc, char** argv) {
   if (!f) return fail("cannot append to store: " + store);
   f << hades::add_record(t) << "\n";
 
-  std::cout << json{{"ok", true},
-                    {"result", {{"id", t.id}, {"name", t.name}, {"kind", t.kind}, {"when", when}}}}.dump()
-            << std::endl;
+  json result{{"id", t.id}, {"name", t.name}, {"kind", t.kind}, {"when", when}};
+  std::cout << json{{"ok", true}, {"result", result}}.dump() << std::endl;
   return 0;
 }

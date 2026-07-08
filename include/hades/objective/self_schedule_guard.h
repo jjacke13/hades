@@ -2,9 +2,12 @@
 //
 // Contains the runaway-recursion risk: a heartbeat tick (TURN_ORIGIN "heartbeat:<name>") may create
 // new scheduled tasks ONLY when the operator set allow_self_schedule=true. A human-origin turn is
-// never blocked (you set a goal, the agent schedules its own monitors). Guards ONLY the create path
-// (schedule_task); list_tasks/cancel_task are always allowed. PeerLoopGuard sibling; auto-registered
-// by wiring when heartbeat + the schedule_task tool are both present.
+// never blocked (you set a goal, the agent schedules its own monitors). A peer-origin turn
+// (TURN_ORIGIN "peer:<name>") is ALWAYS hard-vetoed, unconditionally — allow_self_schedule does NOT
+// open this path (a peer must never plant standing work on this agent; not an operator-switchable
+// choice, unlike the heartbeat case). Guards ONLY the create path (schedule_task); list_tasks/
+// cancel_task are always allowed. PeerLoopGuard sibling; auto-registered by wiring when heartbeat +
+// the schedule_task tool are both present.
 #pragma once
 #include "hades/objective.h"
 namespace hades {

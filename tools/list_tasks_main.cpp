@@ -2,7 +2,8 @@
 //
 // Lists the agent's OWN active dynamic tasks from the cron store (argv[1], fallback
 // .hades/cron.jsonl). Static Heartbeat manifest entries are operator-owned and NOT in the store, so
-// they are not listed. Read-only; fail-closed. `at` one-shots surface fire_epoch as a local ISO.
+// they are not listed. Read-only; fail-closed. `at`/`in_minutes` one-shots surface fire_epoch as a
+// local ISO; `when`-kind tasks surface the reactive condition string instead.
 #include <ctime>
 #include <fstream>
 #include <iostream>
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
   for (const auto& t : hades::fold_cron_store(body)) {
     json e{{"id", t.id}, {"name", t.name}, {"kind", t.kind}, {"prompt", t.prompt}, {"notify", t.notify}};
     if (t.kind == "cron") e["schedule"] = t.schedule;
+    else if (t.kind == "when") e["when"] = t.when;
     else e["at"] = iso_local(t.fire_epoch);
     tasks.push_back(e);
   }
