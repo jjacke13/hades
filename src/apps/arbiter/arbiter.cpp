@@ -21,6 +21,14 @@ namespace hades {
 
 static constexpr int kMaxSteps = 25;
 
+namespace {
+// Canonical map key for the staleness guard: lexical normalization only ("./x", "a/../x" -> "x").
+// NOT realpath — symlink aliasing is a documented v1 gap, same as the capability model's canon_path.
+std::string canon_file_key(const std::string& p) {
+  return std::filesystem::path(p).lexically_normal().string();
+}
+}  // namespace
+
 // Push a message onto the in-memory conversation AND, when a session path is set, durably
 // append it as one JSON line. IO errors are swallowed (a disk hiccup must not crash the turn —
 // the message still lives in history_; resume just won't have the latest line). With no path
@@ -318,7 +326,20 @@ void Arbiter::on_llm_response(const Entry& e) {
   dispatch_or_gate(act, assistant_msg);
 }
 
-void Arbiter::dispatch_or_gate(const Action& act, const nlohmann::json& assistant_msg) {
+void Arbiter::dispatch_or_gate(const Action& act_in, const nlohmann::json& assistant_msg) {
+  Action act = act_in;
+  // Staleness guard: expect_version is Arbiter-owned plumbing. Strip anything LLM-supplied
+  // (a hallucinated token must never reach the tool), then inject the recorded version when
+  // this file has been observed. No record -> no injection -> the tool behaves as before. Done
+  // BEFORE the objective loop so the confirm path's pending_ snapshot also carries the injection.
+  if (act.kind == Action::Kind::ToolCall &&
+      (act.tool == "edit_file" || act.tool == "write_file") && act.args.is_object()) {
+    act.args.erase("expect_version");
+    if (auto p = act.args.find("path"); p != act.args.end() && p->is_string()) {
+      auto it = file_versions_.find(canon_file_key(p->get<std::string>()));
+      if (it != file_versions_.end()) act.args["expect_version"] = it->second;
+    }
+  }
   // Objectives are consulted in registration order; the first to demand a
   // confirm (needs_confirm) or hard-veto wins and short-circuits dispatch.
   for (auto& o : objectives_) {
@@ -350,6 +371,7 @@ void Arbiter::dispatch_or_gate(const Action& act, const nlohmann::json& assistan
   }
   append_history(assistant_msg);
   if (act.kind == Action::Kind::ToolCall) {
+    track_file_op_(act.tool_id, act.tool, act.args);
     bb_->post("TOOL_REQUEST", {{"id", act.tool_id}, {"tool", act.tool}, {"args", act.args}},
               "arbiter");
   } else {
@@ -357,10 +379,28 @@ void Arbiter::dispatch_or_gate(const Action& act, const nlohmann::json& assistan
   }
 }
 
+// Record a tracked file op (fs_read/edit_file/write_file) keyed by tool-call id so its result's
+// version can be harvested in on_tool_result. Only the three tools that report a version are tracked.
+void Arbiter::track_file_op_(const std::string& id, const std::string& tool,
+                             const nlohmann::json& args) {
+  if (tool != "fs_read" && tool != "edit_file" && tool != "write_file") return;
+  if (id.empty() || !args.is_object()) return;
+  if (auto p = args.find("path"); p != args.end() && p->is_string())
+    pending_file_ops_[id] = canon_file_key(p->get<std::string>());
+}
+
 void Arbiter::on_tool_result(const Entry& e) {
   const auto& v = e.value;
   if (!v.is_object()) return;  // malformed tool result: ignore
   const auto content = v.contains("content") ? v["content"] : nlohmann::json::object();
+  // Staleness guard: a successful tracked file op reports the file's new content version. Erase the
+  // pending entry either way (a failed/refused result must NOT update the map — it's still stale).
+  if (auto it = pending_file_ops_.find(v.value("id", "")); it != pending_file_ops_.end()) {
+    if (v.value("ok", false) && content.is_object())
+      if (auto ver = content.find("version"); ver != content.end() && ver->is_string())
+        file_versions_[it->second] = ver->get<std::string>();
+    pending_file_ops_.erase(it);
+  }
   // History push BEFORE the guard so the assistant/tool message pair is always preserved.
   append_history({{"role", "tool"},
                   {"tool_call_id", v.value("id", "")},
@@ -379,6 +419,9 @@ void Arbiter::on_confirm(const Entry& e) {
   bool approved = v.is_object() && v.value("approved", false);
   if (approved) {
     append_history(pending_msg_);
+    // pending_["args"] already carries the staleness-guard injection (done before the veto loop).
+    track_file_op_(pending_.value("tool_id", ""), pending_.value("tool", ""),
+                   pending_.contains("args") ? pending_["args"] : nlohmann::json::object());
     bb_->post("TOOL_REQUEST",
               {{"id", pending_.value("tool_id", "")},
                {"tool", pending_.value("tool", "")},

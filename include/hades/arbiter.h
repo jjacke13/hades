@@ -64,6 +64,9 @@ private:
   void on_tool_result(const Entry&);
   void on_confirm(const Entry&);
   void dispatch_or_gate(const Action&, const nlohmann::json& assistant_msg);
+  // Staleness guard: record a tracked file op (fs_read/edit_file/write_file) so its TOOL_RESULT
+  // version can be harvested. Called just before BOTH TOOL_REQUEST post sites (direct + confirm).
+  void track_file_op_(const std::string& id, const std::string& tool, const nlohmann::json& args);
   // Reset the single pending-confirm slot. Shared by on_confirm (confirm resolved) and the
   // TURN_ABANDONED handler (turn dropped) so the two resets can never drift apart.
   void clear_pending();
@@ -83,6 +86,11 @@ private:
   nlohmann::json pending_;      // action awaiting confirm
   nlohmann::json pending_msg_;  // assistant tool_calls msg awaiting confirm
   std::map<std::string, nlohmann::json> peer_vars_;   // PEER.* latest values (bridge discovery/share)
+  // Staleness guard: last-observed content version per file (canonical path -> 16-hex hash),
+  // harvested from fs_read/edit_file/write_file TOOL_RESULTs; injected as expect_version into
+  // edit_file/write_file dispatches. In-memory only (a restart clears it — degrade to unguarded).
+  std::map<std::string, std::string> file_versions_;
+  std::map<std::string, std::string> pending_file_ops_;   // tool-call id -> canonical path
   int steps_ = 0;               // tool-call steps within the current turn (reset on USER_MESSAGE)
   // Per-user-turn freshness stamp: bumped on each USER_MESSAGE (NOT on tool-loop continuations),
   // stamped onto every LLM_REQUEST, and matched on LLM_RESPONSE so a timed-out turn's late

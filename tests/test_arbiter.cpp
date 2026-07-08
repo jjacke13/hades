@@ -968,3 +968,126 @@ TEST(Arbiter, PeerFactKeyContainingCardFoldedAsReport) {
   EXPECT_NE(sys.find("note text"), std::string::npos);
   EXPECT_EQ(sys.find("Peers you can delegate to"), std::string::npos);
 }
+
+// ---- staleness guard: version tracking + expect_version injection ----
+namespace {
+// Drive one fs_read round-trip that records version `ver` for `path`.
+void seed_version(Blackboard& bb, const std::string& path, const std::string& ver,
+                  const char* id = "r1") {
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", id}, {"name", "fs_read"}, {"arguments", {{"path", path}}}}}},
+          "llm");
+  bb.pump();
+  bb.post("TOOL_RESULT",
+          {{"id", id}, {"ok", true}, {"content", {{"content", "body"}, {"version", ver}}}},
+          "tool_runner");
+  bb.pump();
+}
+}  // namespace
+
+TEST(Arbiter, InjectsExpectVersionFromPriorRead) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ToolSpec{"fs_read", "", {}}, ToolSpec{"edit_file", "", {}}});
+  nlohmann::json req;
+  bb.subscribe("TOOL_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "edit it", "chat"); bb.pump();
+  seed_version(bb, "notes.txt", "aaaa111122223333");
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "e1"}, {"name", "edit_file"},
+                          {"arguments", {{"path", "notes.txt"}, {"old_string", "a"}, {"new_string", "b"}}}}}},
+          "llm");
+  bb.pump();
+  ASSERT_EQ(req.value("tool", ""), "edit_file");
+  EXPECT_EQ(req["args"].value("expect_version", ""), "aaaa111122223333");
+}
+
+TEST(Arbiter, NoRecordNoInjectionAndHallucinatedTokenStripped) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ToolSpec{"edit_file", "", {}}});
+  nlohmann::json req;
+  bb.subscribe("TOOL_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "edit", "chat"); bb.pump();
+  bb.post("LLM_RESPONSE",   // LLM invents an expect_version for a never-read file
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "e1"}, {"name", "edit_file"},
+                          {"arguments", {{"path", "unseen.txt"}, {"old_string", "a"},
+                                         {"new_string", "b"}, {"expect_version", "ffffffffffffffff"}}}}}},
+          "llm");
+  bb.pump();
+  ASSERT_EQ(req.value("tool", ""), "edit_file");
+  EXPECT_FALSE(req["args"].contains("expect_version"));   // stripped, nothing injected
+}
+
+TEST(Arbiter, SuccessfulEditUpdatesVersionForNextEdit) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ToolSpec{"fs_read", "", {}}, ToolSpec{"edit_file", "", {}}});
+  nlohmann::json req;
+  bb.subscribe("TOOL_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "go", "chat"); bb.pump();
+  seed_version(bb, "f.txt", "1111111111111111");
+  // First edit succeeds and reports the NEW version.
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "e1"}, {"name", "edit_file"},
+                          {"arguments", {{"path", "f.txt"}, {"old_string", "a"}, {"new_string", "b"}}}}}},
+          "llm");
+  bb.pump();
+  bb.post("TOOL_RESULT",
+          {{"id", "e1"}, {"ok", true},
+           {"content", {{"path", "f.txt"}, {"replacements", 1}, {"version", "2222222222222222"}}}},
+          "tool_runner");
+  bb.pump();
+  // Second edit (no re-read) must carry the post-edit version — edit->edit chains work.
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "e2"}, {"name", "edit_file"},
+                          {"arguments", {{"path", "f.txt"}, {"old_string", "b"}, {"new_string", "c"}}}}}},
+          "llm");
+  bb.pump();
+  EXPECT_EQ(req["args"].value("expect_version", ""), "2222222222222222");
+}
+
+TEST(Arbiter, FailedResultDoesNotUpdateVersion) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ToolSpec{"fs_read", "", {}}, ToolSpec{"write_file", "", {}}});
+  nlohmann::json req;
+  bb.subscribe("TOOL_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "go", "chat"); bb.pump();
+  seed_version(bb, "g.txt", "aaaaaaaaaaaaaaaa");
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "w1"}, {"name", "write_file"},
+                          {"arguments", {{"path", "g.txt"}, {"content", "x"}}}}}},
+          "llm");
+  bb.pump();
+  bb.post("TOOL_RESULT",   // refused (stale) — must NOT overwrite the recorded version
+          {{"id", "w1"}, {"ok", false},
+           {"content", {{"error", "file changed on disk ..."}, {"version", "bad"}}}},
+          "tool_runner");
+  bb.pump();
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "w2"}, {"name", "write_file"},
+                          {"arguments", {{"path", "g.txt"}, {"content", "x"}}}}}},
+          "llm");
+  bb.pump();
+  EXPECT_EQ(req["args"].value("expect_version", ""), "aaaaaaaaaaaaaaaa");   // unchanged
+}
+
+TEST(Arbiter, PathKeysAreLexicallyNormalized) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ToolSpec{"fs_read", "", {}}, ToolSpec{"edit_file", "", {}}});
+  nlohmann::json req;
+  bb.subscribe("TOOL_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "go", "chat"); bb.pump();
+  seed_version(bb, "./sub/../h.txt", "cccccccccccccccc");   // read under an aliased spelling
+  bb.post("LLM_RESPONSE",
+          {{"text", ""}, {"epoch", 1},
+           {"tool_call", {{"id", "e1"}, {"name", "edit_file"},
+                          {"arguments", {{"path", "h.txt"}, {"old_string", "a"}, {"new_string", "b"}}}}}},
+          "llm");
+  bb.pump();
+  EXPECT_EQ(req["args"].value("expect_version", ""), "cccccccccccccccc");   // same canonical key
+}
