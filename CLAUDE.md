@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below), **529/529 tests** (ASan+UBSan + **TSan** 529/529 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **555/555 tests** (ASan+UBSan + **TSan** 555/555 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -310,10 +310,40 @@ per minute via a year+yday+hour+min stamp), fires a **self-turn**.
 - **Gotchas:** an inline `prompt` containing an `=` (e.g. `set x = 5`) trips the one-kv-per-line parser →
   `MalConfig`, binary refuses to boot ⇒ **use `prompt_file` for any prompt with an `=` or multiple lines** (cron
   values are `=`-free, always safe inline). Cron is **machine-local TZ** — set the box's TZ deliberately. `notify=true`
-  delivers **only** if `telegram` is rostered. **v2 next:** a reactive `when = <condition>` trigger (act when a bus/peer
-  var changes) — the deferred Monitor-style `PEER.*` consumer; today it's schedule-only.
+  delivers **only** if `telegram` is rostered. ~~v2 next: a reactive `when=` trigger~~ — **SHIPPED 2026-07-08**, see
+  the Reactive when= trigger subsection below.
 - **Live-smoke pending** (Vaios: roster `Module = heartbeat` + a `*/1 * * * *` entry, confirm the self-turn fires and
   `notify`/`SILENT` gate delivery).
+
+### Reactive when= trigger (condition-fired self-turns) — shipped 2026-07-08, `feat/when-trigger`
+The Monitor-style consumer deferred from bridge: a heartbeat entry (static OR dynamic) fires on a **Blackboard
+condition** instead of a schedule — "watch pi0's card", "act when the budget passes 0.8".
+- **Vocabulary (5 keyword forms, parser-safe — no `=`):** `when = KEY changes | KEY is <v> | KEY not <v> |
+  KEY above <n> | KEY below <n>`. Pure lib `include/hades/heartbeat/when.h` + `src/apps/heartbeat/when.cpp`
+  (`parse_when`/`when_valid`/`when_holds`; trailing-space trimmed, non-finite thresholds rejected). Any bus key
+  watchable (incl. `PEER.*`).
+- **Poll-at-tick, NEVER subscribe:** evaluated against `bb.get` latest-values on the existing ~30s scan (a bus
+  subscriber runs on the pump thread mid-turn and cannot drive a turn) → **reaction latency ≤ ~30s**, documented.
+- **Edge-triggered + cooldown:** `changes` arms on first observation, fires once per change; the holds-ops fire on the
+  false→true edge, re-arm on false; already-true-at-boot fires once. **Busy-skip does not consume the edge** (retries
+  next tick — the `fire_`-returns-ran seam). **`cooldown_s`** (default 60) suppresses re-fires; edges inside the
+  cooldown are **absorbed, not queued** (corollary: an alarm that flapped true during a cooldown and stays true is
+  edge-latched — no level-retrigger; doc'd in manifest-reference §15). No minute-stamp gate for when-entries.
+- **Static + dynamic:** named `Heartbeat = <name> { when = … }` block (**`when` XOR `schedule`**, `MalConfig` on
+  both/neither/malformed; optional `cooldown_s`) AND `schedule_task` gained `when` as the 4th exclusive timing kind
+  (documented in its describe schema — LLM API surface, unlike expect_version; `cooldown_s` bounded 0..1e9 before the
+  ll cast — the in_minutes UB class). Dynamic edge state survives the per-scan reload (`when_state_by_id_`, pruned to
+  the active set); store records carry `when`/`cooldown_s` (old records fold tolerantly).
+- **`SelfScheduleGuard` broadened (hole closed):** `peer:`-origin `schedule_task` is hard-vetoed **unconditionally**
+  (even `allow_self_schedule=true`) — a peer must never plant standing work; `heartbeat:` origin still governed by the
+  switch, human free.
+- Pieces: `src/apps/heartbeat/{when.cpp,heartbeat.cpp}` (`maybe_fire_when_`/`sync_when_state_`),
+  `include/hades/{heartbeat/when.h,module/heartbeat_module.h}`, `tools/{schedule_task,list_tasks}_main.cpp`,
+  `src/behaviors/standard_behaviors.cpp`, `app/agent_wiring.cpp`. Spec/plan:
+  `docs/superpowers/{specs/2026-07-08-when-trigger-design.md,plans/2026-07-08-when-trigger.md}`.
+- **Live-smoke pending** (Vaios: `Heartbeat = watch { when = PEER.pi0.card changes … notify = true }` on the desktop,
+  restart pi0 with a changed description → Telegram notify within ~5 min; or agent-driven "watch the budget").
+- **v2 seams:** compound conditions (`&&`) · sub-30s latency · contains/regex match · watch TTL · level-retrigger opt-in.
 
 ### Self-scheduling (agent creates its own cron/one-shot tasks) — shipped 2026-07-07, `feat/self-scheduling`
 The agent **schedules its own future turns** at runtime via 3 native tools — the runtime-mutable complement to the
@@ -352,7 +382,7 @@ manifest-static `Heartbeat = <name>` blocks (which are unchanged; dynamic + stat
   `src/apps/heartbeat/heartbeat.cpp` (reload/one-shot), `app/agent_wiring.cpp` (config split + argv + guard).
 - **Live-smoke pending** (Vaios: roster the 3 tools + `Module = heartbeat`; "remind me in 2 min", `list_tasks`, `cancel_task`).
 - **v2 seams:** raw-`command` kind (deliberately excluded — gate-preserving); static entries in `list_tasks`; `tz` key for
-  `at`; store compaction beyond boot; staleness-drop for long-overdue one-shots; the reactive `when=` trigger (self-scheduled watch).
+  `at`; store compaction beyond boot; staleness-drop for long-overdue one-shots. ~~reactive when= watch~~ — SHIPPED 2026-07-08 (see below).
 
 ### Two memory layers (MemGPT-style, both agent-writable)
 
@@ -534,7 +564,7 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (529/529, ~5.9s)
+nix develop --command ctest --test-dir build                 # test (555/555, ~5.9s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -884,8 +914,9 @@ in this doc, not the tree):
   `min hour dom month dow`, AND across fields, minute resolution) — set the box's TZ deliberately. `notify=true`
   delivers via `NOTIFY_USER` → **Telegram only (v1)**, so **needs `Module = telegram` rostered** or nothing shows;
   reply is dropped when empty or exactly `SILENT`. Timer thread started by `hades_main` after wiring (not
-  `on_attach` → tests spawn none). v2 next: a reactive `when = <condition>` trigger (the deferred Monitor-style
-  `PEER.*` consumer); today schedule-only.
+  `on_attach` → tests spawn none). A named entry takes **`when` XOR `schedule`** (reactive watch, shipped
+  2026-07-08 — 5 keyword forms, edge-triggered, `cooldown_s` absorbs flaps, ≤~30s latency; see the Reactive
+  when= trigger subsection). A `peer:`-origin turn can NEVER `schedule_task` (unconditional guard veto).
 - Core memory (`memory/facts.md`) is **git-tracked** and the agent mutates it at runtime → expect
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so

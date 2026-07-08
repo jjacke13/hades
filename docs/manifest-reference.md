@@ -563,12 +563,43 @@ minute (deduped so an entry fires at most once per minute), fires a **self-turn*
 
 | Key | What it does | Default | Notes |
 |---|---|---|---|
-| `schedule` | 5-field cron `min hour dom month dow`. **REQUIRED.** | — | An invalid expression → `MalConfig` at launch. See the cron subset below. |
+| `schedule` | 5-field cron `min hour dom month dow`. | — | **Exactly one of `schedule`/`when` is REQUIRED** (both or neither → `MalConfig`). An invalid expression → `MalConfig` at launch. See the cron subset below. |
+| `when` | A reactive condition — fire when a Blackboard variable changes or crosses a threshold. | — | The alternative to `schedule`. Malformed → `MalConfig`. See the `when` conditions section below. |
+| `cooldown_s` | Min seconds between fires of a `when` entry (flap absorber). | `60` | `when` entries only. Negative/garbage → default. |
 | `prompt` | The task text sent as the turn's user message (inline). | — | One of `prompt`/`prompt_file` is **REQUIRED** (neither → `MalConfig`). **See the `=` footgun below** — an inline prompt containing `=` will refuse to boot. |
 | `prompt_file` | Path to a file whose contents are the task text. | — | Alternative to `prompt`. Unreadable path → `MalConfig`; the resolved text being empty → `MalConfig`. cwd-relative. Use this for any prompt with an `=` or multiple lines. |
 | `notify` | Whether the tick's reply is delivered to the user. | `false` | `false` → the reply is dropped (a silent background task — the tool actions *are* the output). `true` → the reply is forwarded (see the notify flow below). |
 
 If both `prompt` and `prompt_file` are given, `prompt` wins.
+
+### `when` conditions — reactive triggers
+
+Instead of a schedule, an entry may fire on a **Blackboard condition**, evaluated against the latest
+value on each ~30 s scan (so reaction latency is up to ~30 s — a polling design, the MOOS `Iterate()`
+shape; a bus subscription cannot drive a turn). Five forms, keyword operators (an `=`/`==` inside an
+inline value would trip the one-kv-per-line fail-loud parser):
+
+```
+when = PEER.pi0.card changes        # any change of the value
+when = MISSION_STATE is returning    # string equals (edge)
+when = MISSION_STATE not idle        # string differs (edge)
+when = BUDGET_SPENT_USD above 0.8    # numeric > (edge)
+when = GPS_QUALITY below 4           # numeric < (edge)
+```
+
+Any Blackboard key is watchable (including `PEER.*` vars a peer shared). **Edge-triggered, not
+level:** `changes` arms on its first observation (no fire) and fires once per subsequent change;
+the other four fire once when the condition *becomes* true and re-arm only after it goes false. A
+condition already true at boot fires once on the first scan. An entry skipped because a turn holds
+the TurnGate keeps its edge and retries next scan. **`cooldown_s`** (default 60) suppresses re-fires
+after one runs; edges arriving inside the cooldown are **absorbed, not queued** — and note the
+corollary: an alarm that flapped true *during* a cooldown and stays true is edge-latched and will
+not re-fire when the cooldown expires (only a fresh false→true edge fires). Absent key → condition
+false, never an error.
+
+The same conditions are available to the **agent at runtime** via `schedule_task` (`when` as the
+timing kind + optional `cooldown_s` — see the self-scheduling subsection): "watch X and tell me when
+it changes" becomes a dynamic watch, listed by `list_tasks` and removable by `cancel_task`.
 
 ### The cron subset
 
@@ -703,14 +734,17 @@ Tool = cancel_task   { native = ./build/hades-cancel-task }
 
 Rostering `schedule_task` **without** `Module = heartbeat` is a `MalConfig` (nothing would ever run the
 tasks). The gate is a `SelfScheduleGuard` objective, auto-registered when heartbeat + `schedule_task` are
-both present; it guards only the create path — `list_tasks`/`cancel_task` are always allowed.
+both present; it guards only the create path — `list_tasks`/`cancel_task` are always allowed. A
+**`peer:`-origin turn is hard-vetoed from `schedule_task` unconditionally** (even with
+`allow_self_schedule = true`): a peer must never plant standing work on this agent.
 
 **The tools:**
 
-- **`schedule_task`** — `{ name, prompt, notify?, and exactly ONE of: schedule | in_minutes | at }`.
+- **`schedule_task`** — `{ name, prompt, notify?, and exactly ONE of: schedule | in_minutes | at | when }`.
   `schedule` = a 5-field cron (recurring, same subset as above). `in_minutes` = run once, N minutes from
   now. `at` = run once at an absolute machine-local time, `YYYY-MM-DDTHH:MM` (or `HH:MM` = the next
-  occurrence). Returns the new task's `id`.
+  occurrence). `when` = a reactive watch (the 5 condition forms above; optional `cooldown_s`, default 60).
+  Returns the new task's `id`.
 - **`list_tasks`** — the agent's own active dynamic tasks (id, name, kind, timing, prompt, notify). Static
   `Heartbeat = <name>` entries are operator-owned and **not** listed.
 - **`cancel_task`** — `{ id }` (from `list_tasks`) → removes it.
