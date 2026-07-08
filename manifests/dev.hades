@@ -193,3 +193,23 @@ Embedding {
 #   max_tasks           = 20
 #   min_interval_s      = 60
 # }
+
+# --- Reactive when= watches: fire a self-turn on a Blackboard condition instead of a schedule
+# (needs Module = heartbeat). Edge-triggered (fires once when the condition BECOMES true / value
+# changes; re-arms when it stops holding); cooldown_s absorbs flapping; checked ~every 30s, so
+# reaction is not instant. `when` XOR `schedule` per entry. The agent can also create watches at
+# runtime via schedule_task (when = "KEY changes" etc.). Forms:
+#   KEY changes | KEY is <str> | KEY not <str> | KEY above <n> | KEY below <n>
+# Heartbeat = budget_watch
+# {
+#   when       = BUDGET_SPENT_USD above 0.8
+#   prompt     = The session budget is nearly spent. Summarize what it went on so far.
+#   notify     = true                  # needs Module = telegram rostered to deliver
+#   cooldown_s = 3600                  # at most one warning per hour
+# }
+# Heartbeat = peer_watch
+# {
+#   when   = PEER.pi0.card changes     # a peer's advertised capabilities changed
+#   prompt = pi0's agent card changed. Compare its new capabilities to what you knew and report.
+#   notify = true
+# }
