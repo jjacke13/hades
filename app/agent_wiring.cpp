@@ -456,7 +456,9 @@ void wire_agent(Agent& a,
         if (!when_valid(e.when))
           throw MalConfig("Heartbeat \"" + b.name + "\": invalid when condition: " + e.when);
         if (b.kv.count("cooldown_s")) e.cooldown_s = parse_ll(b.kv.at("cooldown_s"), e.cooldown_s);
-        if (e.cooldown_s < 0) e.cooldown_s = 60;
+        // Same 0..1e9 bounds as the schedule_task tool: a near-LLONG_MAX cooldown would make
+        // last_fire + cooldown signed-overflow UB in the module's cooldown check.
+        if (e.cooldown_s < 0 || e.cooldown_s > 1000000000LL) e.cooldown_s = 60;
       }
       if (b.kv.count("prompt")) {
         e.prompt = b.kv.at("prompt");
