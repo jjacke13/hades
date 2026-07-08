@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below), **511/511 tests** (ASan+UBSan + **TSan** 511/511 clean; suite ~5.4s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below), **529/529 tests** (ASan+UBSan + **TSan** 529/529 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -534,7 +534,7 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (511/511, ~5.4s)
+nix develop --command ctest --test-dir build                 # test (529/529, ~5.9s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
@@ -756,23 +756,33 @@ persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate
 inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn
 can't read out the receiver's full memory — see the Bridge SECURITY note).
 
-### edit/write staleness guard (backlog — from the Claude Code tool gap-analysis, 2026-07-07)
-Steal Claude Code's **read-before-edit / lost-update guard**: today `write_file` blind-truncates and `edit_file`
-replaces on the CURRENT file bytes with no check that the LLM's `old_string` was formed against the file's
-current on-disk state — a concurrent/self-triggered change between the read and the edit silently clobbers.
-(NOTE: the OTHER CC edit contract — `old_string` must match **exactly once** unless `replace_all` — is **ALREADY
-enforced** in `tools/edit_file_main.cpp`: `count==0`→not-found, `count>1 && !replace_all`→error. Don't re-add.)
-The gap = staleness only. hades tools are **stateless subprocesses** (can't see conversation history), so this
-is NOT a pure tool tweak — two options: **(a)** Arbiter-level — track which files were `fs_read` this turn/session
-+ their mtime/hash, gate `edit_file`/`write_file` on a matching prior read (refuse/confirm if the file changed
-since); or **(b)** version-token protocol — `fs_read` returns an mtime+hash token, `edit_file`/`write_file` take
-an optional `expect_version` and refuse on mismatch (opt-in, tool-local, but needs the Arbiter to thread the
-token). Matters MORE once heartbeat/cron lands (a self-turn editing a file a human just changed). Low urgency
-today (single-threaded turns, human-paced); queue behind heartbeat. **Gap-analysis convergence worth noting:** the
-leaked CC daemon **"KAIROS"** (periodic `<tick>` → decide-whether-to-act, append-only daily logs, webhook subs) is
-essentially our direction-2 heartbeat — independent design confirmation. And CC's `Monitor` (stream a command's
-output / a WebSocket back mid-conversation) = the reactive "act when peer state changes" consumer we deferred from
-the bridge → fold into the heartbeat brainstorm.
+### Staleness guard (shipped 2026-07-08, `feat/staleness-guard`) — lost-update protection for edit/write
+The CC-gap-analysis backlog item, built as a hybrid of its two options (Arbiter-threaded version token): a file
+changed on disk since the LLM last observed it is **refused, untouched**, with a self-healing error. The
+`old_string`-must-match-once contract was already enforced; this closes the OTHER gap — staleness.
+- **Mechanism:** `fs_read`/`edit_file`/`write_file` results carry **`version`** (FNV-1a 64 → 16-hex of the
+  content read/written; `include/hades/tool/file_version.h`, header-only, no core link). The **Arbiter** keeps
+  `file_versions_` (lexically-normalized path → version, harvested from successful tracked TOOL_RESULTs via
+  `pending_file_ops_` id→path) and at dispatch **strips any LLM-supplied `expect_version`** (hallucination-proof)
+  then **injects** the recorded one into `edit_file`/`write_file` args — before the veto loop, so the confirm
+  path's `pending_` snapshot carries it too. The **tool** verifies inside its own subprocess right before the
+  atomic rename: mismatch → `ok:false` `"file changed on disk since you last read it — fs_read it again and
+  retry"` → the LLM re-reads (map updates) and retries. **`expect_version` is NOT in any describe schema**
+  (Arbiter plumbing, invisible to the LLM; visible in the Eventlog's TOOL_REQUEST → `hades-scope` observability).
+- **Semantics:** no record → no injection → old behavior (**staleness only**, no read-before-edit rule). Each
+  successful write updates the map → edit→edit chains work without re-reads. Deleted-since-read → refuse.
+  Correctness gate, NOT a confirm — no human wakeup, works identically on heartbeat/peer turns. Map is in-memory,
+  survives `/new` (describes disk state, not conversation), cleared by restart (degrade to unguarded).
+- **`write_file` is now atomic** (tmp+rename, mode-preserved — edit_file pattern; no more torn files on crash).
+- **Not tracked (v1):** `grep`/`glob`/`git_read`/`shell` (a shell write is invisible until the next `fs_read`
+  re-syncs); lexical path keys (symlink aliasing — capability-model parity); no config switch (always-on).
+- Pieces: `include/hades/tool/file_version.h`, `tools/{fs_read,edit_file,write_file}_main.cpp`,
+  `src/apps/arbiter/arbiter.cpp` (strip+inject+harvest, `track_file_op_`), `tests/test_{file_version,staleness_e2e}.cpp`.
+  Spec/plan: `docs/superpowers/{specs/2026-07-08-staleness-guard-design.md,plans/2026-07-08-staleness-guard.md}`.
+**Gap-analysis convergence (kept for the record):** the leaked CC daemon **"KAIROS"** (periodic `<tick>` →
+decide-whether-to-act) was our heartbeat — independent design confirmation. CC's `Monitor` (stream a command /
+WebSocket mid-conversation) = the reactive "act when peer state changes" consumer → now the `when=` trigger
+brainstorm (next).
 
 ### Codebase-organization + docs backlog (Vaios 2026-07-04 — revisit, not yet scheduled)
 Three intents about making the **MOOS-IvP mapping legible in the source layout itself** (today the mapping lives

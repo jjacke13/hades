@@ -164,6 +164,16 @@ of being killed mid-write.
 they need no extra block. `run_command` carries `timeout_s = 600` in dev.hades (builds/tests run
 long); the other four use the 30s runner default. All five are plain `native` blocks.
 
+**Staleness guard (`fs_read` / `edit_file` / `write_file` — always on, no configuration).** The two
+mutating tools are protected against lost updates: `fs_read` (and each successful edit/write) reports
+a content-hash `version`, the Arbiter remembers it per file, and injects an `expect_version` into
+`edit_file`/`write_file` requests. If the file changed on disk since the agent last observed it, the
+tool refuses — file untouched — with `"file changed on disk since you last read it — fs_read it again
+and retry"`, and the agent recovers by re-reading (no confirmation prompt; works on heartbeat/peer
+turns too). Operators see the injected `expect_version` inside `TOOL_REQUEST` in the Eventlog. A file
+the agent never read is not gated (staleness only); writes made via `shell` are invisible to the
+guard until the next `fs_read`. `write_file` writes atomically (tmp + rename, mode preserved).
+
 ---
 
 ## 5. `Objective` blocks — `Objective = <name> { … }`
