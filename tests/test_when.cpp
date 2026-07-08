@@ -71,3 +71,12 @@ TEST(When, HoldsNumericThresholds) {
   EXPECT_FALSE(when_holds(above, &s));                             // non-number -> false, no throw
   EXPECT_FALSE(when_holds(above, nullptr));
 }
+
+TEST(When, TrailingWhitespaceTrimmedAndNonFiniteRejected) {
+  auto c = parse_when("K is idle ");                       // sloppy LLM trailing space
+  ASSERT_TRUE(c.has_value());
+  EXPECT_EQ(c->operand, "idle");
+  EXPECT_TRUE(when_valid("K above 0.8 "));
+  EXPECT_FALSE(when_valid("K above nan"));                 // non-finite threshold -> invalid
+  EXPECT_FALSE(when_valid("K below inf"));
+}

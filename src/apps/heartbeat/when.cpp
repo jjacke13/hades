@@ -1,5 +1,6 @@
 // src/apps/heartbeat/when.cpp — parse + evaluate the reactive when-condition (pure, tolerant)
 #include "hades/heartbeat/when.h"
+#include <cmath>
 #include <cstdlib>
 namespace hades {
 namespace {
@@ -11,7 +12,9 @@ bool parse_number(const std::string& s, double& out) {
   if (s.empty()) return false;
   char* end = nullptr;
   out = std::strtod(s.c_str(), &end);
-  return end && *end == '\0';
+  // A threshold must be a finite number: "nan"/"inf" parse but make every compare silently false
+  // (or never-fire) — reject loud at validation time instead.
+  return end && *end == '\0' && std::isfinite(out);
 }
 }  // namespace
 
@@ -30,6 +33,9 @@ std::optional<WhenCond> parse_when(const std::string& expr) {
     const std::size_t rest_start = expr.find_first_not_of(' ', sp2);
     if (rest_start != std::string::npos) rest = expr.substr(rest_start);
   }
+  // Trim trailing whitespace: "K is idle " must match "idle", and "K above 0.8 " must validate —
+  // the LLM-supplied dynamic path (schedule_task) can carry a sloppy trailing space.
+  while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\t')) rest.pop_back();
   if (op == "changes") {
     if (!rest.empty()) return std::nullopt;              // changes takes no operand
     c.op = WhenCond::Op::Changes;
