@@ -87,6 +87,6 @@ int main() {
     out = {{"ok", false}, {"result", {{"error", "unknown call: " + call}}}};
   }
 
-  std::cout << out.dump() << std::endl;
+  std::cout << out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << std::endl;
   return 0;
 }

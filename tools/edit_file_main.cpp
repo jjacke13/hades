@@ -4,7 +4,9 @@
 // replace_all}}), performs an exact-substring replacement in the file, and writes the result
 // ATOMICALLY (temp file + rename — a concurrent reader never sees a torn file). The surgical
 // alternative to whole-file write_file: old_string must match EXACTLY ONCE unless replace_all.
-// Capability-gated upstream as FsWrite (fs_write_allow scope / confirm). Fail-closed: any
+// Capability-gated upstream as FsWrite (fs_write_allow scope / confirm). Staleness-guarded: an
+// Arbiter-injected expect_version (absent from the describe schema) is checked against the file's
+// current content hash before any change — mismatch -> refuse, file untouched. Fail-closed: any
 // malformed input, missing file, zero or ambiguous match -> ok:false, file untouched.
 // If path is a symlink, the rename REPLACES THE SYMLINK with a regular file (target untouched)
 // — lexical-path v1 semantics, matching the capability model's documented symlink gap.

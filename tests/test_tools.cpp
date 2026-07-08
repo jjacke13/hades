@@ -78,6 +78,11 @@ TEST(Tools, FsReadReportsContentVersion) {
   EXPECT_EQ(j["result"].value("version", ""), hades::file_version("the content\n"));
 }
 
+TEST(Tools, WriteFileDescribeSchemaDoesNotMentionExpectVersion) {
+  ProcResult r = run_subprocess({WRITE_FILE_BIN}, R"({"call":"describe"})", 30.0);
+  EXPECT_EQ(r.out.find("expect_version"), std::string::npos);   // Arbiter plumbing, not LLM API
+}
+
 TEST(Tools, WriteFileExpectVersionGate) {
   const std::string path = ::testing::TempDir() + "/wv_" + std::to_string(::getpid()) + ".txt";
   { std::ofstream f(path, std::ios::trunc); f << "original"; }
