@@ -53,6 +53,8 @@ int main() {
     out = {{"ok", false}, {"result", {{"error", "unknown call: " + call}}}};
   }
 
-  std::cout << out.dump() << std::endl;
+  // Replace-handler so a non-UTF-8 file still yields a JSON line (a throwing dump would leave the
+  // file unreadable AND unguarded — no version ever harvested for it).
+  std::cout << out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << std::endl;
   return 0;
 }

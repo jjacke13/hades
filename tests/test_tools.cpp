@@ -101,6 +101,11 @@ TEST(Tools, WriteFileExpectVersionGate) {
   ASSERT_TRUE(ok.value("ok", false)) << ok.dump();
   EXPECT_EQ(ok["result"].value("version", ""), hades::file_version("fresh"));
   { std::ifstream f(path); std::stringstream s; s << f.rdbuf(); EXPECT_EQ(s.str(), "fresh"); }
+  // Cross-tool round-trip: a subsequent fs_read (text-mode) must report the SAME version the
+  // binary-mode write stamped — the pair the guard's map consistency rides on.
+  auto rd = call_tool(FS_READ_BIN, {{"call", "fs_read"}, {"args", {{"path", path}}}});
+  ASSERT_TRUE(rd.value("ok", false));
+  EXPECT_EQ(rd["result"].value("version", ""), ok["result"].value("version", ""));
 }
 
 TEST(Tools, WriteFileExpectVersionOnDeletedFileRefuses) {
