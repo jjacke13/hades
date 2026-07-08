@@ -84,7 +84,7 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 | `serve` | HTTP/web front-end (`--serve`). | `--serve` errors "no serve module". |
 | `telegram` | Telegram long-poll bot (reads `Telegram` block). | No bot. |
 | `bridge` | Agent↔agent HTTP listener (reads `Bridge` block). | No inbound peer surface. |
-| `heartbeat` | Cron timer that fires the agent's own turns (reads `Heartbeat` blocks). | No self-triggered turns; the agent is purely event-driven. |
+| `heartbeat` | Timer that fires the agent's own turns — on a cron schedule or a reactive `when` condition (reads `Heartbeat` blocks). | No self-triggered turns, no watches; the agent is purely event-driven. |
 
 **Front-end requirement.** After building, the binary needs *some* front-end or it errors:
 `--serve` uses `serve`; otherwise it runs `chat`'s REPL; if there is no `chat`, it blocks on
@@ -153,6 +153,8 @@ whitespace:
 | `pin_fact` | core memory file | `Session.memory_file` | **requires `Session.memory_file`** (else `MalConfig`) |
 | `use_skill` / `save_skill` | skills dir | `Skills.dir` (default `skills`) | dir must be whitespace-free |
 | `ask_agent` | `<own_name> <secret_env> <ask_timeout_s> <peer=url>…` | `Bridge` + `Peer` blocks | see rules below |
+| `schedule_task` | `<cron_store> <max_tasks> <min_interval_s>` | unnamed `Heartbeat { }` block (§15) | **requires `Module = heartbeat`** (else `MalConfig`); store path whitespace-free |
+| `list_tasks` / `cancel_task` | `<cron_store>` | unnamed `Heartbeat { }` block (§15) | store path whitespace-free |
 
 **`ask_agent` wiring rules** (`wire_agent`): the tool requires **at least one `Peer` block** *and*
 a valid `Bridge.name` — else `MalConfig` ("nobody to call" / "requires Bridge { name }"). Its
@@ -565,7 +567,7 @@ minute (deduped so an entry fires at most once per minute), fires a **self-turn*
 |---|---|---|---|
 | `schedule` | 5-field cron `min hour dom month dow`. | — | **Exactly one of `schedule`/`when` is REQUIRED** (both or neither → `MalConfig`). An invalid expression → `MalConfig` at launch. See the cron subset below. |
 | `when` | A reactive condition — fire when a Blackboard variable changes or crosses a threshold. | — | The alternative to `schedule`. Malformed → `MalConfig`. See the `when` conditions section below. |
-| `cooldown_s` | Min seconds between fires of a `when` entry (flap absorber). | `60` | `when` entries only. Negative/garbage → default. |
+| `cooldown_s` | Min seconds between fires of a `when` entry (flap absorber). | `60` | `when` entries only. Bounded `0..1e9`; negative/garbage/out-of-range → default. |
 | `prompt` | The task text sent as the turn's user message (inline). | — | One of `prompt`/`prompt_file` is **REQUIRED** (neither → `MalConfig`). **See the `=` footgun below** — an inline prompt containing `=` will refuse to boot. |
 | `prompt_file` | Path to a file whose contents are the task text. | — | Alternative to `prompt`. Unreadable path → `MalConfig`; the resolved text being empty → `MalConfig`. cwd-relative. Use this for any prompt with an `=` or multiple lines. |
 | `notify` | Whether the tick's reply is delivered to the user. | `false` | `false` → the reply is dropped (a silent background task — the tool actions *are* the output). `true` → the reply is forwarded (see the notify flow below). |
@@ -730,7 +732,7 @@ Tool = cancel_task   { native = ./build/hades-cancel-task }
 | `cron_store` | Path to the dynamic-task store (append-only jsonl). | `.hades/cron.jsonl` | Whitespace in the path → `MalConfig` (it is appended to the tools' whitespace-split argv). The module compacts it on boot. |
 | `allow_self_schedule` | May a **heartbeat tick** create new tasks? | `false` | `false` → a heartbeat-origin turn is hard-vetoed from `schedule_task` (recursion contained); a **human**-origin turn may always schedule. `true` → a tick may schedule follow-ups too (escalation). |
 | `max_tasks` | Cap on active dynamic tasks. | `20` | `schedule_task` refuses (`ok:false`) when the active count is at the cap. |
-| `min_interval_s` | Floor for a one-shot's delay, seconds. | `60` | A one-shot `in_minutes` below this floor is refused. (Recurring cron is minute-resolution + deduped → an inherent 60 s/task floor.) |
+| `min_interval_s` | Floor for a one-shot's delay, seconds. | `60` | A one-shot `in_minutes` below this floor is refused. (Recurring cron is minute-resolution + deduped → an inherent 60 s/task floor; `when` watches are exempt — their rate is bounded by `cooldown_s` instead.) |
 
 Rostering `schedule_task` **without** `Module = heartbeat` is a `MalConfig` (nothing would ever run the
 tasks). The gate is a `SelfScheduleGuard` objective, auto-registered when heartbeat + `schedule_task` are
@@ -752,8 +754,9 @@ both present; it guards only the create path — `list_tasks`/`cancel_task` are 
 **Store schema** (`.hades/cron.jsonl`, append-only, folded by id — an operator can read it):
 
 ```
-{"op":"add","id":"t<epoch>-<hex>","name":"watch","kind":"cron","schedule":"*/15 * * * *","fire_epoch":null,"prompt":"…","notify":true,"created":1751900000}
+{"op":"add","id":"t<epoch>-<hex>","name":"nightly","kind":"cron","schedule":"*/15 * * * *","fire_epoch":null,"prompt":"…","notify":true,"created":1751900000}
 {"op":"add","id":"t<epoch>-<hex>","name":"remind","kind":"once","schedule":null,"fire_epoch":1751986800,"prompt":"…","notify":true,"created":1751900050}
+{"op":"add","id":"t<epoch>-<hex>","name":"watch","kind":"when","schedule":null,"fire_epoch":null,"when":"PEER.pi0.card changes","cooldown_s":60,"prompt":"…","notify":true,"created":1751900100}
 {"op":"cancel","id":"t<epoch>-<hex>"}    # cancel_task
 {"op":"done","id":"t<epoch>-<hex>"}      # the module, after a one-shot fires
 ```
