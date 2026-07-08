@@ -786,6 +786,20 @@ persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate
 inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn
 can't read out the receiver's full memory — see the Bridge SECURITY note).
 
+### Pre-publishing doc audit (Vaios 2026-07-08 — do BEFORE publishing the repo)
+hades is **moving towards publishing**; docs must be publication-grade first. A dedicated session:
+1. **Full-doc review pass, newcomer's eyes:** read `docs/manifest-reference.md` + `docs/architecture.md`
+   end-to-end as a first-time operator would; check EVERY claim against the code (the post-bridge audit
+   method — grep the key, read the default, confirm the behavior). Fix drift inline.
+2. **Per-feature ship-audits keep happening** (the 2026-07-08 mini-audit pattern, commit `b85d885`): when a
+   feature ships, verify its reference-doc section AND the cross-cutting spots — the §2 roster table, the §4
+   argv-append table, worked examples, defaults/bounds in tables vs code. Gaps found that day: new tools
+   missing from the argv table, roster wording stale, bounds not reflected after review hardening.
+3. **Also before publishing:** README (none exists), `docs/architecture.md` freshness vs the 2026-07 feature
+   wave (bridge protocol/heartbeat/self-scheduling/staleness/when-trigger), dev.hades comments read as the
+   first manifest a stranger sees, soul.md tone, LICENSE decision, `.env`/secret conventions documented
+   (Appendix B exists — verify), and a pass over `hades --help`/CLI flags vs Appendix A.
+
 ### Staleness guard (shipped 2026-07-08, `feat/staleness-guard`) — lost-update protection for edit/write
 The CC-gap-analysis backlog item, built as a hybrid of its two options (Arbiter-threaded version token): a file
 changed on disk since the LLM last observed it is **refused, untouched**, with a self-healing error. The
