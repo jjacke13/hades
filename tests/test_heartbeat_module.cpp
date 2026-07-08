@@ -416,3 +416,24 @@ TEST(Heartbeat, DynamicWhenEdgeStateSurvivesReload) {
   r.mod.tick(at(2, 0));    // change after reload -> exactly one fire
   EXPECT_EQ(turns, 1);
 }
+
+// The brief's subtlest corner, holds-op variant: an is-edge that arrives while the gate is busy
+// must NOT be consumed (was_true stays false) and must fire on the next free tick.
+TEST(Heartbeat, WhenHoldsBusySkipDoesNotConsumeEdge) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.add_entry(when_entry("w", "STATE is alarm", false, 0));
+  r.bb.post("STATE", "ok", "test");
+  r.mod.tick(at(0, 0));                                    // arm false
+  r.bb.post("STATE", "alarm", "test");
+  {
+    std::lock_guard<std::mutex> hold(r.gate.mu);           // human holds the gate
+    r.mod.tick(at(1, 0));                                  // edge present but busy -> skipped, retained
+  }
+  EXPECT_EQ(turns, 0);
+  r.mod.tick(at(2, 0));                                    // gate free -> the retained edge fires
+  EXPECT_EQ(turns, 1);
+  r.mod.tick(at(3, 0));                                    // still true -> no re-fire
+  EXPECT_EQ(turns, 1);
+}
