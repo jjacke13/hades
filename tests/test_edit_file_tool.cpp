@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "hades/tool/file_version.h"
 #include "hades/tool/subprocess.h"
 using namespace hades;
 namespace fs = std::filesystem;
@@ -78,4 +79,33 @@ TEST(EditFileTool, FailClosedPaths) {
   EXPECT_FALSE(edit({{"path", "/nope/nope.txt"}, {"old_string", "a"}, {"new_string", "b"}}).value("ok", true));
   EXPECT_FALSE(edit({{"path", p}, {"old_string", 7}, {"new_string", "b"}}).value("ok", true));  // typed
   EXPECT_EQ(slurp(p), "content\n");
+}
+
+TEST(EditFileTool, ExpectVersionMatchAllowsEdit) {
+  const std::string p = mk_file("ev_ok", "alpha beta gamma");
+  auto j = edit({{"path", p}, {"old_string", "beta"}, {"new_string", "BETA"},
+                 {"expect_version", hades::file_version("alpha beta gamma")}});
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  EXPECT_EQ(j["result"].value("version", ""), hades::file_version("alpha BETA gamma"));
+}
+
+TEST(EditFileTool, ExpectVersionMismatchRefusesUntouched) {
+  const std::string p = mk_file("ev_bad", "alpha beta gamma");
+  auto j = edit({{"path", p}, {"old_string", "beta"}, {"new_string", "BETA"},
+                 {"expect_version", "0000000000000000"}});  // stale token
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_NE(j["result"].value("error", "").find("changed on disk"), std::string::npos);
+  EXPECT_EQ(slurp(p), "alpha beta gamma");  // byte-identical
+}
+
+TEST(EditFileTool, NoExpectVersionBehavesAsToday) {
+  const std::string p = mk_file("ev_abs", "alpha beta");
+  auto j = edit({{"path", p}, {"old_string", "beta"}, {"new_string", "B"}});
+  EXPECT_TRUE(j.value("ok", false));
+  EXPECT_FALSE(j["result"].value("version", "").empty());  // version still reported
+}
+
+TEST(EditFileTool, DescribeSchemaDoesNotMentionExpectVersion) {
+  ProcResult r = run_subprocess({EDIT_FILE_BIN}, R"({"call":"describe"})", 30.0);
+  EXPECT_EQ(r.out.find("expect_version"), std::string::npos);  // Arbiter plumbing, not LLM API
 }

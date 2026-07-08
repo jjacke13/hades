@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "hades/tool/file_version.h"
 
 int main() {
   std::string line;
@@ -70,45 +71,57 @@ int main() {
       ss << f.rdbuf();
       std::string content = ss.str();
       f.close();
-      // Count non-overlapping occurrences.
-      int count = 0;
-      for (std::size_t pos = content.find(olds); pos != std::string::npos;
-           pos = content.find(olds, pos + olds.size()))
-        ++count;
-      if (count == 0) {
-        out = {{"ok", false}, {"result", {{"error", "old_string not found in " + path}}}};
-      } else if (count > 1 && !replace_all) {
+      // Staleness guard: expect_version is Arbiter-injected (never LLM-supplied; absent from the
+      // describe schema). It is the hash of the file as the conversation last observed it — a
+      // mismatch means someone else changed the file since; refuse so nothing is clobbered.
+      const std::string expect = jstr("expect_version");
+      if (!expect.empty() && hades::file_version(content) != expect) {
         out = {{"ok", false},
-               {"result",
-                {{"error", "old_string matches " + std::to_string(count) +
-                               " times — give more surrounding context or set replace_all"}}}};
+               {"result", {{"error",
+                 "file changed on disk since you last read it — fs_read it again and retry"}}}};
       } else {
-        int done = 0;
-        std::size_t pos = 0;
-        while ((pos = content.find(olds, pos)) != std::string::npos) {
-          content.replace(pos, olds.size(), news);
-          pos += news.size();
-          ++done;
-          if (!replace_all) break;
-        }
-        const std::string tmp = path + ".tmp";
-        std::ofstream o(tmp, std::ios::trunc | std::ios::binary);
-        if (o) { o << content; o.close(); }
-        std::error_code ec;
-        if (!o) {
-          std::remove(tmp.c_str());
-          out = {{"ok", false}, {"result", {{"error", "cannot write: " + path}}}};
+        // Count non-overlapping occurrences.
+        int count = 0;
+        for (std::size_t pos = content.find(olds); pos != std::string::npos;
+             pos = content.find(olds, pos + olds.size()))
+          ++count;
+        if (count == 0) {
+          out = {{"ok", false}, {"result", {{"error", "old_string not found in " + path}}}};
+        } else if (count > 1 && !replace_all) {
+          out = {{"ok", false},
+                 {"result",
+                  {{"error", "old_string matches " + std::to_string(count) +
+                                 " times — give more surrounding context or set replace_all"}}}};
         } else {
-          // Preserve the original file's mode: the tmp was created with the umask default, and
-          // rename would otherwise silently drop exec bits / tighten-or-loosen permissions.
-          struct stat st{};
-          if (::stat(path.c_str(), &st) == 0) ::chmod(tmp.c_str(), st.st_mode);
-          std::filesystem::rename(tmp, path, ec);
-          if (ec) {
+          int done = 0;
+          std::size_t pos = 0;
+          while ((pos = content.find(olds, pos)) != std::string::npos) {
+            content.replace(pos, olds.size(), news);
+            pos += news.size();
+            ++done;
+            if (!replace_all) break;
+          }
+          const std::string tmp = path + ".tmp";
+          std::ofstream o(tmp, std::ios::trunc | std::ios::binary);
+          if (o) { o << content; o.close(); }
+          std::error_code ec;
+          if (!o) {
             std::remove(tmp.c_str());
-            out = {{"ok", false}, {"result", {{"error", "cannot save: " + path}}}};
+            out = {{"ok", false}, {"result", {{"error", "cannot write: " + path}}}};
           } else {
-            out = {{"ok", true}, {"result", {{"path", path}, {"replacements", done}}}};
+            // Preserve the original file's mode: the tmp was created with the umask default, and
+            // rename would otherwise silently drop exec bits / tighten-or-loosen permissions.
+            struct stat st{};
+            if (::stat(path.c_str(), &st) == 0) ::chmod(tmp.c_str(), st.st_mode);
+            std::filesystem::rename(tmp, path, ec);
+            if (ec) {
+              std::remove(tmp.c_str());
+              out = {{"ok", false}, {"result", {{"error", "cannot save: " + path}}}};
+            } else {
+              out = {{"ok", true},
+                     {"result", {{"path", path}, {"replacements", done},
+                                 {"version", hades::file_version(content)}}}};
+            }
           }
         }
       }

@@ -6,8 +6,11 @@
 // here (a live GET would need the network). Binary paths come from CMake compile-defs.
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -73,4 +76,46 @@ TEST(Tools, FsReadReportsContentVersion) {
   ASSERT_TRUE(j.value("ok", false));
   EXPECT_EQ(j["result"].value("content", ""), "the content\n");
   EXPECT_EQ(j["result"].value("version", ""), hades::file_version("the content\n"));
+}
+
+TEST(Tools, WriteFileExpectVersionGate) {
+  const std::string path = ::testing::TempDir() + "/wv_" + std::to_string(::getpid()) + ".txt";
+  { std::ofstream f(path, std::ios::trunc); f << "original"; }
+  // Mismatch -> refused, untouched.
+  auto bad = call_tool(WRITE_FILE_BIN,
+      {{"call", "write_file"},
+       {"args", {{"path", path}, {"content", "clobber"}, {"expect_version", "0000000000000000"}}}});
+  EXPECT_FALSE(bad.value("ok", true));
+  EXPECT_NE(bad["result"].value("error", "").find("changed on disk"), std::string::npos);
+  { std::ifstream f(path); std::stringstream s; s << f.rdbuf(); EXPECT_EQ(s.str(), "original"); }
+  // Match -> written, version of the NEW content reported.
+  auto ok = call_tool(WRITE_FILE_BIN,
+      {{"call", "write_file"},
+       {"args",
+        {{"path", path}, {"content", "fresh"}, {"expect_version", hades::file_version("original")}}}});
+  ASSERT_TRUE(ok.value("ok", false)) << ok.dump();
+  EXPECT_EQ(ok["result"].value("version", ""), hades::file_version("fresh"));
+  { std::ifstream f(path); std::stringstream s; s << f.rdbuf(); EXPECT_EQ(s.str(), "fresh"); }
+}
+
+TEST(Tools, WriteFileExpectVersionOnDeletedFileRefuses) {
+  const std::string path = ::testing::TempDir() + "/wv_gone_" + std::to_string(::getpid()) + ".txt";
+  std::filesystem::remove(path);  // file was read once, then deleted externally
+  auto j = call_tool(WRITE_FILE_BIN,
+      {{"call", "write_file"},
+       {"args", {{"path", path}, {"content", "x"}, {"expect_version", "cbf29ce484222325"}}}});
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_FALSE(std::filesystem::exists(path));  // nothing created
+}
+
+TEST(Tools, WriteFilePreservesModeOnOverwrite) {
+  const std::string path = ::testing::TempDir() + "/wv_mode_" + std::to_string(::getpid()) + ".sh";
+  { std::ofstream f(path, std::ios::trunc); f << "#!/bin/sh\n"; }
+  ::chmod(path.c_str(), 0755);
+  auto j = call_tool(WRITE_FILE_BIN,
+      {{"call", "write_file"}, {"args", {{"path", path}, {"content", "#!/bin/sh\necho hi\n"}}}});
+  ASSERT_TRUE(j.value("ok", false));
+  struct stat st{};
+  ASSERT_EQ(::stat(path.c_str(), &st), 0);
+  EXPECT_EQ(st.st_mode & 0777, static_cast<mode_t>(0755));  // exec bit survives the atomic rename
 }
