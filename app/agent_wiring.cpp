@@ -16,6 +16,7 @@
 #include <sstream>
 #include "hades/blackboard.h"
 #include "hades/heartbeat/cron.h"  // cron_valid
+#include "hades/heartbeat/when.h"  // when_valid
 #include "hades/launcher.h"  // Launcher + MalConfig
 #include "hades/llm/http.h"
 #include "hades/llm/openai_compat_provider.h"
@@ -442,9 +443,21 @@ void wire_agent(Agent& a,
       if (b.name.empty()) continue;   // the UNNAMED block is self-scheduling config, not an entry
       HeartbeatEntry e;
       e.name = b.name;
-      e.schedule = b.kv.count("schedule") ? b.kv.at("schedule") : "";
-      if (!cron_valid(e.schedule))
-        throw MalConfig("Heartbeat \"" + b.name + "\": invalid cron schedule: " + e.schedule);
+      const bool has_sched = b.kv.count("schedule") > 0;
+      const bool has_when  = b.kv.count("when") > 0;
+      if (has_sched == has_when)   // both or neither
+        throw MalConfig("Heartbeat \"" + b.name + "\": exactly one of schedule|when is required");
+      if (has_sched) {
+        e.schedule = b.kv.at("schedule");
+        if (!cron_valid(e.schedule))
+          throw MalConfig("Heartbeat \"" + b.name + "\": invalid cron schedule: " + e.schedule);
+      } else {
+        e.when = b.kv.at("when");
+        if (!when_valid(e.when))
+          throw MalConfig("Heartbeat \"" + b.name + "\": invalid when condition: " + e.when);
+        if (b.kv.count("cooldown_s")) e.cooldown_s = parse_ll(b.kv.at("cooldown_s"), e.cooldown_s);
+        if (e.cooldown_s < 0) e.cooldown_s = 60;
+      }
       if (b.kv.count("prompt")) {
         e.prompt = b.kv.at("prompt");
       } else if (b.kv.count("prompt_file")) {

@@ -47,3 +47,30 @@ TEST(HeartbeatWiring, NoHeartbeatRosterLeavesNull) {
   Agent agent = build_agent(bb, m);
   EXPECT_EQ(agent.heartbeat, nullptr);
 }
+
+TEST(HeartbeatWiring, WhenEntryAccepted) {
+  Blackboard bb;
+  Manifest m = parse_manifest(
+      "Session\n{\n  model = m\n}\n"
+      "Module = arbiter\nModule = heartbeat\n"
+      "Heartbeat = watch\n{\n  when = BUDGET_SPENT_USD above 0.8\n  prompt = report it\n  cooldown_s = 300\n}\n");
+  EXPECT_NO_THROW(build_agent(bb, m));
+}
+
+TEST(HeartbeatWiring, WhenAndScheduleTogetherThrow) {
+  Blackboard bb;
+  Manifest m = parse_manifest(
+      "Session\n{\n  model = m\n}\n"
+      "Module = arbiter\nModule = heartbeat\n"
+      "Heartbeat = bad\n{\n  when = K changes\n  schedule = * * * * *\n  prompt = p\n}\n");
+  EXPECT_THROW(build_agent(bb, m), MalConfig);
+}
+
+TEST(HeartbeatWiring, MalformedWhenThrows) {
+  Blackboard bb;
+  Manifest m = parse_manifest(
+      "Session\n{\n  model = m\n}\n"
+      "Module = arbiter\nModule = heartbeat\n"
+      "Heartbeat = bad\n{\n  when = KEY frobnicates\n  prompt = p\n}\n");
+  EXPECT_THROW(build_agent(bb, m), MalConfig);
+}
