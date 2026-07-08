@@ -151,3 +151,16 @@ TEST(ScheduleTaskTool, WhenCooldownStoredAndDefaulted) {
   ASSERT_EQ(v.size(), 1u);
   EXPECT_EQ(v[0].cooldown_s, 300);
 }
+
+TEST(ScheduleTaskTool, ExtremeCooldownRejectedNoUB) {
+  const std::string store = fresh_store("coolub");
+  for (const char* raw : {
+       R"({"call":"schedule_task","args":{"name":"w","prompt":"p","when":"K changes","cooldown_s":1e300}})",
+       R"({"call":"schedule_task","args":{"name":"w","prompt":"p","when":"K changes","cooldown_s":-5}})"}) {
+    ProcResult r = run_subprocess({SCHEDULE_TASK_BIN, store}, raw, 30.0);
+    auto j = nlohmann::json::parse(r.out, nullptr, false);
+    ASSERT_FALSE(j.is_discarded()) << raw;
+    EXPECT_FALSE(j.value("ok", true)) << raw;
+  }
+  EXPECT_FALSE(std::filesystem::exists(store));   // nothing written on rejection
+}

@@ -129,7 +129,9 @@ int main(int argc, char** argv) {
     t.kind = "when"; t.when = expr; when = expr;
     if (args.contains("cooldown_s") && args["cooldown_s"].is_number()) {
       const double cd = args["cooldown_s"].get<double>();
-      if (!std::isfinite(cd) || cd < 0) return fail("cooldown_s must be >= 0");
+      // Upper bound BEFORE the cast: an out-of-range double->long long is UB (the in_minutes bug
+      // class) and 1e300 would land in the store as LLONG_MIN under ok:true.
+      if (!std::isfinite(cd) || cd < 0 || cd > 1e9) return fail("cooldown_s out of range (0..1e9)");
       t.cooldown_s = static_cast<long long>(cd);
     }
   }
