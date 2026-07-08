@@ -189,6 +189,7 @@ add_executable(hades app/hades_main.cpp)
 target_link_libraries(hades PRIVATE hades_core)
 target_sources(hades_tests PRIVATE tests/test_e2e.cpp)
 target_sources(hades_tests PRIVATE tests/test_offload_e2e.cpp)  # live-path LLM offload
+target_sources(hades_tests PRIVATE tests/test_staleness_e2e.cpp)
 add_dependencies(hades_tests hades-fs-read)
 target_sources(hades_core PRIVATE src/apps/memory/memory.cpp)
 target_sources(hades_core PRIVATE src/apps/skills/skills.cpp)
