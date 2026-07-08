@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "hades/tool/file_version.h"
 
 int main() {
   std::string line;
@@ -43,7 +44,9 @@ int main() {
       } else {
         std::stringstream s;
         s << f.rdbuf();
-        out = {{"ok", true}, {"result", {{"content", s.str()}}}};
+        const std::string content = s.str();
+        out = {{"ok", true},
+               {"result", {{"content", content}, {"version", hades::file_version(content)}}}};
       }
     }
   } else {

@@ -6,11 +6,13 @@
 // here (a live GET would need the network). Binary paths come from CMake compile-defs.
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 #include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include "hades/tool/file_version.h"
 #include "hades/tool/subprocess.h"
 using namespace hades;
 
@@ -62,4 +64,13 @@ TEST(Tools, WriteFileThenListDirSeesIt) {
 TEST(Tools, UnknownCallIsNotOk) {
   auto j = call_tool(SHELL_BIN, {{"call", "bogus"}});
   EXPECT_FALSE(j.value("ok", true));
+}
+
+TEST(Tools, FsReadReportsContentVersion) {
+  const std::string path = ::testing::TempDir() + "/ver_" + std::to_string(::getpid()) + ".txt";
+  { std::ofstream f(path, std::ios::trunc); f << "the content\n"; }
+  auto j = call_tool(FS_READ_BIN, {{"call", "fs_read"}, {"args", {{"path", path}}}});
+  ASSERT_TRUE(j.value("ok", false));
+  EXPECT_EQ(j["result"].value("content", ""), "the content\n");
+  EXPECT_EQ(j["result"].value("version", ""), hades::file_version("the content\n"));
 }
