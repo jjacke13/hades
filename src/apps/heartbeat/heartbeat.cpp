@@ -11,6 +11,7 @@
 #include "hades/blackboard.h"
 #include "hades/heartbeat/cron.h"
 #include "hades/heartbeat/cron_store.h"
+#include "hades/heartbeat/when.h"
 #include "hades/timeouts.h"   // kDefaultTurnIdleTimeoutS
 namespace hades {
 namespace {
@@ -60,8 +61,14 @@ void HeartbeatModule::tick(const std::tm& now) {
   std::tm now_copy = now;
   const long long now_epoch = static_cast<long long>(std::mktime(&now_copy));
   if (!cron_store_.empty()) reload_dynamic_();          // pick up adds/cancels within one scan
-  for (auto& e : entries_) maybe_fire_(e, now, minute, now_epoch, /*dynamic=*/false);
-  for (auto& e : dynamic_) maybe_fire_(e, now, minute, now_epoch, /*dynamic=*/true);
+  for (auto& e : entries_) {
+    if (e.when.empty()) maybe_fire_(e, now, minute, now_epoch, /*dynamic=*/false);
+    else                maybe_fire_when_(e, now_epoch, /*dynamic=*/false);
+  }
+  for (auto& e : dynamic_) {
+    if (e.when.empty()) maybe_fire_(e, now, minute, now_epoch, /*dynamic=*/true);
+    else                maybe_fire_when_(e, now_epoch, /*dynamic=*/true);
+  }
 }
 
 void HeartbeatModule::maybe_fire_(HeartbeatEntry& e, const std::tm& now, long long minute,
@@ -87,6 +94,59 @@ void HeartbeatModule::maybe_fire_(HeartbeatEntry& e, const std::tm& now, long lo
   }
 }
 
+void HeartbeatModule::maybe_fire_when_(HeartbeatEntry& e, long long now_epoch, bool dynamic) {
+  // No minute-stamp gate here: edge detection + cooldown are the dedup for reactive entries.
+  auto cond = parse_when(e.when);
+  if (!cond) return;                                     // validated upstream; tolerate anyway
+  auto entry = bb_->get(cond->key);
+  const nlohmann::json* v = entry ? &entry->value : nullptr;
+
+  bool edge = false;
+  std::string new_dump = e.when_last_dump;
+  bool new_true = e.when_was_true;
+  if (cond->op == WhenCond::Op::Changes) {
+    if (!v) { /* absent: hold state, nothing to compare */ }
+    else {
+      new_dump = v->dump();
+      if (!e.when_armed) { e.when_armed = true; e.when_last_dump = new_dump; }   // arm, no fire
+      else edge = (new_dump != e.when_last_dump);
+    }
+  } else {
+    new_true = when_holds(*cond, v);
+    edge = new_true && !e.when_was_true;
+    if (!edge) e.when_was_true = new_true;               // re-arm on false; no-op while true
+  }
+  if (!edge) { sync_when_state_(e, dynamic); return; }
+
+  // Cooldown: absorb the edge (advance state, no fire, no queueing).
+  if (e.when_last_fire_epoch != 0 && now_epoch < e.when_last_fire_epoch + e.cooldown_s) {
+    e.when_last_dump = new_dump;
+    e.when_was_true = new_true;
+    sync_when_state_(e, dynamic);
+    return;
+  }
+
+  bool ran = false;
+  try {
+    ran = fire_(e);
+  } catch (...) {
+    bb_->post("HEARTBEAT_ERROR", e.name + " tick threw", "heartbeat");
+    ran = true;                                          // a throw mid-turn: don't re-fire the same edge
+  }
+  if (ran) {                                             // consume the edge ONLY if the turn was driven
+    e.when_last_dump = new_dump;
+    e.when_was_true = new_true;
+    e.when_last_fire_epoch = now_epoch;
+  }
+  sync_when_state_(e, dynamic);                          // busy-skip: state untouched -> retry next tick
+}
+
+void HeartbeatModule::sync_when_state_(const HeartbeatEntry& e, bool dynamic) {
+  if (!dynamic || e.id.empty()) return;                  // static entries keep state in-place
+  when_state_by_id_[e.id] = {e.when_armed, e.when_last_dump, e.when_was_true,
+                             e.when_last_fire_epoch};
+}
+
 void HeartbeatModule::reload_dynamic_() {
   std::ifstream f(cron_store_);
   if (!f) { dynamic_.clear(); return; }
@@ -97,15 +157,24 @@ void HeartbeatModule::reload_dynamic_() {
     e.name = t.name; e.id = t.id; e.prompt = t.prompt; e.notify = t.notify;
     e.one_shot = (t.kind == "once");
     e.schedule = t.schedule; e.fire_epoch = t.fire_epoch;
+    e.when = t.when; e.cooldown_s = t.cooldown_s;
     auto it = last_fired_by_id_.find(t.id);
     e.last_fired_minute = (it != last_fired_by_id_.end()) ? it->second : -1;
+    if (auto ws = when_state_by_id_.find(t.id); ws != when_state_by_id_.end()) {
+      e.when_armed = ws->second.armed;
+      e.when_last_dump = ws->second.last_dump;
+      e.when_was_true = ws->second.was_true;
+      e.when_last_fire_epoch = ws->second.last_fire_epoch;
+    }
     rebuilt.push_back(std::move(e));
   }
-  // Prune dedup stamps for ids no longer active (a cancelled task folds out but left its stamp).
+  // Prune dedup + when state for ids no longer active (a cancelled task folds out but left them).
   std::set<std::string> active_ids;
   for (const auto& e : rebuilt) active_ids.insert(e.id);
   for (auto it = last_fired_by_id_.begin(); it != last_fired_by_id_.end(); )
     it = active_ids.count(it->first) ? std::next(it) : last_fired_by_id_.erase(it);
+  for (auto it = when_state_by_id_.begin(); it != when_state_by_id_.end(); )
+    it = active_ids.count(it->first) ? std::next(it) : when_state_by_id_.erase(it);
   dynamic_ = std::move(rebuilt);
 }
 

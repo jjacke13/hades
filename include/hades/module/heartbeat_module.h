@@ -29,6 +29,12 @@ struct HeartbeatEntry {
   std::string id;                    // dynamic tasks only ("" for static manifest entries)
   bool one_shot = false;             // fire once at fire_epoch, then done
   long long fire_epoch = 0;          // local epoch seconds (one_shot)
+  std::string when;                  // reactive condition ("" = schedule-kind entry)
+  long long cooldown_s = 60;         // min seconds between when-fires (flap absorber)
+  bool when_armed = false;           // changes-kind: first observation recorded?
+  std::string when_last_dump;        // changes-kind: last observed value (compact dump)
+  bool when_was_true = false;        // holds-kind: previous evaluation (edge detect)
+  long long when_last_fire_epoch = 0;
 };
 
 class HeartbeatModule : public Module {
@@ -49,6 +55,8 @@ class HeartbeatModule : public Module {
   bool fire_(HeartbeatEntry& e);
   void maybe_fire_(HeartbeatEntry& e, const std::tm& now, long long minute, long long now_epoch,
                    bool dynamic);
+  void maybe_fire_when_(HeartbeatEntry& e, long long now_epoch, bool dynamic);
+  void sync_when_state_(const HeartbeatEntry& e, bool dynamic);
   void reload_dynamic_();
   void load_and_compact_();
   std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
@@ -58,6 +66,11 @@ class HeartbeatModule : public Module {
   std::string cron_store_;
   std::vector<HeartbeatEntry> dynamic_;
   std::map<std::string, long long> last_fired_by_id_;   // dedup survives a reload
+  // Dynamic when-entries are rebuilt from the store each scan; their edge state lives here, keyed
+  // by task id (the last_fired_by_id_ pattern), pruned to the active set on reload.
+  struct WhenState { bool armed = false; std::string last_dump; bool was_true = false;
+                     long long last_fire_epoch = 0; };
+  std::map<std::string, WhenState> when_state_by_id_;
   Blackboard* bb_ = nullptr;
   TurnGate* gate_ = nullptr;
   TurnGate local_gate_;

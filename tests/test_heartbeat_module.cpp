@@ -294,3 +294,125 @@ TEST(Heartbeat, OneShotSkippedWhenBusyRetriesNextTick) {
     EXPECT_TRUE(fold_cron_store(s.str()).empty());   // now completed (done record)
   }
 }
+
+namespace {
+HeartbeatEntry when_entry(const std::string& name, const std::string& cond, bool notify = false,
+                          long long cooldown = 60) {
+  HeartbeatEntry e;
+  e.name = name; e.prompt = "react"; e.notify = notify;
+  e.when = cond; e.cooldown_s = cooldown;
+  return e;
+}
+}  // namespace
+
+TEST(Heartbeat, WhenChangesArmsThenFiresOncePerChange) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.add_entry(when_entry("w", "WATCHED changes", false, 0));   // cooldown 0: isolate edge logic
+  r.bb.post("WATCHED", "v1", "test");
+  r.mod.tick(at(0, 0));    // first observation ARMS, no fire
+  EXPECT_EQ(turns, 0);
+  r.mod.tick(at(1, 0));    // unchanged -> no fire
+  EXPECT_EQ(turns, 0);
+  r.bb.post("WATCHED", "v2", "test");
+  r.mod.tick(at(2, 0));    // changed -> fire once
+  EXPECT_EQ(turns, 1);
+  r.mod.tick(at(3, 0));    // re-armed on v2, unchanged -> no re-fire
+  EXPECT_EQ(turns, 1);
+}
+
+TEST(Heartbeat, WhenIsFiresOnEdgeAndRearmsOnFalse) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.add_entry(when_entry("w", "STATE is alarm", false, 0));
+  r.bb.post("STATE", "ok", "test");
+  r.mod.tick(at(0, 0));
+  EXPECT_EQ(turns, 0);
+  r.bb.post("STATE", "alarm", "test");
+  r.mod.tick(at(1, 0));    // false->true edge -> fire
+  EXPECT_EQ(turns, 1);
+  r.mod.tick(at(2, 0));    // still true -> no re-fire
+  EXPECT_EQ(turns, 1);
+  r.bb.post("STATE", "ok", "test");
+  r.mod.tick(at(3, 0));    // re-armed
+  r.bb.post("STATE", "alarm", "test");
+  r.mod.tick(at(4, 0));    // new edge -> fire again
+  EXPECT_EQ(turns, 2);
+}
+
+TEST(Heartbeat, WhenAlreadyTrueAtBootFiresOnce) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.bb.post("BUDGET", 0.9, "test");                        // already above before the first scan
+  r.mod.add_entry(when_entry("w", "BUDGET above 0.8", false, 0));
+  r.mod.tick(at(0, 0));
+  EXPECT_EQ(turns, 1);
+  r.mod.tick(at(1, 0));
+  EXPECT_EQ(turns, 1);                                     // once
+}
+
+TEST(Heartbeat, WhenBusySkipDoesNotConsumeEdge) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.add_entry(when_entry("w", "WATCHED changes", false, 0));
+  r.bb.post("WATCHED", "v1", "test");
+  r.mod.tick(at(0, 0));                                    // arm
+  r.bb.post("WATCHED", "v2", "test");
+  {
+    std::lock_guard<std::mutex> hold(r.gate.mu);           // human holds the gate
+    r.mod.tick(at(1, 0));                                  // edge present but busy -> skipped, NOT consumed
+  }
+  EXPECT_EQ(turns, 0);
+  r.mod.tick(at(2, 0));                                    // gate free -> the same edge fires
+  EXPECT_EQ(turns, 1);
+}
+
+TEST(Heartbeat, WhenCooldownAbsorbsFlap) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.add_entry(when_entry("w", "WATCHED changes", false, 3600));   // long cooldown
+  r.bb.post("WATCHED", "v1", "test");
+  r.mod.tick(at(0, 0));                                    // arm
+  r.bb.post("WATCHED", "v2", "test");
+  r.mod.tick(at(1, 0));                                    // fire (first)
+  EXPECT_EQ(turns, 1);
+  r.bb.post("WATCHED", "v3", "test");
+  r.mod.tick(at(2, 0));                                    // edge INSIDE cooldown -> absorbed, no fire
+  EXPECT_EQ(turns, 1);
+  r.mod.tick(at(3, 0));                                    // still absorbed (state advanced to v3)
+  EXPECT_EQ(turns, 1);
+}
+
+TEST(Heartbeat, WhenAbsentKeyNeverFires) {
+  Rig r;
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.mod.add_entry(when_entry("w", "NEVER_POSTED is x", false, 0));
+  r.mod.tick(at(0, 0));
+  r.mod.tick(at(1, 0));
+  EXPECT_EQ(turns, 0);
+}
+
+TEST(Heartbeat, DynamicWhenEdgeStateSurvivesReload) {
+  Rig r;
+  const std::string store = cron_store_path("dynwhen");
+  CronTask t{"dw1", "watch", "when", "", 0, "react", false, 1};
+  t.when = "WATCHED changes"; t.cooldown_s = 0;
+  write_store(store, add_record(t) + "\n");
+  r.mod.set_cron_store(store);
+  int turns = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { ++turns; });
+  r.bb.post("WATCHED", "v1", "test");
+  r.mod.tick(at(0, 0));    // reload builds the entry; arms on v1
+  EXPECT_EQ(turns, 0);
+  r.mod.tick(at(1, 0));    // RELOAD AGAIN (state must survive) — unchanged, no fire
+  EXPECT_EQ(turns, 0);
+  r.bb.post("WATCHED", "v2", "test");
+  r.mod.tick(at(2, 0));    // change after reload -> exactly one fire
+  EXPECT_EQ(turns, 1);
+}
