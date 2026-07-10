@@ -786,6 +786,31 @@ persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate
 inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn
 can't read out the receiver's full memory — see the Bridge SECURITY note).
 
+### Noted 2026-07-10 (Vaios) — three new future items
+1. **Context-full behavior — DECIDE.** Today when a session grows past `history_budget_chars` (default
+   120000 chars ≈ ~30k tokens) the Arbiter silently sends only the most-recent tool-pairing-safe suffix
+   per request; full history stays on disk. Nothing is summarized, the user is never told, and the dropped
+   prefix is only recoverable via embeddings recall (if rostered). Decide the deliberate behavior:
+   compact-and-continue (LLM-summarize the dropped prefix into a standing context block, CC `/compact`
+   analogue — natural memory-v2 tie-in: auto-extract facts BEFORE they fall off), auto-rotate to a fresh
+   session (`/new` + carry-summary), a warning to the user, or a manifest-tunable mix. Brainstorm-first;
+   overlaps memory v2's auto-extract work-list item.
+2. **Mongoose for HTTP — RESEARCH.** Evaluate the mongoose embedded C networking lib as the HTTP layer:
+   could replace cpp-httplib (serve/bridge listeners) and possibly the cpr client side with ONE dependency,
+   and natively brings WebSocket/SSE (the deferred streaming leg) + a smaller static-cross footprint for
+   the Pi builds. Research: license (mongoose is GPLv2 OR commercial dual-license — a real question for the
+   publishing plan; cpp-httplib is MIT), API fit vs the existing `authorize()`/httplib seams (serve, bridge,
+   telegram long-poll), TLS story under musl static, and whether the win justifies touching three stable
+   modules. Outcome = a written recommendation, not a port.
+3. **Multiple concurrent sessions per agent — IF/HOW.** Today ONE agent = ONE live conversation: a single
+   Arbiter `history_`, one session jsonl, and the TurnGate serializes chat/serve/telegram/bridge into that
+   one thread of context (a Telegram turn and a web turn interleave into the SAME conversation). Question:
+   can/should one agent hold N independent sessions (per front-end? per Telegram chat-id? per web tab?)
+   — needs per-session history/epoch/pending state (a `Session` object the Arbiter switches on a session
+   key), session-scoped memory injection, and a routing convention on USER_MESSAGE. Relates to the deferred
+   `/sessions` list+switch, telegram-v2 group chats, and the level-2 `/persona` switch. Big architectural
+   question — brainstorm-first, likely after memory v2.
+
 ### Pre-publishing doc audit (Vaios 2026-07-08 — do BEFORE publishing the repo)
 hades is **moving towards publishing**; docs must be publication-grade first. A dedicated session:
 1. **Full-doc review pass, newcomer's eyes:** read `docs/manifest-reference.md` + `docs/architecture.md`
