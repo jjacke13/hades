@@ -810,6 +810,18 @@ can't read out the receiver's full memory — see the Bridge SECURITY note).
    key), session-scoped memory injection, and a routing convention on USER_MESSAGE. Relates to the deferred
    `/sessions` list+switch, telegram-v2 group chats, and the level-2 `/persona` switch. Big architectural
    question — brainstorm-first, likely after memory v2.
+4. **User + multiple agents GROUP CHAT (Vaios 2026-07-10).** One conversation with the human AND several
+   agents (e.g. Vaios + hades1 + pi0) — today's shapes are strictly pairwise: human↔one agent (front-ends)
+   and agent↔agent (bridge `/ask`, one serialized request-reply, max_hops=1, peers can't even be prompted
+   mid-turn). A group chat needs: a shared conversation surface (a "room" — who hosts it? one agent as
+   moderator/router, or a room object above the agents bridging N Blackboards?), turn-taking (who speaks
+   when — free-for-all is chaos + budget burn; address-by-name `@pi0`? moderator picks? round-robin?),
+   how a peer's contribution enters each agent's history (today a peer reply is a TOOL_RESULT, not a
+   conversation participant), loop/echo containment (PeerLoopGuard generalizes to rooms?), per-agent
+   budget/confirm in a shared room, and transport (bridge v2 seam — a `/room` surface or a shared-bus
+   relay; telegram group-chat v2 could be the human-facing front half). Builds ON items 3 (multi-session)
+   + telegram-v2 groups + bridge v2; the moderator-router variant is close to the parked level-3
+   `Community` ×N + router sketch. Far-future, brainstorm-first.
 
 ### Pre-publishing doc audit (Vaios 2026-07-08 — do BEFORE publishing the repo)
 hades is **moving towards publishing**; docs must be publication-grade first. A dedicated session:
