@@ -35,6 +35,7 @@ stdenv.mkDerivation {
     mkdir -p $out/bin $out/tools
     for b in ${toString bins}; do install -Dm755 "$b" "$out/bin/$b"; done
     cp -r $src/web $src/prompts $out/
+    cp -r $src/skills $out/ 2>/dev/null || true   # curated skills (e.g. email/); wire with Module=skills + Skills{dir=skills}
     cp $src/tools/*.sh $out/tools/ 2>/dev/null || true
     cp $src/tools/*.py $out/tools/ 2>/dev/null || true
     cp $src/manifests/pi.hades $out/pi.hades
