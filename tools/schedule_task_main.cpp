@@ -94,10 +94,15 @@ int main(int argc, char** argv) {
   };
   if (name.empty() || prompt.empty()) return fail("missing arg: name and prompt required");
 
-  const bool has_sched = args.contains("schedule") && args["schedule"].is_string();
-  const bool has_in    = args.contains("in_minutes") && args["in_minutes"].is_number();
-  const bool has_at    = args.contains("at") && args["at"].is_string();
-  const bool has_when  = args.contains("when") && args["when"].is_string();
+  // A field is a timing CHOICE only when it carries a real value. Many LLMs fill EVERY schema
+  // property, sending "" for the unused string fields (and sometimes 0 for the number) — counting
+  // those as "present" made "exactly one" impossible and produced a retry loop. Empty string /
+  // non-positive in_minutes = absent.
+  const bool has_sched = !str("schedule").empty();
+  const bool has_at    = !str("at").empty();
+  const bool has_when  = !str("when").empty();
+  const bool has_in    = args.contains("in_minutes") && args["in_minutes"].is_number() &&
+                         args["in_minutes"].get<double>() > 0;
   if (has_sched + has_in + has_at + has_when != 1)
     return fail("provide exactly one of: schedule, in_minutes, at, when");
 

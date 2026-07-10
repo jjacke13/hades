@@ -164,3 +164,29 @@ TEST(ScheduleTaskTool, ExtremeCooldownRejectedNoUB) {
   }
   EXPECT_FALSE(std::filesystem::exists(store));   // nothing written on rejection
 }
+
+TEST(ScheduleTaskTool, EmptyUnusedTimingFieldsIgnored) {
+  // The live-smoke failure: an LLM fills EVERY timing property, "" for the unused ones.
+  const std::string store = fresh_store("emptyfields");
+  auto j = call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"hi","prompt":"say hi","notify":true,"in_minutes":3,"at":"","schedule":"","when":""}})");
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  EXPECT_EQ(j["result"].value("kind", ""), "once");
+}
+
+TEST(ScheduleTaskTool, ZeroInMinutesAndEmptyStringsTreatedAsAbsent) {
+  // A different fill pattern: a real `when`, plus in_minutes:0 (number default) + empty strings.
+  const std::string store = fresh_store("zeroin");
+  auto j = call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"w","prompt":"p","when":"K changes","in_minutes":0,"at":"","schedule":""}})");
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  EXPECT_EQ(j["result"].value("kind", ""), "when");
+}
+
+TEST(ScheduleTaskTool, AllTimingFieldsEmptyStillRejected) {
+  // No real timing choice at all -> still "exactly one" (not a silent no-op).
+  const std::string store = fresh_store("noneempty");
+  auto j = call_sched(store,
+      R"({"call":"schedule_task","args":{"name":"x","prompt":"p","in_minutes":0,"at":"","schedule":"","when":""}})");
+  EXPECT_FALSE(j.value("ok", true));
+}
