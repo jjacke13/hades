@@ -777,10 +777,31 @@ Two directions set after the aarch64/Pi + voice batch. BOTH brainstorm-first (no
    gates still apply to self-turns; a runaway-loop cap; `TURN_ORIGIN = heartbeat`); interaction with idle-timeout +
    the offload model. This is the "autonomy" leg — turns hades from reactive assistant into a standing agent.
 
+### Email skill (shipped 2026-07-10, `feat/email-tools`) — mailbox access via himalaya, NO code
+Read/send the user's mail. Decided as a **skill, not a module/tools** (Vaios ladder: front-end→tools→skill;
+himalaya is known/tested/Rust/lightweight/OAuth2-capable, and the skills system exists for exactly this):
+`skills/email/SKILL.md` teaches the agent to drive the **himalaya** CLI through the EXISTING tools —
+`run_command himalaya envelope list -o json`/`message read <id>` to read, and a `write_file` draft +
+`shell himalaya message send < workspace/email_draft.txt` to send. **Zero C++, zero credentials in hades**
+(accounts/tokens/keyring live in himalaya's config). Gating falls out of the shipped capability model:
+reads are unattended IFF the operator adds `himalaya envelope list, himalaya message read` to
+`exec_allow` (else confirm); sends go via `shell` = always confirm-band → auto-denied on heartbeat/peer
+turns (no unattended mail, exfil surface shut). Skill is OS-generic (nix/brew/cargo/scoop install ladder),
+written for weaker LLMs (file-based send avoids shell-quoting), short (token-frugal). himalaya added to the
+flake devShell (runtime dep, not linked); dev.hades ships a commented email-read `exec_allow` example.
+**Accepted trade-off (documented):** no MailReadGuard — `exec_allow` reads are allow-band for **peer**-driven
+turns too, so a peer could read the user's mail; keep himalaya out of `exec_allow` on bridged workers, OR
+the capability-v2 **per-origin exec scopes** fix it properly (added to that backlog). The native-tools design
+(3 curl/himalaya tool binaries + MailReadGuard + MailSend=confirm) is the SUPERSEDED alternative in
+`docs/superpowers/specs/2026-07-10-email-tools-design.md`; the email **front-end** (agent commanded by /
+replying over email, Telegram-equivalent — Auth-Results gate, backlog drain-and-discard, In-Reply-To
+threading, NOTIFY_USER email sink) stays a future item with its seeds in that spec.
+
 ## Other open work
 Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
 aren't announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
-(positive net allowlist / realpath / DNS-rebind) · telegram v2 (UTF-8-aware 4096 split · group chats ·
+(positive net allowlist / realpath / DNS-rebind / **per-origin exec scopes** — so a `peer:` turn gets a
+narrower exec_allow than a human, the proper fix for the email-skill peer-read caveat) · telegram v2 (UTF-8-aware 4096 split · group chats ·
 persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate + api-seam pattern) · bridge v2
 (per-peer secrets/share-lists/confirm-policy · per-key rename · max_hops>1 · transport seam · discovery ·
 inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn

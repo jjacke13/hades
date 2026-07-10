@@ -320,6 +320,17 @@ whitespace-free.
 whitespace-free. Skill names are gated to `[A-Za-z0-9_-]{1,64}` in the tools (no path traversal).
 The dir is git-tracked in this repo (the agent writes skills at runtime → working-tree churn).
 
+**Shipped skill: `email`** (`skills/email/SKILL.md`). Read/send the user's mail via the
+[himalaya](https://github.com/pimalaya/himalaya) CLI — no email module or credentials in hades
+(accounts live in himalaya's own config). Requires the `run_command` + `shell` + `write_file` tools
+and himalaya installed with a configured account (the skill walks the agent through install +
+points the user at himalaya's account wizard). **Reads** (`himalaya envelope list`/`message read`)
+run unattended only if the operator adds them to `capability_policy.exec_allow` (else confirm);
+**sends** go through `shell` so they are always human-confirmed (auto-denied on heartbeat/peer
+turns → the agent never mails anyone unattended). **Caveat on a bridged agent:** `exec_allow`
+read-prefixes are allow-band for *peer*-driven turns too — a peer could read the user's mail; keep
+himalaya out of `exec_allow` on peer-exposed workers (reads then confirm → auto-denied for peers).
+
 ---
 
 ## 9. `Serve` block

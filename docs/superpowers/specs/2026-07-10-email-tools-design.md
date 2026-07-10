@@ -1,8 +1,35 @@
 # hades email tools — design (mailbox access via himalaya)
 
 **Date:** 2026-07-10
-**Status:** approved (Vaios)
+**Status:** SUPERSEDED by the skill-only pivot below (Vaios, same day) — kept as the design record.
 **Branch:** `feat/email-tools` off `main` @ `d88b168`
+
+## PIVOT (final form, 2026-07-10): a SKILL, not native tools
+
+Vaios: "could we simplify it even more? like a specific skill to install and use himalaya." Yes —
+the skills system was built for exactly this. **Shipped form = `skills/email/SKILL.md`**, zero C++:
+
+- **Read** via `run_command himalaya envelope list -o json` / `himalaya message read <id>` — the
+  operator adds `exec_allow = himalaya envelope list, himalaya message read` and reads run without
+  confirm (unattended heartbeat inbox summaries work). This IS the MailRead=allow semantics below,
+  delivered by the existing capability model.
+- **Send** composes a draft file with `write_file` (fs_write_allow-scoped) then `shell`
+  `himalaya message send < workspace/email_draft.txt` — shell is always confirm-band, so every
+  send is human-approved and auto-denied on heartbeat/peer turns. This IS the MailSend=confirm
+  semantics below, for free. (The file-based send also avoids shell-quoting failures in weaker LLMs.)
+- **Install + account setup** are part of the skill (OS-generic ladder: nix/brew/cargo/scoop; the
+  himalaya account wizard is the user's one manual step).
+- The skill is announced in the system prompt (skills roster), loadable with `use_skill`,
+  improvable with `save_skill`, and himalaya CLI drift is a markdown edit, not a code change.
+
+**Accepted trade-off vs the native design:** no `MailReadGuard` — with himalaya prefixes in
+`exec_allow`, a **peer-driven turn could read the user's mail** (run_command allow-band applies to
+peers). Documented; acceptable for the current personal two-agent fleet. Mitigations: keep himalaya
+out of `exec_allow` on bridged workers (reads then confirm → auto-denied for peers), or the parked
+capability-v2 **per-origin exec scopes** (proper fix — added to that backlog item).
+
+Everything below this line is the superseded native-tool design, kept because its analysis (why
+himalaya, the gating semantics, the future front-end seeds) still governs.
 
 ## The one idea
 

@@ -34,6 +34,7 @@
             git
             jq
             nodejs_22     # `npx @modelcontextprotocol/server-*` MCP servers for adapter testing
+            himalaya      # CLI email client — runtime dep of the `email` skill (not linked; on PATH for `nix develop`)
           ];
 
           # Libraries (headers + .pc / cmake config for pkg-config / find_package).

@@ -60,6 +60,11 @@ Objective = capability_policy
   fs_deny           = /etc /root .env secrets/ .ssh/ .git/credentials id_rsa
   fs_write_allow    = ./workspace
   exec_allow        = cmake --build build, ctest --test-dir build
+  # Email (skills/email + himalaya): add the two READ prefixes below to let inbox checks run
+  # without confirm (unattended heartbeat summaries). Sending stays confirm-band by design (the
+  # skill sends via `shell`). CAVEAT on a BRIDGED agent: allow-band reads also apply to peer-driven
+  # turns — a peer could read your mail; keep these out of exec_allow on peer-exposed workers.
+  # exec_allow      = cmake --build build, ctest --test-dir build, himalaya envelope list, himalaya message read
   block_private_net = true
   confirm_unscoped  = true
 }
