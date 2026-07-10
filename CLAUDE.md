@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **555/555 tests** (ASan+UBSan + **TSan** 555/555 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **558/558 tests** (ASan+UBSan + **TSan** 555/555 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -363,6 +363,11 @@ manifest-static `Heartbeat = <name>` blocks (which are unchanged; dynamic + stat
   (recurring, `cron_valid`) OR one-shot (`in_minutes` relative / `at` absolute machine-local `YYYY-MM-DDTHH:MM`|`HH:MM` →
   `fire_epoch`); **`list_tasks`** (active dynamic only — static entries are operator-owned, not in the store);
   **`cancel_task`** `{id}` → tombstone.
+  - **Exactly-one-of gotcha (fixed 2026-07-10, `833b9aa`, live-smoke bug):** many LLMs fill EVERY schema property,
+    sending `""` for the unused timing fields (and `0` for the number) alongside the real one → the old
+    presence-by-type check counted 4 "present" fields → "provide exactly one" rejected every call → the model
+    retried the identical bad call until max-tool-steps. Now an **empty string / non-positive `in_minutes` = absent**
+    (`!str(k).empty()`; `in_minutes` requires `>0`). Any future exactly-one-of tool MUST treat empty as absent.
 - **One-shot turns are NEW** (cron was recurring-only): fire once when `now_epoch >= fire_epoch` → the module appends a
   `done` record (folds away next reload). **Skip-if-busy is honored** — a one-shot due while the TurnGate is held is NOT
   tombstoned (retries next free tick; `fire_` returns whether it actually ran). **Catch-up on boot:** a one-shot whose
@@ -564,7 +569,7 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 export HADES_API_KEY=<key>                                   # key never in the manifest
 nix develop --command cmake -S . -B build -G Ninja           # configure (once)
 nix develop --command cmake --build build                    # build
-nix develop --command ctest --test-dir build                 # test (555/555, ~5.9s)
+nix develop --command ctest --test-dir build                 # test (558/558, ~5.9s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
 nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
