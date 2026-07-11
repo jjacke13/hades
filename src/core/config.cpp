@@ -204,7 +204,7 @@ std::string assemble_system_prompt(const Block& session) {
 std::string read_memory_layer(const std::string& path) {
   if (path.empty()) return "";
   std::ifstream f(path);
-  if (!f) return "";  // core file may not exist until the first pin_fact — not an error
+  if (!f) return "";  // core file may not exist until the first core_memory add — not an error
   std::stringstream s;
   s << f.rdbuf();
   return s.str();

@@ -76,7 +76,7 @@ TEST(CapabilityPolicy, ConfirmGatesUnknownTool) {
 TEST(CapabilityPolicy, AllowsMemoryAppendTools) {
   Blackboard bb; CapabilityPolicy p(make_scope());
   Action sm{Action::Kind::ToolCall}; sm.tool="save_memory"; sm.args={{"text","hi"}};
-  Action pf{Action::Kind::ToolCall}; pf.tool="pin_fact";    pf.args={{"text","hi"}};
+  Action pf{Action::Kind::ToolCall}; pf.tool="core_memory"; pf.args={{"action","add"},{"text","hi"}};
   EXPECT_FALSE(p.veto(bb,sm).vetoed);
   EXPECT_FALSE(p.veto(bb,pf).vetoed);
 }
@@ -92,7 +92,7 @@ TEST(CapabilityPolicy, HelperTablesAndParsing) {
   EXPECT_EQ(CapabilityPolicy::capability_of("http_fetch"), Capability::Net);
   EXPECT_EQ(CapabilityPolicy::capability_of("shell"), Capability::Exec);
   EXPECT_EQ(CapabilityPolicy::capability_of("save_memory"), Capability::MemoryAppend);
-  EXPECT_EQ(CapabilityPolicy::capability_of("pin_fact"), Capability::MemoryAppend);
+  EXPECT_EQ(CapabilityPolicy::capability_of("core_memory"), Capability::MemoryAppend);
   EXPECT_EQ(CapabilityPolicy::capability_of("nope"), Capability::Unknown);
   EXPECT_EQ(CapabilityPolicy::parse_host("https://user:pw@Host.EXAMPLE.com:443/p?q=1"), "host.example.com");
   EXPECT_TRUE (CapabilityPolicy::is_private_host("127.0.0.1"));

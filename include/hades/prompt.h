@@ -5,7 +5,7 @@
 // file cannot be read; "" if neither key is set. Loaded once at startup (Arbiter::set_system_prompt).
 //
 // read_memory_layer reads the always-on MEMORY file (memory_file) fresh — the Arbiter calls it
-// every turn so the agent's pin_fact edits are live. Tolerant: ""/missing path -> "", never throws.
+// every turn so the agent's core_memory edits are live. Tolerant: ""/missing path -> "", never throws.
 #pragma once
 #include <string>
 #include "hades/config.h"

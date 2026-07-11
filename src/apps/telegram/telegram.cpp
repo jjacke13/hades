@@ -45,7 +45,7 @@ double TelegramModule::effective_timeout_() const {
 
 void TelegramModule::on_start(const Block& cfg, Blackboard&) {
   // allow_users is REQUIRED and strictly numeric — an open bot means anyone who finds the
-  // username can drive the agent's tools. Fail fast and loud (pin_fact precedent).
+  // username can drive the agent's tools. Fail fast and loud (core_memory precedent).
   if (!cfg.kv.count("allow_users"))
     throw MalConfig("telegram module requires allow_users (numeric Telegram user ids)");
   std::istringstream is(cfg.kv.at("allow_users"));

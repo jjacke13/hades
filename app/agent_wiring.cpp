@@ -34,6 +34,7 @@
 #include "hades/tts/http_tts_provider.h"
 #include "hades/tts/command_tts_provider.h"
 #include "hades/module/memory_module.h"
+#include "hades/memory_limit.h"  // kDefaultMemoryCharLimit
 #include "hades/timeouts.h"  // kDefaultLlmTimeoutS / kDefaultTurnIdleTimeoutS
 namespace hades {
 namespace {
@@ -179,7 +180,7 @@ void wire_agent(Agent& a,
                 const std::vector<Block>& heartbeat_blocks = {}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
-  //   pin_fact    -> core file (Session `memory_file`),     read live by the Arbiter.
+  //   core_memory -> core file (Session `memory_file`),     read live by the Arbiter.
   // Append each configured path to the matching tool's command; copy-then-modify (never
   // touch the caller's blocks). A path is whitespace-split downstream, so reject whitespace.
   auto reject_ws = [](const std::string& p, const char* what) {
@@ -251,21 +252,26 @@ void wire_agent(Agent& a,
       throw MalConfig("ask_agent tool requires Bridge { name } (the agent's own peer name)");
   }
 
-  // pin_fact writes the core-memory file the Arbiter folds in each turn; without a
+  // core_memory edits the core-memory file the Arbiter folds in each turn; without a
   // configured memory_file the two would target different files (silent drift), so
-  // require it explicitly when the pin_fact tool is present.
-  bool has_pin_fact = false;
-  for (const auto& t : tools) if (t.name == "pin_fact") has_pin_fact = true;
-  if (has_pin_fact && core_path.empty())
-    throw MalConfig("pin_fact tool requires a memory_file in the Session block");
+  // require it explicitly when the core_memory tool is present. The cap (Session
+  // memory_char_limit) rides the same argv — single source of truth.
+  bool has_core_memory = false;
+  for (const auto& t : tools) if (t.name == "core_memory") has_core_memory = true;
+  if (has_core_memory && core_path.empty())
+    throw MalConfig("core_memory tool requires a memory_file in the Session block");
+  long long memory_char_limit = kDefaultMemoryCharLimit;
+  if (session.kv.count("memory_char_limit"))
+    memory_char_limit = parse_ll(session.kv.at("memory_char_limit"), memory_char_limit);
+  if (memory_char_limit <= 0) memory_char_limit = kDefaultMemoryCharLimit;
 
   std::vector<Block> tools_resolved;
   tools_resolved.reserve(tools.size());
   for (Block t : tools) {
     if (t.name == "save_memory" && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + store_path;
-    else if (t.name == "pin_fact" && t.kv.count("native") && !core_path.empty())
-      t.kv["native"] = t.kv["native"] + " " + core_path;
+    else if (t.name == "core_memory" && t.kv.count("native") && !core_path.empty())
+      t.kv["native"] = t.kv["native"] + " " + core_path + " " + std::to_string(memory_char_limit);
     else if ((t.name == "use_skill" || t.name == "save_skill") && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + skills_dir;
     else if (t.name == "ask_agent" && t.kv.count("native")) {

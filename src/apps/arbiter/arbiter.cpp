@@ -188,7 +188,7 @@ void Arbiter::start_turn() {
   for (auto& t : tools_)
     tools.push_back({{"name", t.name}, {"description", t.description}, {"schema", t.schema}});
   // Leading system message = static SOUL/USER prompt + the live core-memory layer, re-read
-  // from disk every turn (so the agent's pin_fact edits show up the same session). Built fresh
+  // from disk every turn (so the agent's core_memory edits show up the same session). Built fresh
   // each turn; never stored in history_.
   nlohmann::json messages = nlohmann::json::array();
   std::string sys = system_prompt_;

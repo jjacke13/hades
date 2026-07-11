@@ -9,7 +9,7 @@ let
   bins = [
     "hades" "hades-scope"
     "hades-fs-read" "hades-write-file" "hades-list-dir" "hades-shell" "hades-http-fetch"
-    "hades-save-memory" "hades-pin-fact" "hades-use-skill" "hades-save-skill" "hades-ask-agent"
+    "hades-save-memory" "hades-core-memory" "hades-use-skill" "hades-save-skill" "hades-ask-agent"
     "hades-grep" "hades-glob" "hades-edit-file" "hades-git-read" "hades-run-command"
     "hades-schedule-task" "hades-list-tasks" "hades-cancel-task"
   ];
