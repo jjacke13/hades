@@ -57,7 +57,9 @@ Retires the append-only `pin_fact` for **`core_memory`** (clean break — repo u
   self-scheduling — weak LLMs fill every schema field); non-string args fail closed; atomic tmp+rename write;
   newlines stripped; parent dir created. Capability = **MemoryAppend → always allow** (the agent's own file —
   curation must be frictionless). Wiring still **requires `Session.memory_file`** (`MalConfig` otherwise) and
-  appends `<file> <cap>` to the tool argv (single source of truth).
+  appends `<file> <cap>` to the tool argv (single source of truth). **Widened peer/heartbeat blast radius
+  (spec-acknowledged):** allow-band now includes `remove`/`replace`, so a peer `/ask` or heartbeat turn can
+  REWRITE or DELETE core memories, not just append — v2 fix = per-origin tool scopes (capability-v2 backlog).
 - Pieces: `tools/core_memory_main.cpp`, `include/hades/memory_limit.h` (`kDefaultMemoryCharLimit = 2400`),
   `app/agent_wiring.cpp` (parse `memory_char_limit` + argv), `tests/test_core_memory_{tool,wiring}.cpp`.
   Spec/plan: `docs/superpowers/{specs/2026-07-11-core-memory-design.md,plans/2026-07-11-core-memory.md}`.
