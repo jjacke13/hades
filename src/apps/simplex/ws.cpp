@@ -200,3 +200,146 @@ void WsDecoder::parse_() {
 }
 
 }  // namespace hades
+
+// ── WsClient: blocking POSIX-socket client (connect/handshake/send/recv/pong) ──────────────
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+
+namespace hades {
+namespace {
+double now_s() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+
+WsClient::WsClient() : rng_(std::random_device{}()) {}
+WsClient::~WsClient() { close(); }
+
+void WsClient::close() {
+  if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
+  dec_ = WsDecoder{};                        // a new connection starts a fresh stream
+}
+
+bool WsClient::send_all_(const std::string& bytes) {
+  std::size_t off = 0;
+  while (off < bytes.size()) {
+    const ssize_t n = ::write(fd_, bytes.data() + off, bytes.size() - off);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      close();
+      return false;
+    }
+    off += static_cast<std::size_t>(n);
+  }
+  return true;
+}
+
+bool WsClient::send_frame_(WsOp op, const std::string& payload) {
+  if (fd_ < 0) return false;
+  return send_all_(ws_encode_frame(op, payload, /*mask=*/true, rng_()));
+}
+
+bool WsClient::send_text(const std::string& payload) { return send_frame_(WsOp::Text, payload); }
+
+bool WsClient::connect(const std::string& host, int port, double timeout_s) {
+  close();
+  addrinfo hints{};
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo* res = nullptr;
+  if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) return false;
+  const double deadline = now_s() + timeout_s;
+  for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+    const int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd < 0) continue;
+    // Non-blocking connect with a poll deadline, then back to blocking (reads use poll anyway).
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int rc = ::connect(fd, ai->ai_addr, ai->ai_addrlen);
+    if (rc != 0 && errno == EINPROGRESS) {
+      pollfd p{fd, POLLOUT, 0};
+      const int ms = static_cast<int>(std::max(0.0, deadline - now_s()) * 1000);
+      if (::poll(&p, 1, ms) == 1) {
+        int err = 0;
+        socklen_t elen = sizeof err;
+        ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen);
+        rc = err == 0 ? 0 : -1;
+      } else {
+        rc = -1;
+      }
+    }
+    if (rc == 0) {
+      ::fcntl(fd, F_SETFL, flags);
+      fd_ = fd;
+      break;
+    }
+    ::close(fd);
+  }
+  ::freeaddrinfo(res);
+  if (fd_ < 0) return false;
+
+  // Handshake: random 16-byte key, wait for the full header block, verify the accept value.
+  std::string raw_key(16, '\0');
+  for (char& c : raw_key) c = static_cast<char>(rng_() & 0xFF);
+  const std::string key = ws_base64(raw_key);
+  if (!send_all_(ws_handshake_request(host, port, key))) return false;
+  std::string headers;
+  char buf[512];
+  while (headers.find("\r\n\r\n") == std::string::npos) {
+    const int ms = static_cast<int>(std::max(0.0, deadline - now_s()) * 1000);
+    pollfd p{fd_, POLLIN, 0};
+    if (::poll(&p, 1, ms) != 1) { close(); return false; }
+    const ssize_t n = ::read(fd_, buf, sizeof buf);
+    if (n <= 0) { close(); return false; }
+    headers.append(buf, static_cast<std::size_t>(n));
+    if (headers.size() > 64 * 1024) { close(); return false; }   // header bomb guard
+  }
+  const std::size_t hdr_end = headers.find("\r\n\r\n") + 4;
+  if (!ws_handshake_ok(headers.substr(0, hdr_end), key)) { close(); return false; }
+  // Bytes after the header block are already frames — feed them to the decoder.
+  if (hdr_end < headers.size()) dec_.feed(headers.data() + hdr_end, headers.size() - hdr_end);
+  return true;
+}
+
+WsRecv WsClient::recv_text(double timeout_s, std::string& out) {
+  if (fd_ < 0) return WsRecv::Closed;
+  const double deadline = now_s() + timeout_s;
+  char buf[4096];
+  for (;;) {
+    WsMessage m;
+    while (dec_.pop(m)) {
+      switch (m.op) {
+        case WsOp::Text: out = std::move(m.payload); return WsRecv::Text;
+        case WsOp::Ping: send_frame_(WsOp::Pong, m.payload); break;
+        case WsOp::Close: close(); return WsRecv::Closed;
+        default: break;                                  // Pong/Binary: ignore
+      }
+    }
+    if (dec_.error()) { close(); return WsRecv::Error; }
+    const int ms = static_cast<int>(std::max(0.0, deadline - now_s()) * 1000);
+    if (ms <= 0) return WsRecv::Timeout;
+    pollfd p{fd_, POLLIN, 0};
+    const int pr = ::poll(&p, 1, ms);
+    if (pr == 0) return WsRecv::Timeout;
+    if (pr < 0) {
+      if (errno == EINTR) continue;
+      close();
+      return WsRecv::Error;
+    }
+    const ssize_t n = ::read(fd_, buf, sizeof buf);
+    if (n == 0) { close(); return WsRecv::Closed; }
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      close();
+      return WsRecv::Error;
+    }
+    dec_.feed(buf, static_cast<std::size_t>(n));
+  }
+}
+}  // namespace hades
