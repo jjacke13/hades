@@ -18,6 +18,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "hades/module.h"
 #include "hades/simplex/api.h"
@@ -49,6 +50,7 @@ class SimplexModule : public Module {
   void handle_text_(const SxEvent& ev);
   void drive_turn_(long long contact_id, const nlohmann::json& post_value, const char* key);
   void send_reply_(long long contact_id, const std::string& text);
+  void drain_notifies_();                        // event thread only (sends over the one socket)
   bool allowed_(const SxEvent& ev) const;
   std::mutex& turn_mu_() { return gate_ ? gate_->mu : local_gate_.mu; }
   double effective_timeout_() const;
@@ -62,6 +64,10 @@ class SimplexModule : public Module {
   std::map<std::string, long long> known_ids_;   // display name -> contact id (learned from events)
   bool auto_accept_ = false;
   std::string notify_contact_;                   // id-or-name; "" = no notify delivery
+  // NOTIFY_USER texts queued by the subscriber (which runs on the POSTING thread — e.g. the
+  // heartbeat timer) and drained on the event thread, which alone may touch api_/known_ids_.
+  std::mutex notify_mu_;
+  std::vector<std::string> notify_queue_;
   double connect_timeout_s_ = 10.0;
   double poll_timeout_s_ = 25.0;                 // internal next_event wait per loop pass
   double turn_timeout_override_s_ = 0.0;

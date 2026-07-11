@@ -206,29 +206,35 @@ TEST(SimplexModule, AutoAcceptOffLogsAndIgnoresOnAccepts) {
   }
 }
 
-TEST(SimplexModule, NotifyContactByIdAndByResolvedName) {
-  {
-    Rig r(true, "notify_contact", "2");
-    r.bb.post("NOTIFY_USER", {{"text", "heartbeat says hi"}, {"from", "heartbeat"}}, "hb");
-    r.bb.pump();
-    ASSERT_EQ(r.api->sent.size(), 1u);
-    EXPECT_EQ(r.api->sent[0].first, 2);
-    EXPECT_EQ(r.api->sent[0].second, "heartbeat says hi");
-  }
-  {
-    Rig r(true, "notify_contact", "Vaios K");
-    // Name not yet resolvable -> delivery skipped (logged), no crash.
-    r.bb.post("NOTIFY_USER", {{"text", "too early"}}, "hb");
-    r.bb.pump();
-    EXPECT_TRUE(r.api->sent.empty());
-    // A Connected event teaches the name->id mapping; the next notify delivers.
-    r.api->events.push_back(connected_ev(42, "Vaios K"));
-    r.pump_events();
-    r.bb.post("NOTIFY_USER", {{"text", "now it works"}}, "hb");
-    r.bb.pump();
-    ASSERT_EQ(r.api->sent.size(), 1u);
-    EXPECT_EQ(r.api->sent[0].first, 42);
-  }
+TEST(SimplexModule, NotifyIsQueuedOnPumpAndDeliveredOnTheEventThread) {
+  // The C1 contract: the NOTIFY_USER subscriber (running on whatever thread pumps the post —
+  // the heartbeat timer in production) must NOT send; delivery happens when the event loop
+  // drains the queue in step_once. Single socket, single owning thread.
+  Rig r(true, "notify_contact", "2");
+  r.bb.post("NOTIFY_USER", {{"text", "heartbeat says hi"}, {"from", "heartbeat"}}, "hb");
+  r.bb.pump();
+  EXPECT_TRUE(r.api->sent.empty());              // queued only — no send on the pump thread
+  r.pump_events();                                // event thread drains
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_EQ(r.api->sent[0].first, 2);
+  EXPECT_EQ(r.api->sent[0].second, "heartbeat says hi");
+}
+
+TEST(SimplexModule, NotifyByNameResolvesViaKnownContacts) {
+  Rig r(true, "notify_contact", "Vaios K");
+  // Name not yet resolvable when drained -> delivery skipped (logged), no crash.
+  r.bb.post("NOTIFY_USER", {{"text", "too early"}}, "hb");
+  r.bb.pump();
+  r.pump_events();
+  EXPECT_TRUE(r.api->sent.empty());
+  // A Connected event teaches the name->id mapping; the next notify delivers on the drain.
+  r.api->events.push_back(connected_ev(42, "Vaios K"));
+  r.pump_events();
+  r.bb.post("NOTIFY_USER", {{"text", "now it works"}}, "hb");
+  r.bb.pump();
+  r.pump_events();
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_EQ(r.api->sent[0].first, 42);
 }
 
 TEST(SimplexModule, ClosedYieldsFalseForTheReconnectPath) {

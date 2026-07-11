@@ -257,31 +257,51 @@ void SimplexModule::on_attach(Blackboard& bb) {
     if (!my_turn_ || !e.value.is_object()) return;
     pending_confirm_ = e.value;
   });
-  // Notify sink (heartbeat etc.): deliver to the configured contact. Name form resolves via
-  // known_ids_ (learned from Connected/Text events); unresolved -> logged skip. Fail-soft.
+  // Notify sink (heartbeat etc.): the subscriber runs on WHATEVER thread pumps the post — for
+  // a heartbeat tick's notify that is the HEARTBEAT timer thread — so it must NOT touch api_
+  // or known_ids_: the event thread owns the one persistent socket (WsClient is single-threaded
+  // by contract; the telegram sink can send inline only because each send is a fresh stateless
+  // HTTP call). Queue the text under a mutex; the event loop drains it in step_once. Delivery
+  // latency <= poll_timeout_s_ — fine for notifications.
   bb.subscribe("NOTIFY_USER", [this](const Entry& e) {
-    if (!api_ || notify_contact_.empty()) return;
+    if (notify_contact_.empty()) return;
     std::string text;
     if (e.value.is_object()) text = e.value.value("text", "");
     else if (e.value.is_string()) text = e.value.get<std::string>();
     if (text.empty()) return;
-    long long cid = 0;
-    if (std::all_of(notify_contact_.begin(), notify_contact_.end(),
-                    [](unsigned char c) { return std::isdigit(c); })) {
-      cid = std::stoll(notify_contact_);
-    } else {
-      auto it = known_ids_.find(notify_contact_);
-      if (it != known_ids_.end()) cid = it->second;
-    }
-    if (cid == 0) {
-      std::cerr << "hades: simplex notify skipped (contact not yet known: " << notify_contact_ << ")\n";
-      return;
-    }
+    std::lock_guard<std::mutex> lk(notify_mu_);
+    notify_queue_.push_back(std::move(text));
+  });
+}
+
+// Drain queued NOTIFY_USER texts — called ONLY from the event thread (step_once), the one
+// thread allowed to touch api_ and known_ids_. A name-form notify_contact resolves via
+// known_ids_; unresolved -> logged skip (texts dropped — best-effort, telegram parity).
+void SimplexModule::drain_notifies_() {
+  std::vector<std::string> pending;
+  {
+    std::lock_guard<std::mutex> lk(notify_mu_);
+    pending.swap(notify_queue_);
+  }
+  if (pending.empty() || !api_) return;
+  long long cid = 0;
+  if (std::all_of(notify_contact_.begin(), notify_contact_.end(),
+                  [](unsigned char c) { return std::isdigit(c); })) {
+    cid = std::stoll(notify_contact_);
+  } else {
+    auto it = known_ids_.find(notify_contact_);
+    if (it != known_ids_.end()) cid = it->second;
+  }
+  if (cid == 0) {
+    std::cerr << "hades: simplex notify skipped (contact not yet known: " << notify_contact_ << ")\n";
+    return;
+  }
+  for (const auto& text : pending) {
     try {
       if (!api_->send_text(cid, text))
         std::cerr << "hades: simplex notify send failed (contact " << cid << ")\n";
     } catch (...) { /* fail-soft */ }
-  });
+  }
 }
 
 bool SimplexModule::allowed_(const SxEvent& ev) const {
@@ -363,6 +383,7 @@ void SimplexModule::handle_event_(const SxEvent& ev) {
 
 bool SimplexModule::step_once() {
   try {
+    drain_notifies_();   // event thread only — the one place notify sends touch the socket
     SxEvent ev;
     switch (api_->next_event(poll_timeout_s_, ev)) {
       case SxStatus::Event:

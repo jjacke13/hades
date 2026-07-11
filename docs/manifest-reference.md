@@ -833,9 +833,15 @@ run it bound to loopback only.
   `y/N` question; the **next message from that same contact** answers it (`y`/`yes` approves, anything
   else denies).
 - **Notify sink.** SimplexModule subscribes **`NOTIFY_USER`** and, when `notify_contact` is set, delivers
-  each such message to that contact — the delivery path for a `notify = true` `Heartbeat` (§15). With
-  **both** `telegram` and `simplex` rostered and each configured with a notify target, a heartbeat
-  notification is delivered on **both** surfaces.
+  each such message to that contact — the delivery path for a `notify = true` `Heartbeat` (§15). Delivery
+  is queued and sent by the module's own event thread (one thread owns the daemon socket), so it can lag
+  the notification by up to ~25 s (one internal read cycle). With **both** `telegram` and `simplex`
+  rostered and each configured with a notify target, a heartbeat notification is delivered on **both**
+  surfaces.
+- **One outstanding confirm at a time (v1).** The pending-confirm slot is single: if a second allowlisted
+  contact messages while a confirm is outstanding, the first contact's confirm can be displaced (the
+  agent-side pending confirm survives; re-ask to re-prompt). Single-operator deployments — the intended
+  v1 shape — never notice.
 - **Reconnect loop.** The event thread reconnects with backoff (base `connect_timeout_s`) if the daemon
   is down or drops the connection, so the bot survives a daemon restart. The dtor stop+joins the thread
   (it can wait up to one internal read deadline for `next_event` to return).

@@ -35,9 +35,10 @@ groups-off default). hades v1 mirrors our own Telegram v1 scope, not Hermes's fu
 `SimplexModule` (`type() == "simplex"`, `src/apps/simplex/`) on the TelegramModule pattern:
 
 - **Own thread**, started by `hades_main` (`start()`, AFTER wiring — never in `on_attach`, tests
-  spawn no thread), stop+joined in the dtor. `Agent::simplex` is declared LAST (after `telegram`)
-  → destroyed FIRST, while the Executor + modules it touches are still alive. A simplex-only roster
-  (no chat/serve/telegram) makes `hades_main` block on `wait()`.
+  spawn no thread), stop+joined in the dtor. `Agent::simplex` is declared BETWEEN `telegram` and
+  `heartbeat` (heartbeat destroys first — a tick may deliver NOTIFY_USER via this module; simplex
+  then joins while the Executor + modules an in-flight turn touches are still alive). A
+  simplex-only roster (no chat/serve/telegram) makes `hades_main` block on `wait()`.
 - **Shared TurnGate** (injected in `wire_agent` before `on_attach`, like chat/serve/telegram):
   the thread locks the gate, posts `TURN_ORIGIN = human` + `USER_MESSAGE`, `run_until`
   (reply|confirm, the configured idle timeout), sends the reply. Turn-owner guard: captures

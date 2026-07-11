@@ -230,7 +230,9 @@ void WsClient::close() {
 bool WsClient::send_all_(const std::string& bytes) {
   std::size_t off = 0;
   while (off < bytes.size()) {
-    const ssize_t n = ::write(fd_, bytes.data() + off, bytes.size() - off);
+    // MSG_NOSIGNAL: a daemon that dropped mid-send must fail the write (EPIPE), not raise
+    // SIGPIPE — this module must not depend on the tool runner's process-wide SIGPIPE ignore.
+    const ssize_t n = ::send(fd_, bytes.data() + off, bytes.size() - off, MSG_NOSIGNAL);
     if (n < 0) {
       if (errno == EINTR) continue;
       close();
