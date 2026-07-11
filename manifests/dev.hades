@@ -219,3 +219,19 @@ Embedding {
 #   prompt = pi0's agent card changed. Compare its new capabilities to what you knew and report.
 #   notify = true
 # }
+
+# --- SimpleX front-end (uncomment; needs a local `simplex-chat -p 5225` daemon with the bot
+# profile + /address created once in its CLI — see docs/manifest-reference.md §16). No tokens:
+# the daemon's WS API is unauthenticated-by-design, loopback-only. allow_contacts is REQUIRED
+# (comma-separated local contact ids and/or exact display names). auto_accept=true is an
+# explicit opt-in: with an open address, a stranger can NAME THEMSELVES like an allowlisted
+# display name — keep manual acceptance (default) or allowlist by numeric id.
+# Module = simplex
+# Simplex
+# {
+#   host           = 127.0.0.1
+#   port           = 5225
+#   allow_contacts = 2, Vaios K
+#   auto_accept    = false
+#   # notify_contact = 2   # NOTIFY_USER (heartbeat) delivery target
+# }

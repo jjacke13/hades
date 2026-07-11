@@ -83,12 +83,14 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 | `chat` | stdin REPL front-end. | No REPL. |
 | `serve` | HTTP/web front-end (`--serve`). | `--serve` errors "no serve module". |
 | `telegram` | Telegram long-poll bot (reads `Telegram` block). | No bot. |
+| `simplex` | SimpleX front-end via a local `simplex-chat` daemon (reads `Simplex` block). | No SimpleX bot. |
 | `bridge` | Agent↔agent HTTP listener (reads `Bridge` block). | No inbound peer surface. |
 | `heartbeat` | Timer that fires the agent's own turns — on a cron schedule or a reactive `when` condition (reads `Heartbeat` blocks). | No self-triggered turns, no watches; the agent is purely event-driven. |
 
 **Front-end requirement.** After building, the binary needs *some* front-end or it errors:
 `--serve` uses `serve`; otherwise it runs `chat`'s REPL; if there is no `chat`, it blocks on
-`telegram` (poll) or `bridge` (listener); with none of those it errors "no chat module".
+`telegram` (poll), `simplex` (event thread), `bridge` (listener), or `heartbeat` (timer); with none
+of those it errors "no chat module".
 
 dev.hades roster: `llm tool_runner memory chat arbiter serve skills embedding_memory bridge`.
 
@@ -783,6 +785,61 @@ task still needs `Module = telegram` to deliver. Delivery is **at-least-once**: 
 task, whose per-minute dedup is in-memory) can re-fire it once — write tasks whose action is idempotent, or
 tolerant of a rare repeat. The store is compacted only on boot; between boots it grows append-only (a v2
 concern for a very high-frequency self-scheduling agent).
+
+---
+
+## 16. `Simplex` block
+
+`src/apps/simplex/simplex.cpp` (`SimplexModule::on_start`). Requires `Module = simplex`. A fourth
+front-end (after `chat`, `serve`, `telegram`): it reads events from a **local `simplex-chat` daemon**
+over its unauthenticated loopback WebSocket API and drives whole turns through the shared TurnGate,
+exactly like Telegram — lock → post `USER_MESSAGE` → `run_until(reply|confirm)` → send the reply
+(split at 4000 chars). There is **no bot token**: the daemon's WS API is unauthenticated by design, so
+run it bound to loopback only.
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `allow_contacts` | **Comma-separated** list of local contact ids (numeric) and/or exact display names allowed to drive the agent. **REQUIRED.** | — (missing/empty → `MalConfig`) | An open address means anyone who connects could drive the agent. Non-allowed senders are silently dropped. Ids are stable; names are spoofable (see below). |
+| `host` | Host of the local `simplex-chat` daemon's WS API. | `127.0.0.1` | Keep it loopback — the API is unauthenticated. |
+| `port` | Port of the daemon's WS API. | `5225` | Match the `simplex-chat -p <port>` you launched. Bad/garbage → `5225`. |
+| `auto_accept` | Auto-accept incoming contact requests. | `false` | `false` → accept requests manually in the `simplex-chat` CLI. `true` is an explicit opt-in (name-spoof risk below). |
+| `notify_contact` | Contact id-or-name that receives `NOTIFY_USER` messages (heartbeat notifications). | `""` (no delivery) | A numeric id resolves directly; a display name resolves once that contact has been seen in an event (else the notify is skipped with a log line). |
+| `connect_timeout_s` | WS connect timeout; also the reconnect backoff base. | `10` | Positive-double; bad/0/garbage → keeps the default. |
+
+**Setup walkthrough.**
+1. Install the official **`simplex-chat`** CLI (prebuilt binaries exist for x86_64 and aarch64 — the
+   `simplex-chat-ubuntu-2x_04-aarch64` build runs on the Pi). It is an **external runtime dependency**,
+   not built by hades.
+2. First run creates a chat profile — pick the bot's display name.
+3. In the CLI, run `/address` **once** to create the bot's long-term contact address; share it (or the
+   generated link) with the humans who will message the bot.
+4. Launch the daemon with the WS API on the port you configured: `simplex-chat -p 5225`.
+5. Connect from the SimpleX phone/desktop app to the bot's address; **accept the contact** in the CLI
+   (or set `auto_accept = true`). After they connect, note the contact's numeric **id** (shown in the
+   CLI contact list) and put it in `allow_contacts`.
+6. Uncomment the `Simplex` block in your manifest with that id (and/or the exact display name), then run
+   hades. Message the bot → a gated turn replies.
+
+**Gotchas.**
+- **No token, loopback only.** The WS API is unauthenticated by design — bind the daemon to `127.0.0.1`.
+  Anyone who can reach the port can drive the daemon, so do not expose it on a LAN/public interface.
+- **`allow_contacts` is mandatory** (else `MalConfig`). Prefer **numeric ids** — a display name is
+  spoofable: with an open address a stranger can name themselves like an allowlisted display name and be
+  admitted. Ids are assigned locally by the daemon and cannot be spoofed.
+- **`auto_accept = false` (default) is the safe choice.** With `auto_accept = true` **and** an open
+  address, the name-spoof path above lets a stranger both connect and (if you allowlist by name) drive the
+  agent. Keep manual acceptance, or allowlist strictly by numeric id.
+- **Confirms are plain text (no inline keyboards).** A confirm-gated action prompts the contact with a
+  `y/N` question; the **next message from that same contact** answers it (`y`/`yes` approves, anything
+  else denies).
+- **Notify sink.** SimplexModule subscribes **`NOTIFY_USER`** and, when `notify_contact` is set, delivers
+  each such message to that contact — the delivery path for a `notify = true` `Heartbeat` (§15). With
+  **both** `telegram` and `simplex` rostered and each configured with a notify target, a heartbeat
+  notification is delivered on **both** surfaces.
+- **Reconnect loop.** The event thread reconnects with backoff (base `connect_timeout_s`) if the daemon
+  is down or drops the connection, so the bot survives a daemon restart. The dtor stop+joins the thread
+  (it can wait up to one internal read deadline for `next_event` to return).
+- **Simplex-only roster** (no `chat`/`serve`) → `hades_main` blocks on the event thread (`Ctrl-C` to exit).
 
 ---
 

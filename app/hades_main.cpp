@@ -163,6 +163,10 @@ int main(int argc, char** argv) {
     // (REPL / --serve) drives the main thread; turns are serialized by the shared TurnGate.
     if (agent.telegram) agent.telegram->start_polling();
 
+    // SimpleX front-end: spawn the event thread AFTER the full graph is wired (same rule as the
+    // telegram poll thread — no surprise threads in tests). Turns serialize through the TurnGate.
+    if (agent.simplex) agent.simplex->start();
+
     // Bridge listener: started AFTER the full graph is wired (same rule as the telegram poll
     // thread — no surprise threads in tests). Peer turns serialize through the shared TurnGate.
     if (agent.bridge) {
@@ -186,6 +190,9 @@ int main(int argc, char** argv) {
     } else if (agent.telegram) {
       std::cerr << "hades: telegram-only roster — polling (Ctrl-C to exit)\n";
       agent.telegram->wait();                                 // blocks on the poll thread
+    } else if (agent.simplex) {
+      std::cerr << "hades: simplex-only roster — listening (Ctrl-C to exit)\n";
+      agent.simplex->wait();                                  // blocks on the event thread
     } else if (agent.bridge) {
       std::cerr << "hades: bridge-only roster — serving peers (Ctrl-C to exit)\n";
       agent.bridge->wait();                                  // blocks on the listener thread

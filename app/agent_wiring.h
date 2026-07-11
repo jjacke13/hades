@@ -21,6 +21,7 @@
 #include "hades/module/embedding_memory_module.h"
 #include "hades/module/skills_module.h"
 #include "hades/module/telegram_module.h"
+#include "hades/module/simplex_module.h"
 #include "hades/module/bridge_module.h"
 #include "hades/module/heartbeat_module.h"
 #include "hades/stt/provider.h"
@@ -83,6 +84,11 @@ struct Agent {
   // executor and every module it touches are still alive. Do NOT move below-declared members
   // above it. (executor stays after the plain modules for the same reason — see its comment.)
   std::unique_ptr<TelegramModule> telegram;
+  // SimpleX front-end. Declared AFTER telegram and BEFORE heartbeat: heartbeat is destroyed
+  // first (a tick may deliver NOTIFY_USER via this module), then simplex joins its event
+  // thread while the Executor + every module an in-flight simplex turn touches are still
+  // alive. Do NOT reorder.
+  std::unique_ptr<SimplexModule> simplex;
   // Cron self-trigger. Declared LAST => destroyed FIRST: its timer thread joins while the Telegram
   // notify sink + Executor + Arbiter + ToolRunner + Blackboard are all still alive (a tick drives a
   // full turn through them, and may notify via Telegram). Do NOT move above telegram.

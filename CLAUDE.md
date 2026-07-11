@@ -37,9 +37,10 @@ model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 **two memory layers** (core + archival, see below) · a **skills system** (loadable instruction packs, see below) ·
 layered **system prompt** (SOUL/USER static +
-live core MEMORY) · three front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
-labels), **HTTP `--serve`** (browser web UI + JSON API, see below), and a **Telegram bot** (long-poll,
-allowlisted, see below) — all serialized by one shared **TurnGate** · an **agent↔agent Bridge**
+live core MEMORY) · four front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
+labels), **HTTP `--serve`** (browser web UI + JSON API, see below), a **Telegram bot** (long-poll,
+allowlisted, see below), and a **SimpleX front-end** (local `simplex-chat` daemon over an in-house WS
+client, see below) — all serialized by one shared **TurnGate** · an **agent↔agent Bridge**
 (multi-agent: peer `ask_agent` + inbound `/ask` `/share`, see below) · **worker-offload concurrency**
 (see below) · **manifest parser fails LOUD** on packed multi-kv lines (see below).
 
@@ -196,6 +197,49 @@ it touches are still alive (see the member comment). A telegram-only roster (no 
 block on `wait()`. Pieces: `src/module/telegram_module.cpp`, `include/hades/{module/telegram_module.h,
 turn_gate.h,telegram/*}`, `src/telegram/*`, `app/{agent_wiring,hades_main}.*`, `tests/test_telegram_*.cpp`,
 `tests/test_turn_gate.cpp`. **LIVE-VALIDATED 2026-07-03** (Vaios: real bot, phone→reply working).
+
+### SimpleX front-end (shipped 2026-07-11, `feat/simplex`) — fourth front-end over a local simplex-chat daemon
+`Module = simplex` + a `Simplex { host port allow_contacts auto_accept notify_contact connect_timeout_s }`
+block adds a **fourth** front-end. It talks to a **local `simplex-chat` daemon** over its
+**unauthenticated loopback WebSocket API** via an **in-house WS client** (no external WS lib) and drives
+whole turns exactly like Telegram: lock the shared **TurnGate** → post `USER_MESSAGE` → `run_until(reply|
+confirm)` → `send_text` (split at 4000). **No bot token** — the daemon's WS API is unauthenticated by
+design, so it must stay loopback-bound (the security model is "don't expose the port", not a secret).
+**Pieces (4 layers):** the **WS codec** (`src/apps/simplex/ws.cpp` frame encode/decode + `WsClient`,
+`include/hades/simplex/ws.h`; tests `test_ws_frame`/`test_ws_client`), the **daemon seam** (`SimplexApi`
+interface + `parse_simplex_events` + `WsSimplexApi`/`make_ws_simplex_api`, `include/hades/simplex/api.h`;
+tests `test_simplex_parse`/`test_simplex_api`) — the TelegramApi precedent so the module is testable with a
+scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps/simplex/simplex.cpp`,
+`include/hades/module/simplex_module.h`; tests `test_simplex_module`/`test_simplex_wiring`).
+- **Confirms are TEXT `y/N`** (SimpleX has no inline keyboards): a confirm-gated action prompts the
+  contact; the **next message from that same contact** answers it (`y`/`yes` approves, else denies).
+- **Security:** `allow_contacts` (comma-separated numeric contact ids **and/or** exact display names) is
+  **REQUIRED** — `on_start` throws `MalConfig` without it; non-allowed senders are silently dropped.
+  **Manual-accept is the default** (`auto_accept = false`); `auto_accept = true` is an explicit opt-in with
+  a documented **name-spoof caveat** — with an open address a stranger can name themselves like an
+  allowlisted display name, so **prefer numeric ids** (unspoofable). The Bridge is NEVER a SimpleX peer —
+  agent↔agent stays text over its own transport.
+- **Notify sink:** `SimplexModule` subscribes **`NOTIFY_USER`** and delivers to `notify_contact` (id resolves
+  directly; a name resolves once that contact is seen in an event, else the notify is skipped with a log
+  line) — the heartbeat notification path, mirroring Telegram. Both `telegram`+`simplex` rostered with notify
+  targets → a `notify=true` heartbeat is delivered on **both**.
+- **Reconnect loop:** the event thread reconnects with backoff (base `connect_timeout_s`) so the bot
+  survives a daemon restart; the loop is interruptible so the dtor's stop+join never waits it out.
+- **Threading/teardown:** the event thread is started EXPLICITLY by `hades_main` (`start()`, AFTER wiring —
+  tests spawn no thread, open no socket) and stop+joined in the dtor. `Agent::simplex` is declared **AFTER
+  `telegram` and BEFORE `heartbeat`** → teardown tail is **telegram → simplex → heartbeat** (heartbeat first
+  so a tick's `NOTIFY_USER` can still reach this module, then simplex joins while the Executor + Arbiter +
+  every module an in-flight turn touches are alive). A simplex-only roster (no chat/serve) makes `hades_main`
+  block on `wait()`. Wired in `wire_agent` (roster factory `"simplex"`, `Simplex` block, gate + idle timeout)
+  next to the Telegram block. Docs: `docs/manifest-reference.md` §16 (6-key table + setup walkthrough +
+  security), §2 roster row.
+- **Pi = the official aarch64 `simplex-chat` CLI binary as an external runtime dep** (`simplex-chat-ubuntu-2x_04-aarch64`);
+  hades does not build/bundle it. Pieces: `src/apps/simplex/{ws,simplex}.cpp`,
+  `include/hades/{simplex/{ws,api}.h,module/simplex_module.h}`, `app/{agent_wiring,hades_main}.*`,
+  `tests/test_{ws_frame,ws_client,simplex_parse,simplex_api,simplex_module,simplex_wiring}.cpp`. Tests pending
+  the deferred compile phase (this feature was implemented write-only; build/ctest/TSan run later).
+- **Live-smoke pending** (Vaios: install the CLI, `/address` once, `simplex-chat -p 5225`, connect from the
+  phone app, accept the contact, put its id in `allow_contacts`, uncomment the block, message the bot).
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -960,11 +1004,12 @@ in this doc, not the tree):
 - API key: env var only, redacted in the Eventlog; never put it in the manifest.
 - Single-threaded **dispatch** — subscriber handlers run ONLY on the pump thread (the determinism
   invariant). `post()` is thread-safe (workers call it); the blocking LLM call is offloaded to an
-  `Executor` worker when set. HTTP server still serializes whole turns under one mutex. All three
-  front-ends (REPL/serve/telegram) serialize whole turns through one shared **TurnGate** (Agent's FIRST
-  member → destroyed LAST). **Teardown order is load-bearing:** `Agent::telegram` is now the **LAST**
-  member (destroyed FIRST → its dtor stop+joins the poll thread so any in-flight telegram turn finishes
-  while the Executor + modules are still alive); `executor` sits just before it (joined before the plain
+  `Executor` worker when set. HTTP server still serializes whole turns under one mutex. All four
+  front-ends (REPL/serve/telegram/simplex) serialize whole turns through one shared **TurnGate** (Agent's
+  FIRST member → destroyed LAST). **Teardown order is load-bearing:** the member tail is declared
+  `telegram → simplex → heartbeat` (heartbeat LAST → destroyed FIRST, then simplex, then telegram); each
+  thread-owning member's dtor stop+joins its own thread so any in-flight turn/tick finishes while the
+  Executor + modules are still alive; `executor` sits before that tail (joined before the plain
   modules+Blackboard); `bb` declared before `agent` in `hades_main`. Do NOT reorder.
 - **Manifest parser is one-kv-per-line.** A single-line block with two `k = v` pairs mis-parses (first
   `=` wins, rest swallowed). Use **multi-line blocks only** (like `Session`/`Memory`/`Serve`/`capability_policy`).
@@ -997,6 +1042,20 @@ in this doc, not the tree):
   it if `/quit` feels slow). First `poll_once` drains-and-DISCARDS the startup backlog (offset in-memory, v1)
   → a command queued while the agent was down never replays. Telegram-only roster (no chat/serve) → `hades_main`
   blocks on `wait()`.
+- **Simplex** (`Module = simplex`): fourth front-end over a **local `simplex-chat` daemon** (in-house WS
+  client, `src/apps/simplex/{ws,simplex}.cpp`). **No token** — the daemon's WS API is **unauthenticated by
+  design**, so keep it **loopback-only** (`host` default `127.0.0.1`; don't expose the port). `allow_contacts`
+  (comma-separated numeric ids and/or exact display names) is **REQUIRED** — `on_start` throws `MalConfig`
+  without it; non-allowed senders are silently dropped. **`auto_accept = false` is the default** (accept
+  contacts in the CLI); `auto_accept = true` is an opt-in with a **name-spoof caveat** (a stranger can name
+  themselves like an allowlisted display name → **prefer numeric ids**). Confirms are plain **`y/N` text**
+  (no inline keyboards) — the next message from that contact answers. **Notify:** subscribes `NOTIFY_USER`,
+  delivers to `notify_contact` (id direct; name resolves once seen, else skipped) — heartbeat sink, same as
+  Telegram; both rostered → delivered on both. Event thread started by `hades_main` (`start()`) AFTER wiring,
+  never `on_attach` (tests spawn no thread/socket); reconnects with `connect_timeout_s` backoff. Simplex-only
+  roster (no chat/serve) → `hades_main` blocks on `wait()`. `Agent::simplex` sits between `telegram` and
+  `heartbeat` (teardown tail telegram → simplex → heartbeat). Docs: manifest-reference §16. Pi runtime dep =
+  the official aarch64 `simplex-chat` CLI binary.
 - **Bridge** (`Module = bridge`): the `Bridge` block is the agent's **identity** (its `name` is embedded in bus
   keys + the `peer:<name>` TURN_ORIGIN) — it's meaningful even without peers, but `ask_agent` needs both
   `Bridge.name` AND ≥1 `Peer` block to delegate anywhere. The shared **`secret_env`** (default
