@@ -31,7 +31,7 @@ router + Bridge [real multi-agent].
 ## Current state (2026-07-05)
 `main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **558/558 tests** (ASan+UBSan + **TSan** 555/555 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory pin_fact use_skill save_skill ask_agent` + **dev tools**
+(`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run_command allow/confirm/deny + git_read read-only, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
@@ -42,6 +42,26 @@ labels), **HTTP `--serve`** (browser web UI + JSON API, see below), and a **Tele
 allowlisted, see below) — all serialized by one shared **TurnGate** · an **agent↔agent Bridge**
 (multi-agent: peer `ask_agent` + inbound `/ask` `/share`, see below) · **worker-offload concurrency**
 (see below) · **manifest parser fails LOUD** on packed multi-kv lines (see below).
+
+### Core memory v2 (shipped 2026-07-11, `feat/core-memory`) — bounded, editable core memory
+Retires the append-only `pin_fact` for **`core_memory`** (clean break — repo unpublished; binary
+`hades-core-memory`, `tools/core_memory_main.cpp`). Three actions on the same `memory/facts.md` line-file:
+**`add`** (append a bullet, deduped), **`replace`** (`match` an existing line → new `text`), **`remove`**
+(`match` → drop). The Arbiter's every-turn fold of `memory_file` is untouched — edits are live same-session.
+- **Cap + consolidation forcing function (the point):** `Session.memory_char_limit` (default **2400** ≈ 870
+  tokens, **Hermes-inspired** — the file is in EVERY turn's prompt, so it must stay small). An over-cap `add`/
+  `replace` is **refused** with an error that **lists every current entry**, so the model consolidates (merge
+  related, drop stale) and retries in the SAME turn — bounded core memory that curates itself instead of
+  growing unbounded. `remove` is always allowed (it shrinks).
+- **House rules honored:** empty-string args count as **absent** (the exactly-one-of empty-arg convention from
+  self-scheduling — weak LLMs fill every schema field); non-string args fail closed; atomic tmp+rename write;
+  newlines stripped; parent dir created. Capability = **MemoryAppend → always allow** (the agent's own file —
+  curation must be frictionless). Wiring still **requires `Session.memory_file`** (`MalConfig` otherwise) and
+  appends `<file> <cap>` to the tool argv (single source of truth).
+- Pieces: `tools/core_memory_main.cpp`, `include/hades/memory_limit.h` (`kDefaultMemoryCharLimit = 2400`),
+  `app/agent_wiring.cpp` (parse `memory_char_limit` + argv), `tests/test_core_memory_{tool,wiring}.cpp`.
+  Spec/plan: `docs/superpowers/{specs/2026-07-11-core-memory-design.md,plans/2026-07-11-core-memory.md}`.
+  **569/569 tests** green (ASan+UBSan). **Live-smoke pending** (Vaios: add/replace/remove + fill-to-cap → consolidation error).
 
 ### Worker-offload (shipped 2026-06-29) — bus stays single-threaded, blocking LLM call offloaded
 The bus is **still single-threaded deterministic** (subscriber handlers run ONLY on the pump thread), but
@@ -396,13 +416,15 @@ manifest-static `Heartbeat = <name>` blocks (which are unchanged; dynamic + stat
   (`type()=="memory"`) keyword-ranks it each turn (`rank_memories`, pure; **v2 seam = embeddings**) and
   posts `RETRIEVED_MEMORY`; Arbiter injects it as an **ephemeral** `{role:system}` labeled memory block
   before the last user msg (see Memory-injection framing below). Config: `Memory { store=… top_n=… }`. **LIVE-VALIDATED** (save→restart→recall).
-- **Core / always-on** — `pin_fact` tool → `memory/facts.md` (append-only, newlines stripped, parent dir
-  created). The Arbiter **re-reads this file every turn** (`read_memory_layer`) and folds it into the
-  **leading** `{role:system}` message (after static SOUL/USER) — live same-session. Config: Session
-  `memory_file = memory/facts.md`; wiring **requires memory_file when pin_fact is present** (MalConfig
-  fail-fast) and appends the path to the tool argv (single source of truth).
+- **Core / always-on** — `core_memory` tool (`add`/`replace`/`remove`) → `memory/facts.md` (line-edited,
+  newlines stripped, atomic tmp+rename, parent dir created). **Char-capped** (`Session.memory_char_limit`,
+  default 2400): an over-cap write is refused with the full entry list so the agent consolidates in the SAME
+  turn. The Arbiter **re-reads this file every turn** (`read_memory_layer`) and folds it into the **leading**
+  `{role:system}` message (after static SOUL/USER) — live same-session. Config: Session
+  `memory_file = memory/facts.md`; wiring **requires memory_file when core_memory is present** (MalConfig
+  fail-fast) and appends the path + cap to the tool argv (single source of truth).
 Pieces: `src/memory/{rank,store}.cpp`, `src/module/memory_module.cpp`, `src/config/prompt.cpp`
-(`assemble_system_prompt`=SOUL+USER, `read_memory_layer`=live core), `tools/{save_memory,pin_fact}_main.cpp`.
+(`assemble_system_prompt`=SOUL+USER, `read_memory_layer`=live core), `tools/{save_memory,core_memory}_main.cpp`.
 
 ### Memory embeddings (P1+P2, shipped 2026-06-30, `main` @ `20ba94c`, 247/247) — opt-in semantic recall
 A third, **opt-in** memory path that semantic-ranks the corpus instead of keyword-matching it. **LIVE-VALIDATED**
@@ -575,7 +597,7 @@ nix develop --command ./build/hades manifests/dev.hades             # chat REPL
 nix develop --command ./build/hades manifests/dev.hades --serve 8080  # HTTP server
 nix develop --command ./build/hades-scope session.log              # replay (key redacted)
 ```
-Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,pin-fact,use-skill,save-skill,ask-agent,grep,glob,edit-file,git-read,run-command,schedule-task,list-tasks,cancel-task}` (tools),
+Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,core-memory,use-skill,save-skill,ask-agent,grep,glob,edit-file,git-read,run-command,schedule-task,list-tasks,cancel-task}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
 **readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
@@ -947,10 +969,10 @@ in this doc, not the tree):
   lists, but **`exec_allow` is COMMA-separated** (the one non-whitespace list — command prefixes contain spaces,
   e.g. `cmake --build build, ctest --test-dir build`). `git_read` is always-allow (leaks a modified fs_deny file
   via `diff` — keep secrets gitignored); `grep`/`glob` scope like `fs_read`.
-- `save_memory`/`pin_fact` store paths must contain **no whitespace** (tool argv is whitespace-split) —
+- `save_memory`/`core_memory` store paths must contain **no whitespace** (tool argv is whitespace-split) —
   wiring throws `MalConfig` if they do.
-- `pin_fact` tool **requires** `memory_file` in the Session block (wiring throws `MalConfig` otherwise) —
-  else pins would write a file the Arbiter never reads (silent drift; caught by the final review).
+- `core_memory` tool **requires** `memory_file` in the Session block (wiring throws `MalConfig` otherwise) —
+  else edits would write a file the Arbiter never reads (silent drift; caught by the final review).
 - Web UI: `webroot` is **cwd-relative** (default `web/`) → run `--serve` from the repo root (warns if the
   dir is missing). The page sends an `X-Hades` header; the `authorize()` CSRF seam requires it on
   `POST /chat`+`/confirm` (don't strip it client-side). `/.hades/` and runtime stores are gitignored.

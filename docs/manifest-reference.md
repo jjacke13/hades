@@ -110,7 +110,8 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `turn_idle_timeout_s` | Front-end `run_until` **idle** ceiling. Resets on every bus event → bounds a single silent stretch, not total turn time. | `900` (`kDefaultTurnIdleTimeoutS`) | **MUST be > `llm_timeout_s`** or `MalConfig` at launch (see below). |
 | `system_prompt_file` | SOUL persona file, prepended to every turn. | none | Unreadable path → `MalConfig`. |
 | `user_file` | USER profile file, appended after SOUL. | none | Optional; unreadable path → `MalConfig`. |
-| `memory_file` | Core "always-on" memory file; the Arbiter re-reads it each turn; `pin_fact` writes it. | `""` | **Required if the `pin_fact` tool is rostered** (else `MalConfig`). Path must be whitespace-free. |
+| `memory_file` | Core "always-on" memory file; the Arbiter re-reads it each turn; `core_memory` edits it. | `""` | **Required if the `core_memory` tool is rostered** (else `MalConfig`). Path must be whitespace-free. |
+| `memory_char_limit` | Char cap on the core-memory file (it is in EVERY turn's prompt). An over-cap `core_memory` write fails with the entry list so the agent consolidates. | `2400` | Bad/`<=0` value → default. |
 | `sessions_dir` | Directory of per-session conversation `.jsonl` files. | `.hades/sessions` | `--resume` reads from here; `/new` rotates within it. |
 | `history_budget_chars` | Max chars of history sent per LLM request (full history still kept on disk). | `120000` (`kDefaultHistoryBudgetChars`) | ~30k tokens. Very high → effectively "send whole session". |
 | `provider` | *(currently unread)* | — | The LLM module always builds an OpenAI-compatible provider; this key is decorative. |
@@ -150,7 +151,7 @@ whitespace:
 | Tool | Appended to its argv | Source key | Extra rule |
 |---|---|---|---|
 | `save_memory` | archival store path | `Memory.store` (default `.hades/memory.jsonl`) | store path must be whitespace-free |
-| `pin_fact` | core memory file | `Session.memory_file` | **requires `Session.memory_file`** (else `MalConfig`) |
+| `core_memory` | core memory file + char cap | `Session.memory_file`, `Session.memory_char_limit` | **requires `Session.memory_file`** (else `MalConfig`) |
 | `use_skill` / `save_skill` | skills dir | `Skills.dir` (default `skills`) | dir must be whitespace-free |
 | `ask_agent` | `<own_name> <secret_env> <ask_timeout_s> <peer=url>…` | `Bridge` + `Peer` blocks | see rules below |
 | `schedule_task` | `<cron_store> <max_tasks> <min_interval_s>` | unnamed `Heartbeat { }` block (§15) | **requires `Module = heartbeat`** (else `MalConfig`); store path whitespace-free |
@@ -244,7 +245,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | `git_read` | GitRead | **always allow** — read-only by construction (fixed argv per op, no shell, leading-dash paths rejected, `--` before pathspecs). |
 | `shell` | Exec | **always confirm**. |
 | unknown tool | Unknown | **always confirm**. |
-| `save_memory`, `pin_fact` | MemoryAppend | **always allow** (append-only to the agent's own files). |
+| `save_memory`, `core_memory` | MemoryAppend | **always allow** (the agent's own memory files; `core_memory` also edits/removes — curation must be frictionless). |
 | `use_skill` | SkillRead | **always allow**. |
 | `save_skill` | SkillWrite | **always allow** (enum kept distinct so a future policy can confirm-gate it). |
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |

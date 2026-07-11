@@ -26,7 +26,7 @@ Tool = write_file { native = ./bin/hades-write-file }
 Tool = list_dir   { native = ./bin/hades-list-dir }
 Tool = http_fetch { native = ./bin/hades-http-fetch }
 Tool = save_memory { native = ./bin/hades-save-memory }
-Tool = pin_fact    { native = ./bin/hades-pin-fact }
+Tool = core_memory { native = ./bin/hades-core-memory }
 Tool = use_skill  { native = ./bin/hades-use-skill }
 Tool = save_skill { native = ./bin/hades-save-skill }
 Tool = grep       { native = ./bin/hades-grep }

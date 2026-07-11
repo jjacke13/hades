@@ -8,7 +8,8 @@ Session
   price_per_mtok = 5.0
   system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
   # user_file        = prompts/user.md   # USER — your profile (optional)
-  memory_file        = memory/facts.md   # MEMORY — always-on core memory (pin_fact writes it)
+  memory_file        = memory/facts.md   # MEMORY — always-on core memory (core_memory edits it)
+  # memory_char_limit  = 2400   # cap on core memory (over-cap writes list entries to consolidate)
   llm_timeout_s       = 600   # per-call LLM HTTP timeout (cpr). Default 600.
   turn_idle_timeout_s = 900   # run_until idle ceiling (front-ends). Default 900. MUST be > llm_timeout_s.
   sessions_dir         = .hades/sessions   # per-session conversation jsonl dir (--resume reloads it)
@@ -27,7 +28,7 @@ Tool = write_file { native = ./build/hades-write-file }
 Tool = list_dir   { native = ./build/hades-list-dir }
 Tool = http_fetch { native = ./build/hades-http-fetch }
 Tool = save_memory { native = ./build/hades-save-memory }
-Tool = pin_fact    { native = ./build/hades-pin-fact }
+Tool = core_memory { native = ./build/hades-core-memory }
 Tool = use_skill  { native = ./build/hades-use-skill }
 Tool = save_skill { native = ./build/hades-save-skill }
 Tool = grep       { native = ./build/hades-grep }
