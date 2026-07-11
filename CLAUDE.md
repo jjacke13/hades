@@ -245,8 +245,13 @@ scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps
   `drain_notifies_()` at the top of `step_once()` sends on the event thread (single-socket-owner invariant;
   delivery lags ≤ ~25 s). Reviewer re-verified CONFIRMED FIXED. **Pattern note: any front-end holding a
   PERSISTENT connection must marshal NOTIFY_USER (and any cross-thread send) onto its own thread.**
-- **Live-smoke pending** (Vaios: install the CLI, `/address` once, `simplex-chat -p 5225`, connect from the
-  phone app, accept the contact, put its id in `allow_contacts`, uncomment the block, message the bot).
+- **LIVE-VALIDATED 2026-07-11** (Vaios, desktop): phone → SimpleX → hades reply worked end-to-end on the
+  first live smoke after the C1 fix — the full in-house stack (RFC6455 codec → POSIX socket → event parse →
+  allowlist → turn → send) against a real `simplex-chat -p 5225` daemon. **`allow_contacts` by DISPLAY NAME
+  works** (`/contacts` in the daemon CLI shows only the name; auto_accept off → the name is trustworthy — no
+  numeric id needed). The daemon CLI is NOT in nixpkgs (only the desktop app) → the flake ships
+  `packages.x86_64-linux.simplex-chat-cli` (official v6.5.6 release binary, autoPatchelf'd: zlib/openssl/gmp/
+  glibc) on the devShell PATH (`build: bfbfe8a`); the Pi uses the official aarch64 release binary directly.
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
