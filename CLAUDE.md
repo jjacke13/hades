@@ -48,7 +48,7 @@ Retires the append-only `pin_fact` for **`core_memory`** (clean break — repo u
 `hades-core-memory`, `tools/core_memory_main.cpp`). Three actions on the same `memory/facts.md` line-file:
 **`add`** (append a bullet, deduped), **`replace`** (`match` an existing line → new `text`), **`remove`**
 (`match` → drop). The Arbiter's every-turn fold of `memory_file` is untouched — edits are live same-session.
-- **Cap + consolidation forcing function (the point):** `Session.memory_char_limit` (default **2400** ≈ 870
+- **Cap + consolidation forcing function (the point):** `Session.memory_char_limit` (default **2400** ≈ 600
   tokens, **Hermes-inspired** — the file is in EVERY turn's prompt, so it must stay small). An over-cap `add`/
   `replace` is **refused** with an error that **lists every current entry**, so the model consolidates (merge
   related, drop stale) and retries in the SAME turn — bounded core memory that curates itself instead of
