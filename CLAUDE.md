@@ -512,6 +512,9 @@ Pieces: `src/module/skills_module.cpp`, `src/skills/scan.cpp`, `include/hades/sk
 3. Per-skill capability scopes; **confirm-gate `SkillWrite`** by policy (enum split already supports it, zero code).
 4. Skill-declared first-class tools (dynamic tool registration when a skill loads).
 5. Announce pagination/grouping once the library grows past dozens of skills.
+5b. **`save_skill` patch mode (Hermes borrow, small):** an `old_string`/`new_string` patch action (edit_file-style)
+   so the agent refines a skill incrementally instead of resending the whole body — token-cheap skill
+   self-improvement (Hermes `skill_manage patch`, 2026-07-11 research). Pairs with the soul.md learn-triggers.
 6. From the final review (recorded, non-blocking): symlink-follow in the tools (lexical-not-realpath — same
    documented v1 gap as capability_policy); `avoid_destructive` pattern-scans save_skill BODIES → a skill
    documenting `rm -rf` confirm-gates on save (safe, maybe desirable; exclude skill tools from the arg-scan if
@@ -731,8 +734,14 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 1. **Storage:** switch the flat `.hades/embeddings/*.vec.jsonl` → **sqlite + binary vectors** (+ ANN index once the
    corpus grows) — drop-in behind the `VectorCache` seam (module/Arbiter untouched). Today = flat jsonl + brute-force cosine.
 2. **Corpus quality (the real weakness — found live):** the agent **rarely saves facts** (core `facts.md` empty, ~3
-   archival records), so recall surfaces chit-chat + "I don't remember" turns. Options: a soul.md nudge to `save_memory`/
-   `pin_fact` more; OR **auto-extract** salient facts per turn (LLM-summarized) instead of relying on explicit tool calls.
+   archival records), so recall surfaces chit-chat + "I don't remember" turns. **PARTIALLY DONE 2026-07-11:** soul.md
+   learn-triggers (`3a8d0e6`) + bounded editable core memory (`core_memory`, see its section) shipped. REMAINING =
+   **auto-extract**: a post-turn background review (cheap/aux model, digest not full transcript) that proactively saves
+   preference signals / env facts / corrections without an explicit tool call — **design validated by Hermes-agent**
+   (`auxiliary.background_review`, 2026-07-11 research). The "learn by itself" leg; brainstorm-first.
+2b. **`session_search` tool (Hermes borrow, cheap):** agent-callable full-text search over `.hades/sessions/*.jsonl`
+   returning RAW past-session excerpts (no LLM summarization) — complements the auto-injected embeddings recall
+   ("did we discuss X last week?"). Grep-level at our scale; sqlite FTS5 only if/when item 1 lands.
 3. **Session-unit granularity:** each session unit embeds the **FULL assistant answer** (`"U:…\nA:<whole answer>"`) →
    bloated/noisy injection. Truncate or **summarize** long turns before embedding.
 4. **Retrieval tuning:** `min_similarity=0.45` may be high for `text-embedding-3-small` (try 0.35); consider re-ranking.
