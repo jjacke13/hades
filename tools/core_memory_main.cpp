@@ -9,6 +9,7 @@
 // fails with a NUMBERED entry list so the model consolidates IN THE SAME TURN (the Hermes
 // forcing function). Writes are atomic (temp+rename). Fail-closed: malformed/adversarial
 // input returns ok:false, never throws, never partial-writes. Empty-string args = absent.
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -47,8 +48,9 @@ static std::string list_entries(const std::vector<std::string>& lines) {
 
 int main(int argc, char** argv) {
   const std::string file = argc > 1 ? argv[1] : "memory/facts.md";
+  errno = 0;
   long long cap = argc > 2 ? std::strtoll(argv[2], nullptr, 10) : hades::kDefaultMemoryCharLimit;
-  if (cap <= 0) cap = hades::kDefaultMemoryCharLimit;   // garbage/misconfig must not brick memory
+  if (errno == ERANGE || cap <= 0) cap = hades::kDefaultMemoryCharLimit;   // garbage/overflow/misconfig must not brick memory
 
   std::string line;
   std::getline(std::cin, line);
@@ -129,7 +131,8 @@ int main(int argc, char** argv) {
     // The forcing function: refuse, and hand back everything needed to consolidate NOW.
     return fail("core memory full: this write would make it " + std::to_string(content.size()) +
                 "/" + std::to_string(cap) + " chars. Entries:\n" + list_entries(read_lines(file)) +
-                "Consolidate: merge or drop entries with replace/remove, then retry.");
+                "Consolidate: merge or drop entries with replace/remove, then retry — or "
+                "shorten the text if it alone exceeds the cap.");
   }
 
   fs::path p(file);

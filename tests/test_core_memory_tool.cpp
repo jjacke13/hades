@@ -190,6 +190,11 @@ TEST(CoreMemoryTool, GarbageCapArgvFallsBackToDefault) {
   auto j2 = call_tool({CORE_MEMORY_BIN, file, "-5"}, {{"action", "add"}, {"text", "another"}});
   ASSERT_TRUE(j2.value("ok", false));
   EXPECT_EQ(j2["result"].value("cap", 0), 2400);
+  // Overlong digits overflow strtoll (ERANGE -> LLONG_MAX): must fall back, not run uncapped.
+  auto j3 = call_tool({CORE_MEMORY_BIN, file, "99999999999999999999999999"},
+                      {{"action", "add"}, {"text", "third"}});
+  ASSERT_TRUE(j3.value("ok", false));
+  EXPECT_EQ(j3["result"].value("cap", 0), 2400);
 }
 
 TEST(CoreMemoryTool, NonStringArgsAndCallFailClosed) {
