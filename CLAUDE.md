@@ -28,8 +28,8 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-07-05)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **558/558 tests** (ASan+UBSan + **TSan** 555/555 clean; suite ~5.9s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+## Current state (2026-07-11)
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **614/614 tests** (ASan+UBSan + **TSan** 614/614 clean; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -236,8 +236,15 @@ scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps
 - **Pi = the official aarch64 `simplex-chat` CLI binary as an external runtime dep** (`simplex-chat-ubuntu-2x_04-aarch64`);
   hades does not build/bundle it. Pieces: `src/apps/simplex/{ws,simplex}.cpp`,
   `include/hades/{simplex/{ws,api}.h,module/simplex_module.h}`, `app/{agent_wiring,hades_main}.*`,
-  `tests/test_{ws_frame,ws_client,simplex_parse,simplex_api,simplex_module,simplex_wiring}.cpp`. Tests pending
-  the deferred compile phase (this feature was implemented write-only; build/ctest/TSan run later).
+  `tests/test_{ws_frame,ws_client,simplex_parse,simplex_api,simplex_module,simplex_wiring}.cpp`.
+  **614/614 tests** green (ASan+UBSan) + **TSan 614/614** clean — written write-only (opus transcription),
+  compiled later: FIRST build was clean, 613/613. The whole-branch review then caught **1 Critical the suite
+  could not see** (C1: the NOTIFY_USER subscriber ran on the POSTING thread — the heartbeat timer — and sent
+  over the same persistent socket the event thread was reading; telegram's inline notify is safe only because
+  each send is a fresh stateless HTTP call). Fix `e546362`: the subscriber only queues under `notify_mu_`;
+  `drain_notifies_()` at the top of `step_once()` sends on the event thread (single-socket-owner invariant;
+  delivery lags ≤ ~25 s). Reviewer re-verified CONFIRMED FIXED. **Pattern note: any front-end holding a
+  PERSISTENT connection must marshal NOTIFY_USER (and any cross-thread send) onto its own thread.**
 - **Live-smoke pending** (Vaios: install the CLI, `/address` once, `simplex-chat -p 5225`, connect from the
   phone app, accept the contact, put its id in `allow_contacts`, uncomment the block, message the bot).
 
