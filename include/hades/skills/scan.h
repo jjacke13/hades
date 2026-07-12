@@ -6,6 +6,10 @@
 // the standalone tool binaries (use_skill/save_skill) share the exact same security-critical
 // validation without linking hades_core.
 #pragma once
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <sstream>
 #include <string>
 #include <vector>
 #include "hades/config.h"
@@ -32,7 +36,27 @@ inline bool valid_skill_name(const std::string& n) {
 
 // Extract the frontmatter `description:` from a SKILL.md. Returns "" when the text has no
 // leading "---" fence, no closing fence, or no description line (tolerant, never throws).
-std::string parse_skill_description(const std::string& text);
+// Inline (like valid_skill_name) so the standalone save_skill tool shares the EXACT scanner
+// parse without linking hades_core — its patch-mode validity check ("does the edited file still
+// parse as a skill?") is then guaranteed identical to "will this still show in the announce list".
+inline std::string parse_skill_description(const std::string& text) {
+  auto trim = [](std::string s) {
+    auto ns = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), ns));
+    s.erase(std::find_if(s.rbegin(), s.rend(), ns).base(), s.end());
+    return s;
+  };
+  if (text.rfind("---", 0) != 0) return "";                 // must open with a fence
+  const std::size_t first_nl = text.find('\n');
+  if (first_nl == std::string::npos) return "";
+  const std::size_t close = text.find("\n---", first_nl);   // closing fence line
+  if (close == std::string::npos) return "";
+  std::istringstream fm(text.substr(first_nl + 1, close - first_nl - 1));
+  std::string line;
+  while (std::getline(fm, line))
+    if (line.rfind("description:", 0) == 0) return trim(line.substr(12));
+  return "";
+}
 
 // Scan a skills dir: one SkillInfo per subdirectory whose SKILL.md yields a non-empty
 // description, sorted by name (deterministic announce). Missing/unreadable dir -> {}.

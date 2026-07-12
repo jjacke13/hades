@@ -53,29 +53,10 @@ void SkillsModule::on_attach(Blackboard& bb) {
 }
 }  // namespace hades
 
-// ── skills dir scan + frontmatter parse (pure, tolerant, never throws) (was src/skills/scan.cpp) ──────────────
+// ── skills dir scan + roster format (pure, tolerant, never throws) ──────────────
+// parse_skill_description moved to include/hades/skills/scan.h as an inline (the valid_skill_name
+// precedent) so the standalone save_skill tool shares the exact same frontmatter parse.
 namespace hades {
-namespace {
-std::string trim(std::string s) {
-  auto ns = [](unsigned char c) { return !std::isspace(c); };
-  s.erase(s.begin(), std::find_if(s.begin(), s.end(), ns));
-  s.erase(std::find_if(s.rbegin(), s.rend(), ns).base(), s.end());
-  return s;
-}
-}  // namespace
-
-std::string parse_skill_description(const std::string& text) {
-  if (text.rfind("---", 0) != 0) return "";                 // must open with a fence
-  const std::size_t first_nl = text.find('\n');
-  if (first_nl == std::string::npos) return "";
-  const std::size_t close = text.find("\n---", first_nl);   // closing fence line
-  if (close == std::string::npos) return "";
-  std::istringstream fm(text.substr(first_nl + 1, close - first_nl - 1));
-  std::string line;
-  while (std::getline(fm, line))
-    if (line.rfind("description:", 0) == 0) return trim(line.substr(12));
-  return "";
-}
 
 std::vector<SkillInfo> scan_skills_dir(const std::string& dir) {
   std::vector<SkillInfo> out;

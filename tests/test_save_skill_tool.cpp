@@ -35,9 +35,14 @@ TEST(SaveSkillTool, DescribeYieldsSpec) {
   auto j = nlohmann::json::parse(r.out, nullptr, false);
   ASSERT_TRUE(j.is_object() && j.value("ok", false));
   EXPECT_EQ(j["result"].value("name", ""), "save_skill");
+  // Only name is unconditionally required: body selects save mode, old_string selects patch
+  // mode, and the runtime dispatch enforces the per-mode arg sets.
   auto required = j["result"]["schema"].value("required", nlohmann::json::array());
-  for (const char* k : {"name", "description", "body"})
-    EXPECT_TRUE(std::find(required.begin(), required.end(), k) != required.end()) << k;
+  ASSERT_EQ(required.size(), 1u);
+  EXPECT_EQ(required[0], "name");
+  const auto& props = j["result"]["schema"]["properties"];
+  for (const char* k : {"name", "description", "body", "old_string", "new_string"})
+    EXPECT_TRUE(props.contains(k)) << k;
 }
 
 TEST(SaveSkillTool, WritesCanonicalSkillFile) {
@@ -86,4 +91,134 @@ TEST(SaveSkillTool, MissingArgsAreNotOk) {
     ASSERT_FALSE(j.is_discarded()) << raw;
     EXPECT_FALSE(j.value("ok", true)) << raw;
   }
+}
+
+// Patch-mode driver: fills EVERY schema field (empty strings for the unused mode's args) the
+// way weak LLMs do — so every patch test also pins the empty-string-is-absent rule.
+static nlohmann::json patch(const std::string& root, const std::string& name,
+                            const std::string& olds, const std::string& news,
+                            const std::string& desc = "") {
+  nlohmann::json call{{"call", "save_skill"},
+                      {"args",
+                       {{"name", name},
+                        {"description", desc},
+                        {"body", ""},
+                        {"old_string", olds},
+                        {"new_string", news}}}};
+  ProcResult r = run_subprocess({SAVE_SKILL_BIN, root}, call.dump(), 30.0);
+  return nlohmann::json::parse(r.out, nullptr, false);
+}
+
+TEST(SaveSkillTool, PatchReplacesExactlyOnce) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "how to greet", "Say hello twice.\nThen wave.").value("ok", false));
+  auto j = patch(root, "greet", "hello twice", "hi once");
+  ASSERT_TRUE(j.value("ok", false));
+  EXPECT_TRUE(j["result"].value("patched", false));
+  const std::string body = slurp(root + "/greet/SKILL.md");
+  EXPECT_NE(body.find("Say hi once."), std::string::npos);
+  EXPECT_EQ(body.find("hello twice"), std::string::npos);
+  EXPECT_NE(body.find("description: how to greet"), std::string::npos);   // frontmatter intact
+}
+
+TEST(SaveSkillTool, PatchEmptyNewStringDeletes) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "d", "Say hello twice.\nThen wave.\n").value("ok", false));
+  ASSERT_TRUE(patch(root, "greet", "\nThen wave.", "").value("ok", false));
+  const std::string body = slurp(root + "/greet/SKILL.md");
+  EXPECT_EQ(body.find("Then wave"), std::string::npos);
+  EXPECT_NE(body.find("Say hello twice."), std::string::npos);
+}
+
+TEST(SaveSkillTool, PatchOldStringNotFoundFailsAndFileUntouched) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "d", "body text").value("ok", false));
+  const std::string before = slurp(root + "/greet/SKILL.md");
+  auto j = patch(root, "greet", "never there", "x");
+  ASSERT_FALSE(j.is_discarded());
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_EQ(slurp(root + "/greet/SKILL.md"), before);
+}
+
+TEST(SaveSkillTool, PatchAmbiguousMatchFailsAndFileUntouched) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "d", "alpha beta alpha").value("ok", false));
+  const std::string before = slurp(root + "/greet/SKILL.md");
+  auto j = patch(root, "greet", "alpha", "gamma");
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_NE(j["result"].value("error", "").find("2 times"), std::string::npos);
+  EXPECT_EQ(slurp(root + "/greet/SKILL.md"), before);
+}
+
+TEST(SaveSkillTool, BothModesFails) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "d", "body").value("ok", false));
+  nlohmann::json call{{"call", "save_skill"},
+                      {"args",
+                       {{"name", "greet"}, {"description", "d"}, {"body", "new body"},
+                        {"old_string", "body"}, {"new_string", "x"}}}};
+  ProcResult r = run_subprocess({SAVE_SKILL_BIN, root}, call.dump(), 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_FALSE(j.is_discarded());
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_NE(j["result"].value("error", "").find("not both"), std::string::npos);
+}
+
+TEST(SaveSkillTool, NeitherModeFails) {
+  const std::string root = fresh_root();
+  // Every field present but empty = every field absent (weak-LLM shape).
+  auto j = patch(root, "greet", "", "");
+  ASSERT_FALSE(j.is_discarded());
+  EXPECT_FALSE(j.value("ok", true));
+}
+
+TEST(SaveSkillTool, PatchWithDescriptionFails) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "d", "body text").value("ok", false));
+  const std::string before = slurp(root + "/greet/SKILL.md");
+  auto j = patch(root, "greet", "body text", "new text", "a new description");
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_EQ(slurp(root + "/greet/SKILL.md"), before);
+}
+
+TEST(SaveSkillTool, PatchBreakingFrontmatterRefusedAndFileUntouched) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "how to greet", "body text").value("ok", false));
+  const std::string before = slurp(root + "/greet/SKILL.md");
+  // Patching the description KEY away would make the scanner drop the skill -> refuse.
+  auto j = patch(root, "greet", "description:", "junk:");
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_NE(j["result"].value("error", "").find("frontmatter"), std::string::npos);
+  EXPECT_EQ(slurp(root + "/greet/SKILL.md"), before);
+}
+
+TEST(SaveSkillTool, PatchCanEditFrontmatterDescriptionValue) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "old description", "body text").value("ok", false));
+  // Editing the description VALUE (key intact) is legal patch usage.
+  ASSERT_TRUE(patch(root, "greet", "description: old description",
+                    "description: better one-liner").value("ok", false));
+  EXPECT_NE(slurp(root + "/greet/SKILL.md").find("description: better one-liner"),
+            std::string::npos);
+}
+
+TEST(SaveSkillTool, PatchMissingSkillFails) {
+  const std::string root = fresh_root();
+  auto j = patch(root, "ghost", "a", "b");
+  EXPECT_FALSE(j.value("ok", true));
+  EXPECT_NE(j["result"].value("error", "").find("no such skill"), std::string::npos);
+}
+
+TEST(SaveSkillTool, PatchTraversalNameFailsClosed) {
+  const std::string root = fresh_root();
+  auto j = patch(root, "../escape", "a", "b");
+  ASSERT_FALSE(j.is_discarded());
+  EXPECT_FALSE(j.value("ok", true));
+}
+
+TEST(SaveSkillTool, PatchIdenticalStringsFails) {
+  const std::string root = fresh_root();
+  ASSERT_TRUE(save(root, "greet", "d", "body").value("ok", false));
+  auto j = patch(root, "greet", "body", "body");
+  EXPECT_FALSE(j.value("ok", true));
 }
