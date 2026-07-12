@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-11)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **614/614 tests** (ASan+UBSan + **TSan** 614/614 clean; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **626/626 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no threads touched since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -568,9 +568,16 @@ Pieces: `src/module/skills_module.cpp`, `src/skills/scan.cpp`, `include/hades/sk
 3. Per-skill capability scopes; **confirm-gate `SkillWrite`** by policy (enum split already supports it, zero code).
 4. Skill-declared first-class tools (dynamic tool registration when a skill loads).
 5. Announce pagination/grouping once the library grows past dozens of skills.
-5b. **`save_skill` patch mode (Hermes borrow, small):** an `old_string`/`new_string` patch action (edit_file-style)
-   so the agent refines a skill incrementally instead of resending the whole body — token-cheap skill
-   self-improvement (Hermes `skill_manage patch`, 2026-07-11 research). Pairs with the soul.md learn-triggers.
+5b. ~~`save_skill` patch mode~~ — **SHIPPED 2026-07-12** (`feat/save-skill-patch`): save_skill
+   gained optional `old_string`/`new_string` (empty=absent mode select; match EXACTLY ONCE, no
+   replace_all; post-patch frontmatter validation via the scanner's own `parse_skill_description`
+   → a patch that would brick the skill out of the roster is refused, file untouched; atomic
+   write; rescan/capability/wiring unchanged — rescan keys on tool name + ok, SkillWrite still
+   allow, dir still argv[1]). No staleness expect_version (v1): stale old_string fails the
+   live-content match and the error says to re-read. `parse_skill_description` promoted to inline
+   in `include/hades/skills/scan.h` (the `valid_skill_name` pattern) so the tool validates with
+   the scanner's own parse without linking core. Spec:
+   `docs/superpowers/specs/2026-07-12-save-skill-patch-design.md`.
 6. From the final review (recorded, non-blocking): symlink-follow in the tools (lexical-not-realpath — same
    documented v1 gap as capability_policy); `avoid_destructive` pattern-scans save_skill BODIES → a skill
    documenting `rm -rf` confirm-gates on save (safe, maybe desirable; exclude skill tools from the arg-scan if

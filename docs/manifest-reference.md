@@ -323,6 +323,14 @@ whitespace-free.
 whitespace-free. Skill names are gated to `[A-Za-z0-9_-]{1,64}` in the tools (no path traversal).
 The dir is git-tracked in this repo (the agent writes skills at runtime → working-tree churn).
 
+**`save_skill` has two modes** (selected by which optional arg is non-empty; an empty string
+counts as absent): a full **save** (`name` + `description` + `body` — creates or overwrites) and
+a **patch** (`name` + `old_string`/`new_string` — edits part of an EXISTING skill without
+resending the body; `old_string` must match exactly once, no `replace_all`). A patch that would
+break the frontmatter (the scanner could no longer parse a description) is refused with the file
+untouched, so the agent cannot brick a skill out of its own roster. Sending `body` and
+`old_string` together, or a `description` alongside a patch, is an error.
+
 **Shipped skill: `email`** (`skills/email/SKILL.md`). Read/send the user's mail via the
 [himalaya](https://github.com/pimalaya/himalaya) CLI — no email module or credentials in hades
 (accounts live in himalaya's own config). Requires the `run_command` + `shell` + `write_file` tools

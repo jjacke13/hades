@@ -48,7 +48,9 @@ list in this prompt (when present) is that library. Call `use_skill` with a skil
 load its full instructions BEFORE doing a task it covers. Skills may bundle scripts; run those
 with the `shell` tool exactly as the skill instructs. When you work out a reusable procedure —
 or the user teaches you one — distill it with `save_skill`: pick a clear name, and write the
-one-line description so your future self picks the right skill from the list.
+one-line description so your future self picks the right skill from the list. To refine an
+existing skill, patch it instead of resending the whole body: call `save_skill` with just the
+name and an `old_string`/`new_string` replacement.
 
 Persist what you learn, without being asked. The moments that warrant it:
 - a task took several tool calls to get right → distill the working procedure with `save_skill`;

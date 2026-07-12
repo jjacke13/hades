@@ -79,16 +79,15 @@ description text explains both modes in one short paragraph.
 |---|---|
 | `tools/save_skill_main.cpp` | patch branch + mode dispatch + post-patch validation + describe update |
 | `tests/test_save_skill_tool.cpp` | append ~10 cases: patch roundtrip · deletion (empty new_string, edit_file parity) · 0-match · >1-match · both-modes error · neither error · description-with-patch error · brick-refusal (frontmatter broken) · missing-skill · traversal name in patch mode |
-| `CMakeLists.txt` | one line: add `src/skills/scan.cpp` to the `hades-save-skill` target sources (see below) |
 | `docs/manifest-reference.md` | save_skill tool row: mention patch mode |
 | `CLAUDE.md` | mark Skills v2 item 5b shipped; one-line feature note |
 | `prompts/soul.md` | skills paragraph: one sentence — refine an existing skill with old_string/new_string instead of resending the body |
 
-No new target; no core link. Post-patch validation reuses `parse_skill_description`, which is
-declared in `hades/skills/scan.h` (already included for `valid_skill_name`) but DEFINED in
-`src/skills/scan.cpp` — the tool does not link `hades_core`, so it compiles `src/skills/scan.cpp`
-into itself (the cron_store precedent from the self-scheduling tools). That one
-`target_sources(hades-save-skill PRIVATE src/skills/scan.cpp)` line is the only CMake change.
+No new target; no core link; **zero CMake change** (implementation deviation, reviewer-verified).
+Post-patch validation reuses `parse_skill_description`, which was **promoted to an `inline`
+function in `hades/skills/scan.h`** (the `valid_skill_name` pattern — already header-only there)
+and its duplicate definition removed from `src/apps/skills/skills.cpp`. So the standalone tool
+validates with the scanner's own parse without linking core or compiling any extra source.
 
 ## Testing
 
