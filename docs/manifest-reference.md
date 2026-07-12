@@ -187,8 +187,9 @@ One `Tool` block = one MCP **server** (not one tool). At boot (registry warm) ha
 `tools/list` exchange per server and announces every discovered tool to the LLM as
 **`<block>__<toolname>`** — e.g. block `weather` exposing `get_alerts` announces
 `weather__get_alerts`. The prefix guarantees a server can never shadow a native tool name
-(`fs_read`, `shell`, …) and inherit its capability verdict. Exactly ONE of
-`native | mcp | mcp_url` per block, and an mcp block name must be `[A-Za-z0-9_-]{1,64}`
+(`fs_read`, `shell`, …) and inherit its capability verdict. At most ONE of
+`native | mcp | mcp_url` per block (a block with none is silently ignored, as above), and an
+mcp block name must be `[A-Za-z0-9_-]{1,64}`
 without `__` — both enforced at launch (`MalConfig`). Discovered tool names are themselves
 charset-gated the same way (`[A-Za-z0-9_-]{1,64}`): a name with provider-illegal characters
 (`/`, space, …) is skipped rather than 400 the whole tools array at the LLM API. Duplicate
