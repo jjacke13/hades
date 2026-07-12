@@ -221,6 +221,7 @@ target_sources(hades_tests PRIVATE tests/test_heartbeat_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_self_schedule_guard.cpp)
 target_sources(hades_tests PRIVATE tests/test_self_scheduling_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_webui.cpp)
+target_sources(hades_tests PRIVATE tests/test_wiring_mcp.cpp)
 target_compile_definitions(hades_tests PRIVATE
   WEB_INDEX="${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
   WEB_STYLE="${CMAKE_CURRENT_SOURCE_DIR}/web/style.css"

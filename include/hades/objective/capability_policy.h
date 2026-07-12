@@ -14,7 +14,7 @@ namespace hades {
 
 // The kinds of authority a tool action can exercise. Authoritative source is the built-in
 // capability_of() table; an unknown tool maps to Unknown (-> confirm-gated).
-enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, SkillRead, SkillWrite, PeerAsk, GitRead, ExecScoped, SelfSchedule, Unknown };
+enum class Capability { FsRead, FsWrite, Net, Exec, MemoryAppend, SkillRead, SkillWrite, PeerAsk, GitRead, ExecScoped, SelfSchedule, McpTool, Unknown };
 
 // Operator-supplied bounds (from the `Objective = capability_policy { … }` manifest block).
 // Path lists are lexically-normalized prefixes (leading "./" and "." components collapsed before
@@ -32,6 +32,10 @@ struct CapabilityScope {
                                               // boundary; commands with shell metacharacters
                                               // always confirm (run_command never uses a shell,
                                               // and prefix matching is only sound that way).
+  std::vector<std::string> mcp_allow;         // discovered MCP tool names (<block>__<tool>)
+                                              // allowed WITHOUT confirm; the single literal "*"
+                                              // allows all MCP tools (trusts every rostered
+                                              // server). Whitespace-separated in the manifest.
   std::vector<std::string> net_deny_hosts;    // extra explicit host substrings hard-vetoed
   bool block_private_net = true;              // hard-veto loopback + RFC1918 + link-local
   bool confirm_unscoped  = true;              // out-of-allow-scope read -> confirm (else hard-veto)

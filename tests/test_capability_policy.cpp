@@ -375,3 +375,45 @@ TEST(CapabilityPolicy, ExecScopedPrefixAndMetachars) {
   auto ns = p.veto(bb, tool_call("run_command", {{"command", 42}}));
   EXPECT_TRUE(ns.vetoed);
 }
+
+TEST(CapabilityPolicy, McpToolDetectedByDoubleUnderscore) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("weather__get_alerts"), Capability::McpTool);
+  EXPECT_EQ(CapabilityPolicy::capability_of("linear__search_issues"), Capability::McpTool);
+  // Native names (single underscores) are untouched.
+  EXPECT_EQ(CapabilityPolicy::capability_of("fs_read"), Capability::FsRead);
+  EXPECT_EQ(CapabilityPolicy::capability_of("save_memory"), Capability::MemoryAppend);
+}
+
+TEST(CapabilityPolicy, McpToolConfirmsByDefault) {
+  CapabilityScope sc;
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  Action a{Action::Kind::ToolCall};
+  a.tool = "weather__get_alerts";
+  auto v = p.veto(bb, a);
+  EXPECT_TRUE(v.vetoed);
+  EXPECT_TRUE(v.needs_confirm);
+}
+
+TEST(CapabilityPolicy, McpAllowExactNameAllows) {
+  CapabilityScope sc;
+  sc.mcp_allow = {"weather__get_forecast"};
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  Action ok{Action::Kind::ToolCall};
+  ok.tool = "weather__get_forecast";
+  EXPECT_FALSE(p.veto(bb, ok).vetoed);
+  Action other{Action::Kind::ToolCall};
+  other.tool = "weather__get_alerts";              // NOT listed -> still confirm
+  EXPECT_TRUE(p.veto(bb, other).needs_confirm);
+}
+
+TEST(CapabilityPolicy, McpAllowStarAllowsAll) {
+  CapabilityScope sc;
+  sc.mcp_allow = {"*"};
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  Action a{Action::Kind::ToolCall};
+  a.tool = "anysrv__anytool";
+  EXPECT_FALSE(p.veto(bb, a).vetoed);
+}

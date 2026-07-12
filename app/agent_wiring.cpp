@@ -135,6 +135,7 @@ std::unique_ptr<Objective> make_objective(const Block& b) {
     if (b.kv.count("fs_write_allow")) sc.fs_write_allow = split_ws_list(b.kv.at("fs_write_allow"));
     // exec_allow prefixes contain spaces -> COMMA-separated (the one non-whitespace list).
     if (b.kv.count("exec_allow"))     sc.exec_allow     = split_comma_list(b.kv.at("exec_allow"));
+    if (b.kv.count("mcp_allow"))      sc.mcp_allow      = split_ws_list(b.kv.at("mcp_allow"));
     if (b.kv.count("net_deny_hosts")) sc.net_deny_hosts = split_ws_list(b.kv.at("net_deny_hosts"));
     if (b.kv.count("block_private_net"))
       set_bool_on_string(b.kv.at("block_private_net"), sc.block_private_net);
@@ -265,6 +266,22 @@ void wire_agent(Agent& a,
   if (session.kv.count("memory_char_limit"))
     memory_char_limit = parse_ll(session.kv.at("memory_char_limit"), memory_char_limit);
   if (memory_char_limit <= 0) memory_char_limit = kDefaultMemoryCharLimit;
+
+  // MCP Tool-block validation (launch boundary — fail before any tool subprocess runs):
+  // exactly one transport kind per block, and mcp block names must be prefix-safe — the
+  // announce name is "<block>__<tool>", so a "__" inside the block name (or a char outside
+  // [A-Za-z0-9_-]) would corrupt the prefix rule capability_of depends on. valid_skill_name
+  // is the same [A-Za-z0-9_-]{1,64} gate (borrowed; skills and mcp blocks share the charset).
+  for (const Block& t : tools) {
+    const int kinds = (t.kv.count("native") ? 1 : 0) + (t.kv.count("mcp") ? 1 : 0) +
+                      (t.kv.count("mcp_url") ? 1 : 0);
+    if (kinds > 1)
+      throw MalConfig("Tool block '" + t.name + "': exactly one of native|mcp|mcp_url");
+    if ((t.kv.count("mcp") || t.kv.count("mcp_url")) &&
+        (!valid_skill_name(t.name) || t.name.find("__") != std::string::npos))
+      throw MalConfig("Tool block '" + t.name +
+                      "': mcp block names must be [A-Za-z0-9_-]{1,64} without '__'");
+  }
 
   std::vector<Block> tools_resolved;
   tools_resolved.reserve(tools.size());

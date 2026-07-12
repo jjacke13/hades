@@ -179,6 +179,10 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "run_command")                             return Capability::ExecScoped;
   if (tool == "schedule_task" || tool == "list_tasks" || tool == "cancel_task")
                                                          return Capability::SelfSchedule;
+  // Structural rule, not a name row: only MCP discovery produces "__" (native tool names use
+  // single underscores; wiring rejects mcp BLOCK names containing "__"), so a double
+  // underscore marks a foreign server's tool wherever it appears in the name.
+  if (tool.find("__") != std::string::npos)              return Capability::McpTool;
   return Capability::Unknown;
 }
 
@@ -301,6 +305,15 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
       // recursion risk. Distinct capability (SkillWrite precedent) so a future policy can
       // confirm-gate scheduling with zero code.
       return allow();
+    case Capability::McpTool: {
+      // A discovered <block>__<tool> on a rostered MCP server: foreign code hades does not
+      // control — shell-grade trust. The operator opts specific tools (or "*" = every
+      // discovered tool) into the allow band via mcp_allow; everything else confirms, which
+      // also auto-denies on heartbeat/peer turns (no unattended foreign-server execution).
+      for (const auto& m : scope_.mcp_allow)
+        if (m == "*" || m == a.tool) return allow();
+      return confirm("mcp tool outside mcp_allow: " + a.tool);
+    }
     case Capability::Unknown:
     default:
       return confirm("unknown tool '" + a.tool + "': capability undeclared");
