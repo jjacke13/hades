@@ -262,7 +262,8 @@ native-name shadowing; `.` illegal in OpenAI-compat function names). `inputSchem
 1:1 into the ToolSpec; specs flow through the existing `wire_agent` → `set_tools` path (zero
 Arbiter changes). tools/call sends the server's OWN name via the registry's
 `mcp_real_names_` map (never string-split). **Fail-soft:** discovery failure/empty → stderr
-line + legacy call-by-block-name path, boot never blocked beyond the entry timeout.
+line + legacy call-by-block-name path, boot delay bounded per entry (stdio: one timeout_s;
+http: worst case ~3× — initialize/request/teardown each bounded).
 **Capability:** any `__`-containing name → `Capability::McpTool` → **confirm** by default
 (heartbeat/peer auto-deny) unless listed in `capability_policy { mcp_allow = <block>__<tool>
 … }` (whitespace list; literal `*` = all — trusts every rostered server). Launch gates

@@ -152,7 +152,8 @@ void ToolRegistry::ensure_warm(double timeout_s) const {
       if (!any) {
         // Fail-soft: discovery failed or returned nothing -> keep the legacy call-by-block-
         // name path so a down server degrades to pre-discovery behavior; boot is never
-        // blocked beyond this entry's timeout.
+        // blocked beyond this entry's timeout (stdio: one exchange; http: each of the
+        // initialize/request/teardown POSTs is bounded by timeout_s -> worst case ~3x).
         std::fprintf(stderr, "[hades] mcp discovery failed for '%s': %s\n", t.name.c_str(),
                      listed.is_object() && listed.contains("error")
                          ? listed["error"].dump().c_str()
@@ -237,8 +238,7 @@ nlohmann::json stdio_exchange(const std::string& command, const nlohmann::json& 
   return {{"error", "mcp: no result for request"}};
 }
 
-// Streamable HTTP transport — implemented in Task 2. The stub keeps the error contract so
-// callers (and the T1 test) see a plain {"error"} rather than a crash or an empty object.
+// Streamable HTTP transport (defined below, after exchange(), via this forward declaration).
 nlohmann::json http_exchange(const ToolEntry& server, const nlohmann::json& request,
                              double timeout_s);
 

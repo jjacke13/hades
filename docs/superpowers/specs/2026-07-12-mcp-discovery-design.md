@@ -118,8 +118,9 @@ In `ToolRegistry::ensure_warm`, for `kind == "mcp"` or `"mcp_http"`:
    Tools with empty/invalid names are skipped. Descriptions are used verbatim.
 3. **Fail-soft:** timeout / `{error}` / zero tools → keep TODAY'S behavior for that entry
    (`by_tool_name_[block] = &entry`, no specs) — a down server degrades to the current
-   call-by-block-name path and never blocks boot beyond its timeout. A stderr log line notes
-   the failed discovery.
+   call-by-block-name path with a bounded boot delay (stdio: one `timeout_s`; HTTP: worst
+   case ~3× — the initialize/request/teardown POSTs are each bounded). A stderr log line
+   notes the failed discovery.
 
 `specs()` flows into `wire_agent:350` unchanged → the LLM sees `weather__get_alerts` etc. in
 its tool list, schema included. `find_by_tool_name` resolves prefixed names via the map (the
