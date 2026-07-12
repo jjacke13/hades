@@ -15,6 +15,7 @@
 #include "hades/tool/subprocess.h"
 #include "hades/tool/mcp_adapter.h"
 #include "hades/tool/registry.h"
+#include "hades/skills/scan.h"  // valid_skill_name — charset gate for discovered MCP tool names
 
 // ── ToolRunner: TOOL_REQUEST -> subprocess/MCP -> TOOL_RESULT (was src/module/tool_runner.cpp) ──────────────
 namespace hades {
@@ -130,7 +131,10 @@ void ToolRegistry::ensure_warm(double timeout_s) const {
         for (const auto& disc : listed["tools"]) {
           if (!disc.is_object()) continue;
           const std::string real = disc.value("name", "");
-          if (real.empty()) continue;
+          // Charset gate (same [A-Za-z0-9_-]{1,64} rule as skills + mcp block names): a
+          // discovered name with provider-illegal chars ('/', space, ...) would 400 the
+          // WHOLE tools array at the LLM API — skip it, keep the server's clean tools.
+          if (!valid_skill_name(real)) continue;
           const std::string prefixed = t.name + "__" + real;
           // Dedup by announced name, first-wins across ALL THREE caches: an unconditional
           // spec push with first-wins emplace below would announce DUPLICATE function names

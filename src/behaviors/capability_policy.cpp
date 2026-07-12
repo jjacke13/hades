@@ -179,9 +179,11 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "run_command")                             return Capability::ExecScoped;
   if (tool == "schedule_task" || tool == "list_tasks" || tool == "cancel_task")
                                                          return Capability::SelfSchedule;
-  // Structural rule, not a name row: only MCP discovery produces "__" (native tool names use
-  // single underscores; wiring rejects mcp BLOCK names containing "__"), so a double
-  // underscore marks a foreign server's tool wherever it appears in the name.
+  // Structural rule, not a name row: MCP discovery announces "<block>__<tool>" and wiring
+  // rejects mcp BLOCK names containing "__", so a double underscore marks a foreign server's
+  // tool. Shipped native names are single-underscore by convention (a custom native binary
+  // SELF-reporting a "__" describe name is not prevented — it just lands here, in the MORE
+  // restrictive mcp_allow band, which is fail-safe unless the operator also set mcp_allow=*).
   if (tool.find("__") != std::string::npos)              return Capability::McpTool;
   return Capability::Unknown;
 }

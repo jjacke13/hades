@@ -87,6 +87,20 @@ TEST(McpDiscovery, EmptyToolNamesSkipped) {
   EXPECT_EQ(specs[0].name, "srv__ok_tool");
 }
 
+TEST(McpDiscovery, ProviderIllegalToolNamesSkipped) {
+  // A discovered name with chars outside [A-Za-z0-9_-] (or empty) would 400 the WHOLE tools
+  // array at the LLM API — it must be skipped while the server's clean tools survive.
+  ::setenv("FAKE_MCP_LIST_REPLY",
+           R"({"jsonrpc":"2.0","id":2,"result":{"tools":[)"
+           R"({"name":"bad/name","description":"x"},{"name":"has space","description":"y"},)"
+           R"({"name":"clean_tool","description":"z","inputSchema":{"type":"object"}}]}})", 1);
+  ToolRegistry reg;
+  reg.add_from_block(mcp_block("srv", FAKE_MCP_SERVER));
+  auto specs = reg.specs(10.0);
+  ASSERT_EQ(specs.size(), 1u);
+  EXPECT_EQ(specs[0].name, "srv__clean_tool");
+}
+
 TEST(McpDiscovery, DuplicateToolNamesDedupedFirstWins) {
   // A buggy/hostile server listing the same tool name twice must NOT announce a duplicate
   // function name (providers reject a tools array with duplicates -> the whole turn 400s).
