@@ -15,8 +15,9 @@ namespace hades {
 
 struct ToolEntry {
   std::string name;     // the Tool block name (config-side handle)
-  std::string kind;     // "native" | "mcp"
-  std::string command;  // argv string (split on whitespace at spawn time)
+  std::string kind;     // "native" | "mcp" (stdio command) | "mcp_http" (Streamable HTTP url)
+  std::string command;  // native/mcp: argv string (whitespace-split at spawn) | mcp_http: the URL
+  std::string api_key_env;  // mcp_http only: env var holding the Bearer token ("" = no auth header)
   double timeout_s = 0.0;  // per-tool subprocess cap; 0 -> the ToolRunner default (30s)
 };
 
@@ -34,6 +35,10 @@ public:
   // Lookup by the tool's SELF-REPORTED name (from `describe`), falling back to
   // the block name. This is what TOOL_REQUEST.tool is routed against.
   const ToolEntry* find_by_tool_name(const std::string& reported_name) const;
+
+  // Real (unprefixed) MCP tool name behind a discovered `<block>__<tool>` announce name.
+  // Empty when `prefixed` was not produced by MCP discovery (legacy call-by-block-name path).
+  std::string mcp_real_name(const std::string& prefixed) const;
 
   // Run each native tool's `describe` ONCE and build the spec + name caches.
   // Idempotent: subsequent calls are no-ops.
@@ -55,6 +60,9 @@ private:
   // valid because all tools are added before warming and no entry is added
   // afterward (warmed_ guards rebuild).
   mutable std::map<std::string, const ToolEntry*> by_tool_name_;
+
+  // discovered prefixed name -> the server's own tool name (what tools/call must send).
+  mutable std::map<std::string, std::string> mcp_real_names_;
 };
 
 }  // namespace hades

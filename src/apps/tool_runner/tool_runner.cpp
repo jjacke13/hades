@@ -72,8 +72,8 @@ void ToolRunner::on_attach(Blackboard& bb) {
           content = j.contains("result") ? j["result"] : nlohmann::json::object();
         }
       }
-    } else {  // mcp
-      content = mcp_call(te->command, name, args, timeout);
+    } else {  // mcp | mcp_http
+      content = mcp_call(*te, name, args, timeout);
       ok = content.is_object() && !content.contains("error");
     }
 
@@ -90,9 +90,11 @@ namespace hades {
 void ToolRegistry::add_from_block(const Block& b) {
   ToolEntry e;
   e.name = b.name;
-  if (b.kv.count("native")) { e.kind = "native"; e.command = b.kv.at("native"); }
-  else if (b.kv.count("mcp")) { e.kind = "mcp"; e.command = b.kv.at("mcp"); }
-  else return;                         // unchanged behavior: a block with neither is ignored
+  if (b.kv.count("native"))        { e.kind = "native";   e.command = b.kv.at("native"); }
+  else if (b.kv.count("mcp"))      { e.kind = "mcp";      e.command = b.kv.at("mcp"); }
+  else if (b.kv.count("mcp_url"))  { e.kind = "mcp_http"; e.command = b.kv.at("mcp_url"); }
+  else return;                         // unchanged behavior: a block with none is ignored
+  if (b.kv.count("api_key_env")) e.api_key_env = b.kv.at("api_key_env");
   if (b.kv.count("timeout_s"))
     set_pos_double_on_string(b.kv.at("timeout_s"), e.timeout_s);
   tools_.push_back(std::move(e));
@@ -146,16 +148,20 @@ const ToolEntry* ToolRegistry::find_by_tool_name(const std::string& n) const {
   return find(n);  // fall back to block name
 }
 
+std::string ToolRegistry::mcp_real_name(const std::string& prefixed) const {
+  auto it = mcp_real_names_.find(prefixed);
+  return it != mcp_real_names_.end() ? it->second : std::string{};
+}
+
 }  // namespace hades
 
-// ── mcp_call: MCP stdio JSON-RPC shim (duplicate split_ws dropped) (was src/tool/mcp_adapter.cpp) ──────────────
+// ── MCP client: stdio + Streamable HTTP transports behind mcp_list/mcp_call ──────────────
 namespace hades {
+namespace {
 
-nlohmann::json mcp_call(const std::string& command, const std::string& tool,
-                        const nlohmann::json& args, double timeout_s) {
-  if (command.empty()) return {{"error", "mcp: empty command"}};
-
-  // Newline-delimited JSON-RPC fed on the server's stdin.
+// One-shot stdio conversation: initialize + initialized-notification + the request (id 2),
+// newline-delimited on the spawned server's stdin; reply scanned off stdout.
+std::string stdio_conversation(const nlohmann::json& request) {
   std::ostringstream in;
   in << nlohmann::json{{"jsonrpc", "2.0"},
                        {"id", 1},
@@ -168,18 +174,17 @@ nlohmann::json mcp_call(const std::string& command, const std::string& tool,
      << "\n";
   in << nlohmann::json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump()
      << "\n";
-  in << nlohmann::json{{"jsonrpc", "2.0"},
-                       {"id", 2},
-                       {"method", "tools/call"},
-                       {"params", {{"name", tool}, {"arguments", args}}}}
-            .dump()
-     << "\n";
+  in << request.dump() << "\n";
+  return in.str();
+}
 
-  auto r = run_subprocess(split_ws(command), in.str(), timeout_s);
+nlohmann::json stdio_exchange(const std::string& command, const nlohmann::json& request,
+                              double timeout_s) {
+  if (command.empty()) return {{"error", "mcp: empty command"}};
+  auto r = run_subprocess(split_ws(command), stdio_conversation(request), timeout_s);
   if (r.timed_out) return {{"error", "mcp server timed out"}};
-
-  // Scan stdout lines for the JSON-RPC reply to our tools/call (id == 2).
-  // Every JSON access is guarded so a malformed server line can never throw.
+  // Scan stdout lines for the JSON-RPC reply to our request (id == 2). Every JSON access is
+  // guarded so a malformed server line can never throw.
   std::istringstream out(r.out);
   std::string line;
   while (std::getline(out, line)) {
@@ -188,7 +193,43 @@ nlohmann::json mcp_call(const std::string& command, const std::string& tool,
     if (j.is_object() && j.contains("id") && j["id"] == 2 && j.contains("result"))
       return j["result"];
   }
-  return {{"error", "mcp: no result for tools/call"}};
+  return {{"error", "mcp: no result for request"}};
+}
+
+// Streamable HTTP transport — implemented in Task 2. The stub keeps the error contract so
+// callers (and the T1 test) see a plain {"error"} rather than a crash or an empty object.
+nlohmann::json http_exchange(const ToolEntry& server, const nlohmann::json& request,
+                             double timeout_s);
+
+nlohmann::json exchange(const ToolEntry& server, const nlohmann::json& request,
+                        double timeout_s) {
+  if (server.kind == "mcp_http") return http_exchange(server, request, timeout_s);
+  return stdio_exchange(server.command, request, timeout_s);
+}
+
+nlohmann::json http_exchange(const ToolEntry&, const nlohmann::json&, double) {
+  return {{"error", "mcp: http transport not built"}};
+}
+
+}  // namespace
+
+nlohmann::json mcp_list(const ToolEntry& server, double timeout_s) {
+  return exchange(server,
+                  nlohmann::json{{"jsonrpc", "2.0"},
+                                 {"id", 2},
+                                 {"method", "tools/list"},
+                                 {"params", nlohmann::json::object()}},
+                  timeout_s);
+}
+
+nlohmann::json mcp_call(const ToolEntry& server, const std::string& tool,
+                        const nlohmann::json& args, double timeout_s) {
+  return exchange(server,
+                  nlohmann::json{{"jsonrpc", "2.0"},
+                                 {"id", 2},
+                                 {"method", "tools/call"},
+                                 {"params", {{"name", tool}, {"arguments", args}}}},
+                  timeout_s);
 }
 
 }  // namespace hades

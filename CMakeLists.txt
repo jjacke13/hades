@@ -89,6 +89,9 @@ target_sources(hades_core PRIVATE src/apps/tool_runner/tool_runner.cpp)
 target_sources(hades_tests PRIVATE tests/test_toolrunner.cpp)
 target_compile_definitions(hades_tests PRIVATE FS_READ_BIN="$<TARGET_FILE:hades-fs-read>")
 add_dependencies(hades_tests hades-fs-read)
+target_sources(hades_tests PRIVATE tests/test_mcp_adapter.cpp)
+target_compile_definitions(hades_tests PRIVATE
+  FAKE_MCP_SERVER="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_mcp_server.sh")
 target_sources(hades_tests PRIVATE tests/test_tools.cpp)
 target_compile_definitions(hades_tests PRIVATE
   SHELL_BIN="$<TARGET_FILE:hades-shell>"
