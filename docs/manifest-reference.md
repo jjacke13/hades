@@ -799,7 +799,7 @@ run it bound to loopback only.
 
 | Key | What it does | Default | Notes |
 |---|---|---|---|
-| `allow_contacts` | **Comma-separated** list of local contact ids (numeric) and/or exact display names allowed to drive the agent. **REQUIRED.** | — (missing/empty → `MalConfig`) | An open address means anyone who connects could drive the agent. Non-allowed senders are silently dropped. Ids are stable; names are spoofable (see below). |
+| `allow_contacts` | **Comma-separated** list of exact display names (what `/contacts` shows) and/or numeric contact ids allowed to drive the agent. **REQUIRED.** | — (missing/empty → `MalConfig`) | Non-allowed senders are silently dropped. A name is the practical choice and safe with `auto_accept = false`; use ids only if you enable auto-accept (see below). |
 | `host` | Host of the local `simplex-chat` daemon's WS API. | `127.0.0.1` | Keep it loopback — the API is unauthenticated. |
 | `port` | Port of the daemon's WS API. | `5225` | Match the `simplex-chat -p <port>` you launched. Bad/garbage → `5225`. |
 | `auto_accept` | Auto-accept incoming contact requests. | `false` | `false` → accept requests manually in the `simplex-chat` CLI. `true` is an explicit opt-in (name-spoof risk below). |
@@ -807,25 +807,33 @@ run it bound to loopback only.
 | `connect_timeout_s` | WS connect timeout; also the reconnect backoff base. | `10` | Positive-double; bad/0/garbage → keeps the default. |
 
 **Setup walkthrough.**
-1. Install the official **`simplex-chat`** CLI (prebuilt binaries exist for x86_64 and aarch64 — the
-   `simplex-chat-ubuntu-2x_04-aarch64` build runs on the Pi). It is an **external runtime dependency**,
-   not built by hades.
-2. First run creates a chat profile — pick the bot's display name.
+1. Install the official **`simplex-chat`** CLI — an **external runtime dependency**, not built by hades.
+   Prebuilt release binaries exist for x86_64 and aarch64; the `simplex-chat-ubuntu-2x_04-aarch64` build
+   runs on the Pi (Debian) directly. **On NixOS** the CLI is **not in nixpkgs** (only the desktop app), so
+   this repo's `flake.nix` ships `packages.x86_64-linux.simplex-chat-cli` (the official release binary,
+   autoPatchelf'd) and puts `simplex-chat` on the `nix develop` PATH.
+2. First run (`simplex-chat`, then `/q`) creates a chat profile — pick the bot's display name.
 3. In the CLI, run `/address` **once** to create the bot's long-term contact address; share it (or the
    generated link) with the humans who will message the bot.
 4. Launch the daemon with the WS API on the port you configured: `simplex-chat -p 5225`.
 5. Connect from the SimpleX phone/desktop app to the bot's address; **accept the contact** in the CLI
-   (or set `auto_accept = true`). After they connect, note the contact's numeric **id** (shown in the
-   CLI contact list) and put it in `allow_contacts`.
-6. Uncomment the `Simplex` block in your manifest with that id (and/or the exact display name), then run
-   hades. Message the bot → a gated turn replies.
+   (`/ac <name>`, or set `auto_accept = true`). Then run **`/contacts`** — it shows the contact's
+   **display name** (the terminal CLI does not print the numeric id). Use that exact name in
+   `allow_contacts` (a name is the practical path — a numeric id is only obtainable via the WS API
+   `/_contacts 1`, and is unnecessary since manual acceptance already makes the name trustworthy).
+6. Uncomment/activate the `Simplex` block in your manifest with that name (or a numeric id), then run
+   hades. Message the bot → a gated turn replies. **LIVE-VALIDATED 2026-07-11** (phone → hades reply,
+   allowlist by display name).
 
 **Gotchas.**
 - **No token, loopback only.** The WS API is unauthenticated by design — bind the daemon to `127.0.0.1`.
   Anyone who can reach the port can drive the daemon, so do not expose it on a LAN/public interface.
-- **`allow_contacts` is mandatory** (else `MalConfig`). Prefer **numeric ids** — a display name is
-  spoofable: with an open address a stranger can name themselves like an allowlisted display name and be
-  admitted. Ids are assigned locally by the daemon and cannot be spoofed.
+- **`allow_contacts` is mandatory** (else `MalConfig`). A **display name is the practical choice** — it is
+  what `/contacts` shows, and with `auto_accept = false` (default) it is trustworthy because you accepted
+  that contact by hand. A name is only spoofable when combined with `auto_accept = true` on an open address
+  (a stranger names themselves like an allowlisted contact and is auto-admitted); if you enable auto-accept,
+  allowlist by a numeric id instead (obtainable via the WS API `/_contacts 1` — ids are daemon-assigned and
+  cannot be spoofed).
 - **`auto_accept = false` (default) is the safe choice.** With `auto_accept = true` **and** an open
   address, the name-spoof path above lets a stranger both connect and (if you allowlist by name) drive the
   agent. Keep manual acceptance, or allowlist strictly by numeric id.
