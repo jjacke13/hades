@@ -136,10 +136,12 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | Key | What it does | Default | Notes |
 |---|---|---|---|
 | `native` | Path (+args) to a subprocess tool binary. | — | Split on whitespace into argv; probed once with `{"call":"describe"}`. |
-| `mcp` | MCP server command (alternative to `native`). | — | MCP tools are **not** announced to the LLM yet (discovery deferred). |
+| `mcp` | Local MCP server command (stdio transport, spawned per exchange). | — | Tools DISCOVERED at boot and announced as `<block>__<tool>` (see below). |
+| `mcp_url` | Remote MCP server URL (Streamable HTTP transport). | — | Same discovery/announce; Bearer auth via `api_key_env`. |
+| `api_key_env` | Env var holding the Bearer token for `mcp_url`. | — | Env-only (never in the manifest); absent → no auth header. Ignored for `native`/`mcp`. |
 | `timeout_s` | Per-tool subprocess cap. | `0` → the runner default **30s** (`ToolRunner::timeout_s_`) | Overrides the 30s default for this tool only. |
 
-A `Tool` block with neither `native` nor `mcp` is silently ignored.
+A `Tool` block with none of `native`/`mcp`/`mcp_url` is silently ignored.
 
 **The runner-wide default (30s) is NOT manifest-tunable.** `wire_agent` calls the ToolRunner's
 `on_start` with an **empty** block, so its `timeout` key never sees the manifest. Use per-tool
@@ -178,6 +180,50 @@ and retry"`, and the agent recovers by re-reading (no confirmation prompt; works
 turns too). Operators see the injected `expect_version` inside `TOOL_REQUEST` in the Eventlog. A file
 the agent never read is not gated (staleness only); writes made via `shell` are invisible to the
 guard until the next `fs_read`. `write_file` writes atomically (tmp + rename, mode preserved).
+
+### MCP servers — discovery, naming, gating
+
+One `Tool` block = one MCP **server** (not one tool). At boot (registry warm) hades performs a
+`tools/list` exchange per server and announces every discovered tool to the LLM as
+**`<block>__<toolname>`** — e.g. block `weather` exposing `get_alerts` announces
+`weather__get_alerts`. The prefix guarantees a server can never shadow a native tool name
+(`fs_read`, `shell`, …) and inherit its capability verdict. Exactly ONE of
+`native | mcp | mcp_url` per block, and an mcp block name must be `[A-Za-z0-9_-]{1,64}`
+without `__` — both enforced at launch (`MalConfig`). Discovered tool names are themselves
+charset-gated the same way (`[A-Za-z0-9_-]{1,64}`): a name with provider-illegal characters
+(`/`, space, …) is skipped rather than 400 the whole tools array at the LLM API. Duplicate
+discovered names dedup first-wins — a buggy server listing a name twice announces it once.
+
+    # local (stdio) server — needs its runtime (node/python) on the box
+    Tool = weather { mcp = npx -y @h1deya/mcp-server-weather }
+
+    # remote (Streamable HTTP) server — token via env, never in the manifest
+    Tool = linear
+    {
+      mcp_url     = https://mcp.linear.example/mcp
+      api_key_env = LINEAR_MCP_KEY
+      timeout_s   = 60
+    }
+
+**Transport.** `mcp` spawns the command per exchange (one-shot: initialize + request over
+newline-delimited JSON-RPC on stdio). `mcp_url` speaks MCP Streamable HTTP: JSON-RPC over
+POST, `Mcp-Session-Id` honored, responses accepted as plain JSON **or** SSE-framed, redirects
+disabled, best-effort session `DELETE`. Auth is Bearer-only — a server requiring OAuth login
+flows should be bridged through the stdio path instead: `Tool = x { mcp = npx -y mcp-remote
+https://server.example/mcp }`.
+
+**Gating.** Every `<block>__<tool>` maps to the `McpTool` capability: **confirm by default**
+(each call needs human approval; heartbeat/peer turns auto-deny), unless listed in the
+`capability_policy` scope `mcp_allow` (exact prefixed names, whitespace-separated; the single
+literal `*` allows every discovered MCP tool — that trusts every rostered server, prefer
+naming tools). `timeout_s` covers both the discovery exchange and each call.
+
+**Failure + trust notes.** A server that is down (or lists nothing) at boot degrades
+fail-soft: nothing announced, one stderr log line, and the legacy call-by-block-name path
+remains. `mcp_url` is operator-set (not LLM-chosen), so the private-net/SSRF gate does NOT
+apply to it — a loopback self-hosted server is legitimate; the gate stays on `http_fetch`.
+Discovered tool descriptions/schemas are server-controlled text entering the prompt — roster
+only servers you trust.
 
 ---
 
@@ -222,6 +268,7 @@ built-in `capability_of` table (the authority — a tool can't grant itself perm
 | `net_deny_hosts` | Whitespace-separated host substrings hard-vetoed for `http_fetch`. | empty |
 | `block_private_net` | Hard-veto fetches to loopback / RFC1918 / link-local / obfuscated-numeric hosts (SSRF guard). | `true` |
 | `confirm_unscoped` | An out-of-`fs_read_allow` read → confirm (`true`) or hard-veto (`false`). | `true` |
+| `mcp_allow` | Discovered MCP tools (`<block>__<tool>`, whitespace-separated; literal `*` = all) allowed without confirm. | empty (every MCP call confirms) |
 
 Path matching is **lexical** (`./x`, `././x`, `x` all normalize together); a surviving `..`
 → confirm. Allow-matching is path-boundary-aware (`./workspace` does not also allow
@@ -251,6 +298,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | `use_skill` | SkillRead | **always allow**. |
 | `save_skill` | SkillWrite | **always allow** (enum kept distinct so a future policy can confirm-gate it). |
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |
+| `<block>__<tool>` (any MCP-discovered tool) | McpTool | in `mcp_allow` (or `*`) → allow; else **confirm** (heartbeat/peer turns auto-deny). |
 
 **Documented v1 gaps (v2):** DNS-rebind/TOCTOU (host string checked, cpr connects later),
 symlink path-deny bypass (lexical, not realpath), no positive net egress allowlist. `git_read` is

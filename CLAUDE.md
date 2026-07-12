@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-11)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **626/626 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no threads touched since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **655/655 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -252,6 +252,33 @@ scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps
   numeric id needed). The daemon CLI is NOT in nixpkgs (only the desktop app) → the flake ships
   `packages.x86_64-linux.simplex-chat-cli` (official v6.5.6 release binary, autoPatchelf'd: zlib/openssl/gmp/
   glibc) on the devShell PATH (`build: bfbfe8a`); the Pi uses the official aarch64 release binary directly.
+
+### MCP discovery + remote transport (shipped 2026-07-12, `feat/mcp-discovery`)
+MCP servers rostered as `Tool = <block> { mcp = <cmd> }` (stdio) or `{ mcp_url = <url>
+api_key_env = <ENV> }` (Streamable HTTP, Bearer-only; OAuth servers → `npx -y mcp-remote <url>`
+bridge on the stdio path) get their tools DISCOVERED at registry warm (`tools/list`, one
+exchange per server) and announced to the LLM as **`<block>__<tool>`** (prefix = no
+native-name shadowing; `.` illegal in OpenAI-compat function names). `inputSchema` passes
+1:1 into the ToolSpec; specs flow through the existing `wire_agent` → `set_tools` path (zero
+Arbiter changes). tools/call sends the server's OWN name via the registry's
+`mcp_real_names_` map (never string-split). **Fail-soft:** discovery failure/empty → stderr
+line + legacy call-by-block-name path, boot never blocked beyond the entry timeout.
+**Capability:** any `__`-containing name → `Capability::McpTool` → **confirm** by default
+(heartbeat/peer auto-deny) unless listed in `capability_policy { mcp_allow = <block>__<tool>
+… }` (whitespace list; literal `*` = all — trusts every rostered server). Launch gates
+(`MalConfig`): exactly one of `native|mcp|mcp_url`; mcp block names `[A-Za-z0-9_-]{1,64}`
+without `__`. HTTP transport: cpr POSTs, `Mcp-Session-Id` lifecycle, plain-JSON or
+SSE-framed replies, redirects off, best-effort DELETE; `mcp_url` is operator-set → exempt
+from the private-net gate (documented). Per-exchange one-shot (stdio spawn per call) kept —
+v2 seam: warm persistent child. Docs: manifest-reference §4 MCP subsection + capability
+rows. Pieces: `src/apps/tool_runner/tool_runner.cpp` (transports + discovery),
+`include/hades/tool/{registry,mcp_adapter}.h`, `src/behaviors/capability_policy.cpp`
+(McpTool), `app/agent_wiring.cpp` (validation + mcp_allow), `tests/test_mcp_{adapter,discovery}.cpp`,
+`tests/test_wiring_mcp.cpp`, `tests/fake_mcp_server.sh`. dev.hades example NOT committed
+(user's live file) — paste-ready blocks live in manifest-reference §4. **Two review-hardening
+fixes landed post-plan:** discovered tool names are charset-gated `[A-Za-z0-9_-]{1,64}` (a
+provider-illegal name is skipped, not left to 400 the whole tools array) and duplicate
+discovered names dedup first-wins (a server listing a name twice announces it once).
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -899,8 +926,7 @@ replying over email, Telegram-equivalent — Auth-Results gate, backlog drain-an
 threading, NOTIFY_USER email sink) stays a future item with its seeds in that spec.
 
 ## Other open work
-Memory system v2 (work-list above — Vaios: revisit soon) · MCP tool discovery (MCP servers can be called but
-aren't announced to the LLM) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
+Memory system v2 (work-list above — Vaios: revisit soon) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
 (positive net allowlist / realpath / DNS-rebind / **per-origin exec scopes** — so a `peer:` turn gets a
 narrower exec_allow than a human, the proper fix for the email-skill peer-read caveat) · telegram v2 (UTF-8-aware 4096 split · group chats ·
 persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate + api-seam pattern) · bridge v2
