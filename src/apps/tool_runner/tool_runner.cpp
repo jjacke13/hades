@@ -5,7 +5,9 @@
 // mcp_adapter (MCP stdio call shim). Tools themselves are transient subprocesses
 // (tools/*.cpp binaries) — actions, not apps; run_subprocess lives in core/subprocess.
 
+#include <cstdlib>
 #include <sstream>
+#include <cpr/cpr.h>
 #include "hades/module/tool_runner.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"
@@ -207,8 +209,93 @@ nlohmann::json exchange(const ToolEntry& server, const nlohmann::json& request,
   return stdio_exchange(server.command, request, timeout_s);
 }
 
-nlohmann::json http_exchange(const ToolEntry&, const nlohmann::json&, double) {
-  return {{"error", "mcp: http transport not built"}};
+// Extract the id==2 JSON-RPC payload from an HTTP response body that is either plain JSON or
+// a one-off SSE stream (a Streamable-HTTP server MAY answer any POST as text/event-stream —
+// scan `data:` lines for the object with our id). Guarded parse: malformed lines are skipped.
+nlohmann::json parse_http_rpc(const std::string& content_type, const std::string& body) {
+  auto pick = [](const nlohmann::json& j) -> nlohmann::json {
+    if (j.is_object() && j.contains("id") && j["id"] == 2) {
+      if (j.contains("result")) return j["result"];
+      if (j.contains("error") && j["error"].is_object())
+        return nlohmann::json{
+            {"error", "mcp: server error: " + j["error"].value("message", std::string{"unknown"})}};
+    }
+    return nlohmann::json();   // null = not the reply we asked for
+  };
+  if (content_type.find("text/event-stream") != std::string::npos) {
+    std::istringstream in(body);
+    std::string line;
+    while (std::getline(in, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.rfind("data:", 0) != 0) continue;
+      std::string payload = line.substr(5);
+      if (!payload.empty() && payload.front() == ' ') payload.erase(0, 1);
+      auto r = pick(nlohmann::json::parse(payload, nullptr, false));
+      if (!r.is_null()) return r;
+    }
+    return {{"error", "mcp: no result in event stream"}};
+  }
+  auto r = pick(nlohmann::json::parse(body, nullptr, false));
+  if (!r.is_null()) return r;
+  return {{"error", "mcp: malformed http response"}};
+}
+
+// Streamable HTTP exchange: initialize (capture Mcp-Session-Id) -> initialized notification
+// (best-effort) -> the request -> best-effort DELETE teardown. Bearer comes from the entry's
+// api_key_env (env-only, never logged). Redirects OFF (http_fetch precedent). The url is
+// OPERATOR-set in the manifest (not LLM-chosen), so no private-net gate applies here.
+nlohmann::json http_exchange(const ToolEntry& server, const nlohmann::json& request,
+                             double timeout_s) {
+  const std::string& url = server.command;
+  if (url.empty()) return {{"error", "mcp: empty url"}};
+  std::string bearer;
+  if (!server.api_key_env.empty())
+    if (const char* v = std::getenv(server.api_key_env.c_str()); v && *v) bearer = v;
+  auto headers = [&](const std::string& session) {
+    cpr::Header h{{"Content-Type", "application/json"},
+                  {"Accept", "application/json, text/event-stream"}};
+    if (!bearer.empty()) h["Authorization"] = "Bearer " + bearer;
+    if (!session.empty()) h["Mcp-Session-Id"] = session;
+    return h;
+  };
+  const cpr::Timeout t{static_cast<long>(timeout_s * 1000)};
+
+  nlohmann::json init{{"jsonrpc", "2.0"},
+                      {"id", 1},
+                      {"method", "initialize"},
+                      {"params",
+                       {{"protocolVersion", "2024-11-05"},
+                        {"capabilities", nlohmann::json::object()},
+                        {"clientInfo", {{"name", "hades"}, {"version", "0.1.0"}}}}}};
+  auto r1 = cpr::Post(cpr::Url{url}, headers(""), cpr::Body{init.dump()}, t,
+                      cpr::Redirect{false});
+  if (r1.error.code != cpr::ErrorCode::OK)
+    return {{"error", "mcp: http error: " + r1.error.message}};
+  if (r1.status_code >= 400)
+    return {{"error", "mcp: http " + std::to_string(r1.status_code) + " on initialize"}};
+  std::string session;
+  if (auto it = r1.header.find("Mcp-Session-Id"); it != r1.header.end()) session = it->second;
+
+  cpr::Post(cpr::Url{url}, headers(session),
+            cpr::Body{nlohmann::json{{"jsonrpc", "2.0"},
+                                     {"method", "notifications/initialized"}}.dump()},
+            t, cpr::Redirect{false});   // best-effort; spec says 202
+
+  auto r3 = cpr::Post(cpr::Url{url}, headers(session), cpr::Body{request.dump()}, t,
+                      cpr::Redirect{false});
+  nlohmann::json out;
+  if (r3.error.code != cpr::ErrorCode::OK)
+    out = {{"error", "mcp: http error: " + r3.error.message}};
+  else if (r3.status_code >= 400)
+    out = {{"error", "mcp: http " + std::to_string(r3.status_code)}};
+  else {
+    std::string ct;
+    if (auto it = r3.header.find("Content-Type"); it != r3.header.end()) ct = it->second;
+    out = parse_http_rpc(ct, r3.text);
+  }
+  if (!session.empty())
+    cpr::Delete(cpr::Url{url}, headers(session), t, cpr::Redirect{false});   // best-effort
+  return out;
 }
 
 }  // namespace
