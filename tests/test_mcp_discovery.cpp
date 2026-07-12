@@ -86,3 +86,20 @@ TEST(McpDiscovery, EmptyToolNamesSkipped) {
   ASSERT_EQ(specs.size(), 1u);
   EXPECT_EQ(specs[0].name, "srv__ok_tool");
 }
+
+TEST(McpDiscovery, DuplicateToolNamesDedupedFirstWins) {
+  // A buggy/hostile server listing the same tool name twice must NOT announce a duplicate
+  // function name (providers reject a tools array with duplicates -> the whole turn 400s).
+  // First-wins across specs_, routing, and the real-name map alike.
+  ::setenv("FAKE_MCP_LIST_REPLY",
+           R"({"jsonrpc":"2.0","id":2,"result":{"tools":[)"
+           R"({"name":"dup","description":"first","inputSchema":{"type":"object"}},)"
+           R"({"name":"dup","description":"second"}]}})", 1);
+  ToolRegistry reg;
+  reg.add_from_block(mcp_block("srv", FAKE_MCP_SERVER));
+  auto specs = reg.specs(10.0);
+  ASSERT_EQ(specs.size(), 1u);
+  EXPECT_EQ(specs[0].name, "srv__dup");
+  EXPECT_EQ(specs[0].description, "first");
+  EXPECT_EQ(reg.mcp_real_name("srv__dup"), "dup");
+}

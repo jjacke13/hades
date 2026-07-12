@@ -132,6 +132,10 @@ void ToolRegistry::ensure_warm(double timeout_s) const {
           const std::string real = disc.value("name", "");
           if (real.empty()) continue;
           const std::string prefixed = t.name + "__" + real;
+          // Dedup by announced name, first-wins across ALL THREE caches: an unconditional
+          // spec push with first-wins emplace below would announce DUPLICATE function names
+          // (providers 400 the whole tools array) while routing kept only the first.
+          if (by_tool_name_.count(prefixed)) continue;
           specs_.push_back({prefixed, disc.value("description", ""),
                             disc.contains("inputSchema") && disc["inputSchema"].is_object()
                                 ? disc["inputSchema"]
