@@ -5,6 +5,7 @@
 // mcp_adapter (MCP stdio call shim). Tools themselves are transient subprocesses
 // (tools/*.cpp binaries) — actions, not apps; run_subprocess lives in core/subprocess.
 
+#include <cstdio>
 #include <cstdlib>
 #include <sstream>
 #include <cpr/cpr.h>
@@ -75,7 +76,8 @@ void ToolRunner::on_attach(Blackboard& bb) {
         }
       }
     } else {  // mcp | mcp_http
-      content = mcp_call(*te, name, args, timeout);
+      const std::string real = reg_.mcp_real_name(name);
+      content = mcp_call(*te, real.empty() ? name : real, args, timeout);
       ok = content.is_object() && !content.contains("error");
     }
 
@@ -117,9 +119,38 @@ void ToolRegistry::ensure_warm(double timeout_s) const {
   by_tool_name_.clear();
   for (const auto& t : tools_) {
     if (t.kind != "native") {
-      // MCP tool discovery is deferred (MVP). Route by the block name so a
-      // TOOL_REQUEST naming the block still reaches this entry.
-      by_tool_name_.emplace(t.name, &t);
+      // MCP discovery: one tools/list exchange per server. Each discovered tool announces as
+      // <block>__<name> — the prefix guarantees a server can never shadow a native tool name,
+      // and capability_of maps any "__" name to McpTool (mcp_allow-gated). tools/call needs
+      // the server's OWN name, kept in mcp_real_names_ (never recovered by string-splitting).
+      const double t_timeout = t.timeout_s > 0.0 ? t.timeout_s : timeout_s;
+      auto listed = mcp_list(t, t_timeout);
+      bool any = false;
+      if (listed.is_object() && listed.contains("tools") && listed["tools"].is_array()) {
+        for (const auto& disc : listed["tools"]) {
+          if (!disc.is_object()) continue;
+          const std::string real = disc.value("name", "");
+          if (real.empty()) continue;
+          const std::string prefixed = t.name + "__" + real;
+          specs_.push_back({prefixed, disc.value("description", ""),
+                            disc.contains("inputSchema") && disc["inputSchema"].is_object()
+                                ? disc["inputSchema"]
+                                : nlohmann::json::object()});
+          by_tool_name_.emplace(prefixed, &t);
+          mcp_real_names_.emplace(prefixed, real);
+          any = true;
+        }
+      }
+      if (!any) {
+        // Fail-soft: discovery failed or returned nothing -> keep the legacy call-by-block-
+        // name path so a down server degrades to pre-discovery behavior; boot is never
+        // blocked beyond this entry's timeout.
+        std::fprintf(stderr, "[hades] mcp discovery failed for '%s': %s\n", t.name.c_str(),
+                     listed.is_object() && listed.contains("error")
+                         ? listed["error"].dump().c_str()
+                         : "no tools");
+        by_tool_name_.emplace(t.name, &t);
+      }
       continue;
     }
     auto r = run_subprocess(split_ws(t.command), R"({"call":"describe"})", timeout_s);
