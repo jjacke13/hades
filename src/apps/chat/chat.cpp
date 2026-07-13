@@ -15,8 +15,7 @@
 #include <ostream>
 #include <string>
 #include <unistd.h>
-#include <readline/history.h>
-#include <readline/readline.h>
+#include <editline/readline.h>   // libedit (BSD-3) readline-compat: readline() + add_history()
 namespace hades {
 
 namespace {

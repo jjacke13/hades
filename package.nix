@@ -4,7 +4,7 @@
 # bare Debian aarch64 (Raspberry Pi OS Lite) with zero deps: scp the whole $out and run ./bin/hades.
 # Only the SHIPPED binaries are built (not hades_tests → no static gtest link); the native test suite
 # gates in the dev shell instead (doCheck = false).
-{ stdenv, cmake, ninja, pkg-config, libcpr, nlohmann_json, httplib, readline, gtest }:
+{ stdenv, cmake, ninja, pkg-config, libcpr, nlohmann_json, httplib, libedit, gtest }:
 let
   bins = [
     "hades" "hades-scope"
@@ -21,7 +21,7 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = [ cmake ninja pkg-config ];
   # gtest is only needed for find_package at CONFIGURE time (tests are not built).
-  buildInputs = [ libcpr nlohmann_json httplib readline gtest ];
+  buildInputs = [ libcpr nlohmann_json httplib libedit gtest ];
 
   cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" ];
   doCheck = false;

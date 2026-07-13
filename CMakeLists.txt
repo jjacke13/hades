@@ -9,7 +9,7 @@ find_package(httplib REQUIRED)
 find_package(GTest REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(READLINE REQUIRED IMPORTED_TARGET readline)   # GNU readline — REPL line editing
+pkg_check_modules(READLINE REQUIRED IMPORTED_TARGET libedit)    # libedit (BSD-3) — REPL line editing via its readline-compat API (GNU readline is GPL-3, incompatible with the MIT release)
 enable_testing()
 
 add_library(hades_core src/core/config.cpp)

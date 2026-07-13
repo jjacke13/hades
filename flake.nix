@@ -72,7 +72,7 @@
             curl           # libcurl + curl CLI (cpr links it; explicit for debugging)
             nlohmann_json  # JSON — LLM messages + MCP JSON-RPC (NOT the manifest; that's plain-text)
             httplib        # cpp-httplib: header-only HTTP server — the `--serve` front-end module
-            readline       # GNU readline — line editing in the interactive chat REPL (GPL-3)
+            libedit        # BSD-3 line editing (readline-compat API) — REPL; replaced GPL-3 GNU readline for the MIT release
             gtest          # GoogleTest — TDD
           ];
           # Manifest is a plain-text MOOS-style block format parsed by hades itself
