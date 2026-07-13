@@ -77,7 +77,7 @@ Secrets are env-var-only — never in the manifest, redacted in the event log. T
 
 ### Status
 
-Personal project, in active development, moving toward a public release. 655/655 tests green under ASan+UBSan and TSan. License: MIT (intended for the public release).
+Personal project, in active development, moving toward a public release. 655/655 tests green under ASan+UBSan and TSan. License: [MIT](LICENSE) — the whole linked dependency stack is permissive (MIT/BSD/Apache-2.0/curl).
 
 ---
 

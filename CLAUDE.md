@@ -37,7 +37,7 @@ model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
 **two memory layers** (core + archival, see below) · a **skills system** (loadable instruction packs, see below) ·
 layered **system prompt** (SOUL/USER static +
-live core MEMORY) · four front-ends: **stdin REPL** (GNU readline — arrows/history/Ctrl-A/E, colored
+live core MEMORY) · four front-ends: **stdin REPL** (libedit — arrows/history/Ctrl-A/E, colored
 labels), **HTTP `--serve`** (browser web UI + JSON API, see below), a **Telegram bot** (long-poll,
 allowlisted, see below), and a **SimpleX front-end** (local `simplex-chat` daemon over an in-house WS
 client, see below) — all serialized by one shared **TurnGate** · an **agent↔agent Bridge**
@@ -695,7 +695,7 @@ nix develop --command ./build/hades-scope session.log              # replay (key
 ```
 Targets: `hades_core` (lib), `hades` (app), `hades-{fs-read,shell,write-file,list-dir,http-fetch,save-memory,core-memory,use-skill,save-skill,ask-agent,grep,glob,edit-file,git-read,run-command,schedule-task,list-tasks,cancel-task}` (tools),
 `hades-scope` (CLI), `hades_tests`. Stack: libcpr, nlohmann_json, **httplib** (nixpkgs attr `httplib`),
-**readline** (REPL line editing, GPL-3, via pkg-config), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
+**libedit** (REPL line editing via readline-compat API, BSD-3, via pkg-config — swapped from GPL-3 GNU readline 2026-07-13 for the MIT release), gtest, std::thread. Manifest: `manifests/dev.hades`. Persona: `prompts/soul.md`.
 
 ### aarch64 static cross-build (shipped 2026-07-05, `feat/aarch64-cross`) — run on a Raspberry Pi / Debian aarch64
 ```bash
@@ -1142,7 +1142,7 @@ in this doc, not the tree):
   working-tree churn; review/commit the agent's pins as curated standing facts (or gitignore it).
 - `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so
   agent-written `skills/<name>/SKILL.md` show as working-tree churn to review/commit (or gitignore it).
-- Interactive REPL uses readline only when stdin is a **real TTY**; piped/test input falls back to
+- Interactive REPL uses libedit (readline-compat) only when stdin is a **real TTY**; piped/test input falls back to
   `std::getline` (keeps the injected-stream test seam). Arrow-key editing verified live 2026-06-29.
 - **Embedding `endpoint` must be the BASE url, NOT `.../embeddings`** — the HTTP provider appends `/embeddings`.
   PPQ: `endpoint = https://api.ppq.ai/v1` (→ `…/v1/embeddings`). Setting `…/v1/embeddings` → `…/embeddings/embeddings`
