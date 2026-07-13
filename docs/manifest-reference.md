@@ -61,8 +61,9 @@ carry only one pair. When in doubt, use a multi-line block.
   is kept** (never 0). Most numeric keys additionally require **> 0** (`set_pos_double_on_string`);
   a few keys parse 0 specially (noted where they do).
 - bools: `true`/`1` → true, `false`/`0` → false; anything else keeps the default.
-- lists: a few keys are whitespace-separated lists (capability scopes, `allow_users`,
-  `share_out`) — see each.
+- lists: a few keys are whitespace-separated lists (most capability scopes, `allow_users`,
+  `share_out`) — see each. One exception: `exec_allow` is **comma**-separated (its entries are
+  command prefixes that contain spaces; see §5).
 
 ---
 
@@ -74,7 +75,7 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 
 | Module name | What it is | Omitting it |
 |---|---|---|
-| `llm` | LLM bridge (calls the provider). **Required.** | Binary errors: "missing llm/arbiter — cannot take a turn". |
+| `llm` | LLM bridge (calls the provider). **Required.** | Binary refuses to boot (roster-is-missing-llm/arbiter error). |
 | `arbiter` | The helm: runs the turn loop, gates actions. **Required.** | Same error as above. |
 | `tool_runner` | Runs `Tool` blocks as subprocesses. | No tools available; Arbiter gets an empty tool list. |
 | `memory` | Keyword-ranked archival recall (reads `Memory` block). | No keyword memory retrieval. |
@@ -91,9 +92,11 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 **Front-end requirement.** After building, the binary needs *some* front-end or it errors:
 `--serve` uses `serve`; otherwise it runs `chat`'s REPL; if there is no `chat`, it blocks on
 `telegram` (poll), `simplex` (event thread), `bridge` (listener), or `heartbeat` (timer); with none
-of those it errors "no chat module".
+of those it errors (no-chat-module error).
 
-dev.hades roster: `llm tool_runner memory chat arbiter serve skills embedding_memory bridge`.
+dev.hades roster (as committed): `llm tool_runner memory chat arbiter serve skills
+embedding_memory bridge` — `telegram`, `simplex`, and `heartbeat` ship as commented examples to
+uncomment per deployment.
 
 ---
 
@@ -245,6 +248,10 @@ short-circuits first, leaving `avoid_destructive` as the destructive-pattern bac
 |---|---|---|
 | `hard_cap_usd` | Hard-veto once cumulative LLM spend reaches this many USD. | `0` |
 
+**Set it > 0.** `0` does NOT mean "unlimited" — the veto fires when spend `>=` cap, and `0 >= 0`
+is already true, so rostering this objective with no cap (or `0`) hard-vetoes **every** action,
+including plain answers: the agent is bricked. Every shipped manifest sets `hard_cap_usd = 1.0`.
+
 Spend is metered from `Session.price_per_mtok` × tokens. Embeddings are **not** metered.
 
 ### `avoid_destructive`
@@ -300,6 +307,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | `use_skill` | SkillRead | **always allow**. |
 | `save_skill` | SkillWrite | **always allow** (enum kept distinct so a future policy can confirm-gate it). |
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |
+| `schedule_task`, `list_tasks`, `cancel_task` | SelfSchedule | **always allow** here — gated instead by the separate `SelfScheduleGuard` objective + in-tool caps (see §15 self-scheduling). |
 | `<block>__<tool>` (any MCP-discovered tool) | McpTool | in `mcp_allow` (or `*`) → allow; else **confirm** (heartbeat/peer turns auto-deny). |
 
 **Documented v1 gaps (v2):** DNS-rebind/TOCTOU (host string checked, cpr connects later),
@@ -330,7 +338,7 @@ whitespace-free.
 
 | Key | What it does | Default |
 |---|---|---|
-| `provider` | `http` (OpenAI-compat `/embeddings`) or `subprocess`. | `subprocess` |
+| `provider` | `http` (OpenAI-compat `/embeddings`) or `subprocess`. **Anything else silently falls back to `subprocess`** (unlike `Stt`/`Tts`, which refuse to boot on an unknown provider) — a typo here means a broken embedder that fail-softs to keyword-only recall. | `subprocess` |
 | `command` | Subprocess embedder command (when `provider = subprocess`). | `""` |
 | `endpoint` | **Base** URL (when `provider = http`). | `""` |
 | `api_key_env` | Env var name for the embed key (http provider). | `HADES_EMBED_KEY` |
@@ -493,7 +501,7 @@ cannot receive audio). No `Module =` line is needed; the block's presence is the
 | `model` | TTS model id (http provider). | `deepgram_aura_2` | Sent as the JSON `model` field. PPQ: `deepgram_aura_2` (Deepgram Aura) or an ElevenLabs model (`eleven_multilingual_v2`, `eleven_flash_v2_5`). For OpenAI-proper use `tts-1`/`gpt-4o-mini-tts`. |
 | `voice` | Voice id (http provider). | `aura-2-arcas-en` | Sent as the JSON `voice` field. PPQ Aura voices: `aura-2-{arcas,thalia,andromeda,helena,apollo,aries}-en`; ElevenLabs = a voice id. OpenAI = `alloy` etc. |
 | `api_key_env` | **Name of the env var** holding the TTS key (http provider). | `HADES_API_KEY` | Resolved from the env; empty → sent with no bearer. Redacted in `session.log`. |
-| `max_chars` | Replies longer than this are NOT spoken (the text reply is still sent). | `4000` | Guards against a multi-minute synth. **Set ≤ the provider's input limit — PPQ: 2000 (Deepgram) / 5000 (ElevenLabs); over the limit the API 422s → fail-soft skip.** Bad/0/garbage → default. |
+| `max_chars` | Replies longer than this are NOT spoken (the text reply is still sent). | `4000` | Guards against a multi-minute synth. **Set ≤ the provider's input limit — PPQ: 2000 (Deepgram) / 5000 (ElevenLabs); over the limit the API 422s → fail-soft skip.** Non-numeric or `0` → default; but this key parses loosely — `10x` reads as `10`, and a negative wraps huge (write a plain positive integer). |
 | `timeout_s` | Per-synthesis timeout (HTTP call or subprocess). | `60` | Bad/0/garbage → default. |
 | `command` | Subprocess wrapper (command provider). | — | **Required for `command`** (empty → `MalConfig`). Whitespace-split into argv; reply TEXT on stdin, ogg-opus bytes on stdout. See `tools/piper_reference.sh`. |
 
@@ -603,9 +611,46 @@ message at turn start (both empty → nothing, backward-compatible):
 **Security.** `/card` is secret-gated (not public); `caps` is a summary so a peer never learns your
 literal allowlist; a peer can never write a non-`PEER.*` local bus key (rename-on-arrival, all types).
 
+**Worked example — a two-agent LAN pair.** Same `HADES_BRIDGE_SECRET` exported on both machines
+(gitignored `.env` you `source`); `host = 0.0.0.0` on both (the loopback default refuses LAN peers
+before any firewall matters — and open the port in the firewall if the OS has one). Each side
+rosters `Module = bridge` + the `ask_agent` tool (which requires `Bridge.name` and at least one
+`Peer`).
+
+On the desktop (`192.168.0.107`):
+
+    Module = bridge
+    Tool = ask_agent { native = ./build/hades-ask-agent }
+
+    Bridge
+    {
+      name = hades1
+      host = 0.0.0.0
+      port = 9090
+    }
+    Peer = pi0 { url = http://192.168.0.121:9090 }
+
+On the Pi (`192.168.0.121`), the mirror image:
+
+    Module = bridge
+    Tool = ask_agent { native = ./bin/hades-ask-agent }
+
+    Bridge
+    {
+      name = pi0
+      host = 0.0.0.0
+      port = 9090
+    }
+    Peer = hades1 { url = http://192.168.0.107:9090 }
+
+Boot both; each pulls the other's `/card` at start (and every `discover_interval_s`), so "what can
+pi0 do?" answers straight off the card and "ask pi0 …" delegates via `ask_agent`. Remember the
+peer-turn rule: pi0 answers with its own gates, confirm-band actions auto-denied.
+
 **Gotchas.**
 - Inbound `/ask` and `/share` are auth-gated (shared secret header) **and** peer-allowlisted (`from`
-  must be a known `Peer`) → **403** on bad secret / unknown peer / malformed body.
+  must be a known `Peer`) → **403** on bad secret / unknown peer. Other bad requests (malformed
+  JSON, missing message, hop limit, oversized payload) return HTTP 200 with `{ok:false, error:…}`.
 - A peer `/ask` drives a **normal turn** through *this* agent's own objectives; a confirm-gated
   action inside a peer turn is **auto-denied** (peers can't grant human confirmation).
 - Shares arrive as bus key `PEER.<from>.<key>` (rename-on-arrival — a peer can't inject a local key).
@@ -746,7 +791,7 @@ New signals this module introduces (visible in the Eventlog / `hades-scope`):
 |---|---|---|
 | `TURN_ORIGIN` | `heartbeat:<name>` | Posted at the start of each self-turn (a new origin value alongside `human` and `peer:<name>`). `PeerLoopGuard` treats it as non-peer, so the turn may call `ask_agent`. |
 | `NOTIFY_USER` | `{ text, from }` (`from = heartbeat:<name>`) | A `notify = true` tick whose reply is non-empty and not `SILENT`. The Telegram module (§10) is the sink. |
-| `HEARTBEAT_SKIPPED` | the entry name | The tick's minute matched but the TurnGate was held by a live human/peer turn (skip-if-busy). |
+| `HEARTBEAT_SKIPPED` | the entry name (or `<name> (confirm pending)`) | The tick fired but was skipped: the TurnGate was held by a live human/peer turn (skip-if-busy), or a confirm prompt from an earlier turn is still outstanding. |
 | `HEARTBEAT_ERROR` | `<name> …` (the entry name + a reason) | The tick threw, or the self-turn hit its idle timeout. |
 
 ### Worked example
@@ -823,12 +868,13 @@ both present; it guards only the create path — `list_tasks`/`cancel_task` are 
   `Heartbeat = <name>` entries are operator-owned and **not** listed.
 - **`cancel_task`** — `{ id }` (from `list_tasks`) → removes it.
 
-**Store schema** (`.hades/cron.jsonl`, append-only, folded by id — an operator can read it):
+**Store schema** (`.hades/cron.jsonl`, append-only, folded by id — an operator can read it; every
+`add` record carries all fields — `when`/`cooldown_s` are `null`/`60` on non-watch kinds):
 
 ```
-{"op":"add","id":"t<epoch>-<hex>","name":"nightly","kind":"cron","schedule":"*/15 * * * *","fire_epoch":null,"prompt":"…","notify":true,"created":1751900000}
-{"op":"add","id":"t<epoch>-<hex>","name":"remind","kind":"once","schedule":null,"fire_epoch":1751986800,"prompt":"…","notify":true,"created":1751900050}
-{"op":"add","id":"t<epoch>-<hex>","name":"watch","kind":"when","schedule":null,"fire_epoch":null,"when":"PEER.pi0.card changes","cooldown_s":60,"prompt":"…","notify":true,"created":1751900100}
+{"op":"add","id":"t<epoch>-<hex>","name":"nightly","kind":"cron","schedule":"*/15 * * * *","fire_epoch":null,"prompt":"…","notify":true,"created":1751900000,"when":null,"cooldown_s":60}
+{"op":"add","id":"t<epoch>-<hex>","name":"remind","kind":"once","schedule":null,"fire_epoch":1751986800,"prompt":"…","notify":true,"created":1751900050,"when":null,"cooldown_s":60}
+{"op":"add","id":"t<epoch>-<hex>","name":"watch","kind":"when","schedule":null,"fire_epoch":null,"prompt":"…","notify":true,"created":1751900100,"when":"PEER.pi0.card changes","cooldown_s":60}
 {"op":"cancel","id":"t<epoch>-<hex>"}    # cancel_task
 {"op":"done","id":"t<epoch>-<hex>"}      # the module, after a one-shot fires
 ```

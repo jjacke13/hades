@@ -620,8 +620,8 @@ unaffected). dev.hades ships the block **COMMENTED** (a single-agent default has
 each machine is the deploy story).
 - **Inbound** (`BridgeModule`, `type()=="bridge"`, `src/module/bridge_module.cpp`): an httplib listener on its
   **own thread** exposes **`POST /ask`** and **`POST /share`**. Both are **auth-gated** (shared `secret_env`
-  header) + **peer-allowlisted** (`from` must be a configured `Peer` name) → **403** otherwise (bad secret,
-  unknown peer, malformed body all map to 403). `/ask` drives a **normal turn** through THIS agent (lock the
+  header) + **peer-allowlisted** (`from` must be a configured `Peer` name) → **403** on auth failure (bad secret,
+  unknown peer → 403; a malformed body returns 200 + `{ok:false,error}`). `/ask` drives a **normal turn** through THIS agent (lock the
   shared **TurnGate** → post `USER_MESSAGE` prefixed `(from peer agent "name")` → `run_until` → reply); the turn
   passes **this agent's own objectives/gates** (a peer's request is not privileged). `/share` stores the payload
   under **`PEER.<from>.<key>`** (fixed v1 rename-on-arrival, collision-proof — a peer can never inject a local
@@ -954,7 +954,10 @@ inbound-share whitelist · /health presence · ask-offload · **per-peer answer/
 can't read out the receiver's full memory — see the Bridge SECURITY note) · **full TUI front-end** (noted
 2026-07-13, design C of the status-line brainstorm: ncurses alternate-screen front-end module — persistent
 status bar + scrolling chat region; a NEW front-end, fights libedit, weeks not hours; AGENT_STATUS is
-already the data feed).
+already the data feed) · **manifest-parse hardening trio** (from the 2026-07-13 newcomer audit — doc'd
+as gotchas, code fix pending: `stay_on_budget` cap `0`/absent bricks the agent → MalConfig or
+treat-as-disabled; unknown `Embedding.provider` silently falls back to subprocess → MalConfig like
+Stt/Tts; `Tts.max_chars` bare `stoul` accepts `10x`→10 and wraps negatives → strict parse).
 
 ### Noted 2026-07-10 (Vaios) — three new future items
 1. **Context-full behavior — DECIDE.** Today when a session grows past `history_budget_chars` (default
@@ -1134,7 +1137,7 @@ in this doc, not the tree):
   `Bridge.name` AND ≥1 `Peer` block to delegate anywhere. The shared **`secret_env`** (default
   `HADES_BRIDGE_SECRET`) is **REQUIRED** when the module is rostered — never in the manifest; redacted in
   `session.log`; keep it in the gitignored `.env` (same secret on every fleet member, v1). Inbound `/ask` and
-  `/share` are auth + peer-allowlist gated → **403** on bad secret / unknown `from` / malformed body. **TURN_ORIGIN
+  `/share` are auth + peer-allowlist gated → **403** on bad secret / unknown `from` (malformed body → 200 + `{ok:false,error}`). **TURN_ORIGIN
   convention:** every front-end MUST post `TURN_ORIGIN` at turn start (`human` for chat/serve/telegram,
   `peer:<name>` for bridge) — `PeerLoopGuard` reads it to hard-veto `ask_agent` on peer-origin turns (no forward =
   no loop; v1 `max_hops = 1`). `port = 0` → ephemeral bind; listener thread started by `hades_main` after wiring
