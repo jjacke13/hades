@@ -152,9 +152,11 @@ void ChatModule::run_repl(std::istream& in, std::ostream& out) {
 void ChatModule::run_repl_readline() {
   // readline computes the prompt's on-screen width to place the cursor, so the
   // non-printing ANSI bytes must be wrapped in \001..\002 (RL_PROMPT_{START,END}_IGNORE)
-  // or line editing miscounts columns on wrap.
+  // or line editing miscounts columns on wrap. The reset block sits BEFORE the trailing
+  // space: libedit silently drops an invisible block at the very END of the prompt (typed
+  // input would inherit the prompt color); a visible char after it makes the reset print.
   const std::string prompt =
-      color_ ? std::string("\001") + kBoldCyan + "\002" + "user> " + "\001" + kReset + "\002"
+      color_ ? std::string("\001") + kBoldCyan + "\002" + "user>" + "\001" + kReset + "\002" + " "
              : "user> ";
   while (true) {
     char* raw = readline(prompt.c_str());
