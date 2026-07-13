@@ -915,6 +915,32 @@ run it bound to loopback only.
 
 ---
 
+## 17. `status` module — the REPL stats line
+
+`src/apps/status/status.cpp`. **No config block** — `Module = status` in the roster is the whole
+setup (an unknown-key `Status` block would be ignored). A zero-config, threadless aggregator: it
+subscribes the traffic every turn already produces and posts one latest-value bus key,
+**`AGENT_STATUS`**:
+
+```json
+{"ctx_tokens": 12437, "spent_usd": 0.0372, "turn": 9, "model": "gpt-5.5",
+ "line": "[ctx 12.4k tok · $0.0372 · turn 9 · gpt-5.5]"}
+```
+
+- **`ctx_tokens`** = `prompt_tokens + completion_tokens` of the **last** LLM call — the real size of
+  the conversation the model is carrying (not a local estimate). `0` until the first call returns
+  usage numbers (e.g. after a failed call).
+- **`spent_usd`** mirrors `BUDGET_SPENT_USD` (cumulative for the process, the budget objective's
+  view). **`turn`** counts `USER_MESSAGE`s. **`model`** is captured from `LLM_REQUEST`.
+- **`/new`** resets `ctx_tokens` and `turn` (they describe the conversation); spend and model carry
+  over.
+- **Rendering:** the chat REPL prints `line` dim under each assistant reply. Without `Module =
+  status` the key is never posted and REPL output is byte-identical to before the module existed.
+  The raw fields are the seam for other consumers (a web/telegram `/status` — not built yet); the
+  module never touches the terminal itself — the REPL stays the terminal's only writer.
+
+---
+
 ## Appendix A — CLI flags
 
 `app/hades_main.cpp`.
