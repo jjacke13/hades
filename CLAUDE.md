@@ -944,13 +944,19 @@ can't read out the receiver's full memory — see the Bridge SECURITY note).
    analogue — natural memory-v2 tie-in: auto-extract facts BEFORE they fall off), auto-rotate to a fresh
    session (`/new` + carry-summary), a warning to the user, or a manifest-tunable mix. Brainstorm-first;
    overlaps memory v2's auto-extract work-list item.
-2. **Mongoose for HTTP — RESEARCH.** Evaluate the mongoose embedded C networking lib as the HTTP layer:
-   could replace cpp-httplib (serve/bridge listeners) and possibly the cpr client side with ONE dependency,
-   and natively brings WebSocket/SSE (the deferred streaming leg) + a smaller static-cross footprint for
-   the Pi builds. Research: license (mongoose is GPLv2 OR commercial dual-license — a real question for the
-   publishing plan; cpp-httplib is MIT), API fit vs the existing `authorize()`/httplib seams (serve, bridge,
-   telegram long-poll), TLS story under musl static, and whether the win justifies touching three stable
-   modules. Outcome = a written recommendation, not a port.
+2. **Mongoose for HTTP — RESEARCHED 2026-07-13, verdict REJECT** (opus web-verified;
+   `docs/research/2026-07-13-mongoose-http-research.md`, commit `434be9e`). Three independent kills:
+   (1) **license** — GPLv2-only/commercial dual; linking makes every distributed BINARY GPLv2 regardless
+   of MIT source headers → trap for downstream given the MIT publishing goal (civetweb is the MIT fork
+   that exists because mongoose left MIT); commercial = bespoke enterprise pricing; not in nixpkgs
+   (vendored amalgamation would put GPLv2 files in-tree). (2) **no "one dependency" win** — mongoose's
+   HTTP client can't replace cpr/curl (600s LLM POSTs, multipart, proxies, system-CA TLS) → curl stays,
+   only httplib would be replaced. (3) **architecture mismatch** — single-threaded event loop where a
+   blocking handler stalls all connections vs our minutes-blocking `run_until` handlers → `mg_wakeup()`
+   rewrite of both listeners; plus built-in TLS took 3 preauth-RCE CVEs (CVE-2026-5244/45/46, Apr 2026).
+   **Decision: keep httplib+cpr (both MIT). SSE streaming when picked up = httplib
+   `set_chunked_content_provider("text/event-stream", …)` — the real work is Arbiter partial-token
+   emits, HTTP-lib-independent. Server WS if ever needed: extend in-house RFC6455 codec or civetweb (MIT).**
 3. **Multiple concurrent sessions per agent — IF/HOW.** Today ONE agent = ONE live conversation: a single
    Arbiter `history_`, one session jsonl, and the TurnGate serializes chat/serve/telegram/bridge into that
    one thread of context (a Telegram turn and a web turn interleave into the SAME conversation). Question:
