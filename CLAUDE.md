@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-11)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **655/655 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **662/662 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -926,6 +926,24 @@ the capability-v2 **per-origin exec scopes** fix it properly (added to that back
 replying over email, Telegram-equivalent — Auth-Results gate, backlog drain-and-discard, In-Reply-To
 threading, NOTIFY_USER email sink) stays a future item with its seeds in that spec.
 
+### Status line (shipped 2026-07-13, `feat/status-module`) — `Module = status`, AGENT_STATUS + dim REPL line
+Terminal-cosmetics side quest, design A of the brainstorm (data producer ≠ surface — the terminal has ONE
+writer, ChatModule; a second module printing mid-edit would corrupt the libedit line). **`StatusModule`**
+(`src/apps/status/status.cpp`, `type()=="status"`, zero-config, no thread) subscribes the traffic every turn
+already produces — `USER_MESSAGE` (turn count), `LLM_REQUEST` (model), `LLM_RESPONSE` (**ctx_tokens =
+prompt+completion of the LAST call** — the real context measure), `BUDGET_SPENT_USD` (re-posts so sibling
+subscriber order can't lag the spend), `NEW_SESSION` (resets ctx/turn; spend stays process-cumulative) — and
+posts **`AGENT_STATUS`** `{ctx_tokens, spent_usd, turn, model, line}` (latest-value). ChatModule renders
+`line` **dim** under each reply via `print_status_()` (`bb_->get`, the SKILLS_ANNOUNCE pattern): no status
+module → key absent → output byte-identical (locked by test). Format:
+`[ctx 12.4k tok · $0.0372 · turn 9 · gpt-5.5]` (`format_status`, pure, tested). Raw fields are the seam for
+a web/telegram consumer later. Docs: manifest-reference §2 row. dev.hades NOT touched (user adds
+`Module = status` himself). **libedit prompt gotcha (found same day, `b2af9eb`):** libedit DROPS an
+invisible `\001..\002` block at the very END of the prompt — the kReset never printed and typed input
+rendered prompt-colored; fix = reset block BEFORE the prompt's trailing visible space. Verified headless by
+driving the real binary through a pty (`script -qec` + raw `\033[A`/`\033[D` bytes) — the arrows/history/
+width test method for any future REPL change.
+
 ## Other open work
 Memory system v2 (work-list above — Vaios: revisit soon) · persona switch · prompt caching · SSE streaming · settings UI · capability-v2
 (positive net allowlist / realpath / DNS-rebind / **per-origin exec scopes** — so a `peer:` turn gets a
@@ -933,7 +951,10 @@ narrower exec_allow than a human, the proper fix for the email-skill peer-read c
 persistent offset · webhook · more apps: Signal/Matrix/Discord on the TurnGate + api-seam pattern) · bridge v2
 (per-peer secrets/share-lists/confirm-policy · per-key rename · max_hops>1 · transport seam · discovery ·
 inbound-share whitelist · /health presence · ask-offload · **per-peer answer/memory-scope** so a peer turn
-can't read out the receiver's full memory — see the Bridge SECURITY note).
+can't read out the receiver's full memory — see the Bridge SECURITY note) · **full TUI front-end** (noted
+2026-07-13, design C of the status-line brainstorm: ncurses alternate-screen front-end module — persistent
+status bar + scrolling chat region; a NEW front-end, fights libedit, weeks not hours; AGENT_STATUS is
+already the data feed).
 
 ### Noted 2026-07-10 (Vaios) — three new future items
 1. **Context-full behavior — DECIDE.** Today when a session grows past `history_budget_chars` (default

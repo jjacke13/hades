@@ -24,6 +24,7 @@ namespace {
 constexpr const char* kBoldCyan   = "\033[1;36m";
 constexpr const char* kBoldGreen  = "\033[1;32m";
 constexpr const char* kBoldYellow = "\033[1;33m";
+constexpr const char* kDim        = "\033[2m";
 constexpr const char* kReset      = "\033[0m";
 
 // Generous IDLE ceiling for run_until — NOT a per-turn wall-clock cap. The timer
@@ -61,6 +62,7 @@ void ChatModule::on_attach(Blackboard& bb) {
     turn_done_ = true;
     if (!e.value.is_string()) return;
     print_assistant_(e.value.get<std::string>());
+    print_status_();   // dim stats line under the reply — only when a status module posts it
   });
   bb.subscribe("CONFIRM_REQUEST", [this](const Entry& e) {
     if (!in_ || !my_turn_) return;  // answer only THIS repl's own gated turn (see header note)
@@ -88,6 +90,21 @@ void ChatModule::print_assistant_(const std::string& msg) {
     (*out_) << "\n" << kBoldGreen << "assistant> " << kReset << msg << "\n\n";
   else
     (*out_) << "assistant> " << msg << "\n";
+}
+
+void ChatModule::print_status_() {
+  // Render the StatusModule's AGENT_STATUS (latest-value; absent when the module isn't
+  // rostered -> print nothing, output stays byte-identical for status-less agents). The
+  // terminal has one writer — the data producer never touches stdout, this surface does.
+  if (!out_ || !bb_) return;
+  auto st = bb_->get("AGENT_STATUS");
+  if (!st || !st->value.is_object()) return;
+  const std::string line = st->value.value("line", "");
+  if (line.empty()) return;
+  if (color_)
+    (*out_) << kDim << "  " << line << kReset << "\n\n";
+  else
+    (*out_) << "  " << line << "\n";
 }
 
 void ChatModule::abandon_turn_() {

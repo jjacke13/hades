@@ -80,6 +80,7 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 | `memory` | Keyword-ranked archival recall (reads `Memory` block). | No keyword memory retrieval. |
 | `embedding_memory` | Semantic recall (reads `Embedding` block). | No semantic recall (keyword-only). |
 | `skills` | Announces the skills library each turn (reads `Skills` block). | No skills roster; `use_skill`/`save_skill` still run if rostered as tools. |
+| `status` | Turn-stats aggregator: posts `AGENT_STATUS` (`{ctx_tokens, spent_usd, turn, model, line}`) from the traffic each turn already produces; the REPL prints the `line` dim under each reply (`[ctx 12.4k tok · $0.0372 · turn 9 · gpt-5.5]`). No config block. `ctx_tokens` = prompt+completion of the last LLM call; `/new` resets ctx/turn, spend stays process-cumulative. | No stats line; REPL output unchanged. |
 | `chat` | stdin REPL front-end. | No REPL. |
 | `serve` | HTTP/web front-end (`--serve`). | `--serve` errors "no serve module". |
 | `telegram` | Telegram long-poll bot (reads `Telegram` block). | No bot. |

@@ -361,6 +361,10 @@ void wire_agent(Agent& a,
     a.skills->on_attach(bb);
   }
 
+  // 2e) StatusModule: aggregates turn stats onto AGENT_STATUS (latest-value; the chat
+  //     front-end renders it via get() after each reply — ordering not load-bearing).
+  if (a.status) a.status->on_attach(bb);
+
   // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
   //    ToolRunner is absent), model, and objectives, then attach it to the event loop.
   if (a.arbiter) {
@@ -589,6 +593,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   launcher.register_factory("embedding_memory",
                             []{ return std::make_unique<EmbeddingMemoryModule>(); });
   launcher.register_factory("skills",      []{ return std::make_unique<SkillsModule>(); });
+  launcher.register_factory("status",      []{ return std::make_unique<StatusModule>(); });
   launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
   launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
@@ -604,6 +609,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.memory  = take_as<MemoryModule>(launcher, "memory");
   a.embedding = take_as<EmbeddingMemoryModule>(launcher, "embedding_memory");
   a.skills  = take_as<SkillsModule>(launcher, "skills");
+  a.status  = take_as<StatusModule>(launcher, "status");
   a.arbiter = take_as<Arbiter>(launcher, "arbiter");
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");

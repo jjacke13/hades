@@ -37,6 +37,7 @@ private:
   // ASSISTANT_MESSAGE handler uses). Reused for the "[timed out]" abandonment notice
   // so a timed-out turn reads identically to a normal answer. No-op if out_ is null.
   void print_assistant_(const std::string& msg);
+  void print_status_();   // dim AGENT_STATUS line after a reply (no-op without a status module)
   // run_until returned false (idle timeout): the turn is abandoned. Post TURN_ABANDONED
   // (the Arbiter bumps its turn epoch on it, dropping any late worker response for this
   // turn) and pump once so that happens before the next prompt is read, then tell the

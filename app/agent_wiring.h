@@ -20,6 +20,7 @@
 #include "hades/module/memory_module.h"
 #include "hades/module/embedding_memory_module.h"
 #include "hades/module/skills_module.h"
+#include "hades/module/status_module.h"
 #include "hades/module/telegram_module.h"
 #include "hades/module/simplex_module.h"
 #include "hades/module/bridge_module.h"
@@ -48,6 +49,7 @@ struct Agent {
   std::unique_ptr<MemoryModule> memory;
   std::unique_ptr<EmbeddingMemoryModule> embedding;  // optional semantic-memory app
   std::unique_ptr<SkillsModule> skills;   // optional skills-roster app (announce + refresh)
+  std::unique_ptr<StatusModule> status;   // optional turn-stats app (posts AGENT_STATUS)
   std::unique_ptr<ChatModule>   chat;
   // Optional HTTP front-end; always built/attached, but only drives the agent when
   // the binary runs in `--serve` mode (otherwise the stdin REPL drives it).

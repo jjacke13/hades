@@ -77,3 +77,29 @@ TEST(Chat, SlashNewPostsNewSession) {
   EXPECT_EQ(new_session, 1);                              // /new posted NEW_SESSION exactly once
   for (const auto& m : user_msgs) EXPECT_NE(m, "/new");   // /new was NOT posted as a USER_MESSAGE
 }
+
+TEST(Chat, PrintsStatusLineAfterReplyWhenPresent) {
+  Blackboard bb; ChatModule c; c.on_attach(bb);
+  bb.subscribe("USER_MESSAGE", [&](const Entry& e) {
+    bb.post("AGENT_STATUS", {{"line", "[ctx 12 tok]"}}, "status");
+    bb.post("ASSISTANT_MESSAGE", "echo:" + e.value.get<std::string>(), "test");
+  });
+  std::istringstream in("hello\n/quit\n"); std::ostringstream out;
+  c.run_repl(in, out);
+  const std::string o = out.str();
+  const auto reply = o.find("echo:hello");
+  const auto status = o.find("[ctx 12 tok]");
+  ASSERT_NE(reply, std::string::npos);
+  ASSERT_NE(status, std::string::npos);
+  EXPECT_LT(reply, status);   // status renders UNDER the reply
+}
+
+TEST(Chat, NoStatusModuleMeansByteIdenticalOutput) {
+  Blackboard bb; ChatModule c; c.on_attach(bb);
+  bb.subscribe("USER_MESSAGE", [&](const Entry& e) {
+    bb.post("ASSISTANT_MESSAGE", "echo:" + e.value.get<std::string>(), "test");
+  });
+  std::istringstream in("hi\n/quit\n"); std::ostringstream out;
+  c.run_repl(in, out);
+  EXPECT_EQ(out.str(), "user> assistant> echo:hi\nuser> ");   // no AGENT_STATUS -> no extra line
+}
