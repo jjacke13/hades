@@ -71,6 +71,10 @@ Objective = stay_on_budget { hard_cap_usd = 1.0 }
 
 Every key is documented in [`docs/manifest-reference.md`](docs/manifest-reference.md); the design is in [`docs/architecture.md`](docs/architecture.md) (Mermaid diagrams, MOOS-IvP mapping table).
 
+### Customizing your agent
+
+Three channels, no code changes. **Persona**: `Session.system_prompt_file` (the agent's standing character and rules) and `Session.user_file` (who you are, how you like things done) take any path — the shipped `prompts/soul.md` is a default, not a requirement. **Core memory**: a small always-in-context facts file the agent edits itself (`core_memory` tool) — teach it something once, it stays taught. **Skills**: reusable instruction packs in the skills dir (`use_skill`/`save_skill`) — the agent loads them on demand and writes new ones from what it learns. Persona is yours to author; the other two the agent curates at runtime.
+
 ### Security posture (short version)
 
 Secrets are env-var-only — never in the manifest, redacted in the event log. Tools run as subprocesses with timeouts. A built-in capability table is the authority (a tool cannot grant itself permission); writes, shell, and unknown tools confirm by default; denied paths and private-network fetches are hard-vetoed; turns with no human present (heartbeat, peer) auto-deny anything confirm-band. The manifest parser fails loud on malformed input — the binary refuses to boot rather than mis-parse a security scope.
