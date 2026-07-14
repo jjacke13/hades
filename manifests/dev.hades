@@ -1,14 +1,17 @@
-# hades MVP manifest
+# hades reference manifest — the runnable default, with every optional feature included
+# below as a commented block you can uncomment per deployment. Every key is documented in
+# docs/manifest-reference.md. Rule: ONE key = value per line (a packed line refuses to boot).
+# Secrets (API keys, bot tokens, the bridge secret) are env vars ONLY — never written here.
 Session
 {
   provider       = openai_compat
-  endpoint       = https://api.ppq.ai/v1
+  endpoint       = https://api.ppq.ai/v1     # any OpenAI-compatible endpoint
   model          = gpt-5.5
   api_key_env    = HADES_API_KEY
   price_per_mtok = 5.0
   system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
   # user_file        = prompts/user.md   # USER — your profile (optional)
-  memory_file        = memory/facts.md   # MEMORY — always-on core memory (core_memory edits it)
+  memory_file        = memory/facts.md   # MEMORY — always-on core memory (core_memory edits it; gitignored)
   # memory_char_limit  = 2400   # cap on core memory (over-cap writes list entries to consolidate)
   llm_timeout_s       = 600   # per-call LLM HTTP timeout (cpr). Default 600.
   turn_idle_timeout_s = 900   # run_until idle ceiling (front-ends). Default 900. MUST be > llm_timeout_s.
@@ -22,6 +25,7 @@ Module = chat
 Module = arbiter
 Module = serve
 Module = skills
+# Module = status   # dim per-turn stats line under each REPL reply (ctx tokens · spend · turn · model)
 Tool = fs         { native = ./build/hades-fs-read }
 Tool = shell      { native = ./build/hades-shell }
 Tool = write_file { native = ./build/hades-write-file }
@@ -40,6 +44,17 @@ Tool = run_command
   native    = ./build/hades-run-command
   timeout_s = 600
 }
+
+# --- MCP servers: one Tool block per SERVER (stdio command or remote URL). Its tools are
+# discovered at boot and announced to the model as <block>__<tool>; each call is confirm-gated
+# unless listed in capability_policy's mcp_allow. See docs/manifest-reference.md §4.
+# Tool = weather { mcp = npx -y @h1deya/mcp-server-weather }
+# Tool = linear
+# {
+#   mcp_url     = https://mcp.example.com/mcp
+#   api_key_env = LINEAR_MCP_KEY            # Bearer token env var (optional)
+# }
+
 Memory
 {
   store = .hades/memory.jsonl
@@ -50,7 +65,7 @@ Skills
   dir = skills
 }
 Arbiter { policy = v1 }
-Objective = stay_on_budget   { hard_cap_usd = 1.0 }
+Objective = stay_on_budget   { hard_cap_usd = 1.0 }   # MUST be > 0 (0 blocks everything)
 # Capability scopes: deny reads of secrets/system paths, block private/loopback fetch (SSRF),
 # allow the workspace, confirm anything out of scope. Registered BEFORE avoid_destructive so a
 # hard-veto short-circuits first; avoid_destructive stays as the destructive-pattern backstop.
@@ -66,6 +81,7 @@ Objective = capability_policy
   # skill sends via `shell`). CAVEAT on a BRIDGED agent: allow-band reads also apply to peer-driven
   # turns — a peer could read your mail; keep these out of exec_allow on peer-exposed workers.
   # exec_allow      = cmake --build build, ctest --test-dir build, himalaya envelope list, himalaya message read
+  # mcp_allow       = weather__get_forecast   # discovered MCP tools allowed WITHOUT confirm (* = all — trusts every server)
   block_private_net = true
   confirm_unscoped  = true
 }
@@ -76,34 +92,36 @@ Serve
   port    = 8080
   webroot = web
 }
-# --- Opt-in semantic memory (ENABLED below via PPQ; comment `Module = embedding_memory` to
-# fall back to keyword-only memory without an embedder). Backend options for `command`/`endpoint`:
+
+# --- Opt-in semantic memory (uncomment the module line AND the Embedding block).
+# Backend options for `command`/`endpoint`:
 #   - sentence-transformers: provider = subprocess ; command = python3 ./tools/embed_reference.py
 #   - ollama:    `ollama pull nomic-embed-text`; provider = http ; endpoint = http://localhost:11434/v1 ; model = nomic-embed-text
 #   - llama.cpp: `llama-server --embedding`;       provider = http ; endpoint = http://localhost:8080/v1 (OpenAI-compat /embeddings)
 #   - PPQ (remote, reuses your LLM key): provider = http ; endpoint = https://api.ppq.ai/v1
 #       (NOT .../embeddings — the provider appends /embeddings) ; model = openai/text-embedding-3-small ;
 #       api_key_env = HADES_API_KEY  (embed cost hits your PPQ balance; NOT metered by the budget objective)
-Module = embedding_memory
-Embedding {
-  provider           = http
-  endpoint           = https://api.ppq.ai/v1
-  api_key_env        = HADES_API_KEY
-  model              = openai/text-embedding-3-small
-  index_sessions     = true
-  top_n              = 3
-  min_similarity     = 0.45
-  reindex_interval_s = 86400   # daily batch reindex (0 = off)
-  batch_size         = 32
-  timeout_s          = 120
-}
+# Module = embedding_memory
+# Embedding
+# {
+#   provider           = http
+#   endpoint           = https://api.ppq.ai/v1
+#   api_key_env        = HADES_API_KEY
+#   model              = openai/text-embedding-3-small
+#   index_sessions     = true
+#   top_n              = 3
+#   min_similarity     = 0.45
+#   reindex_interval_s = 86400   # daily batch reindex (0 = off)
+#   batch_size         = 32
+#   timeout_s          = 120
+# }
 
-# Voice input (STT). Uncomment to let Telegram voice messages be transcribed.
+# --- Voice input (STT). Uncomment to let Telegram voice messages be transcribed.
 # Stt
 # {
 #   provider    = http
 #   endpoint    = https://api.ppq.ai/v1
-#   model       = whisper-1
+#   model       = nova-3                # PPQ default = Deepgram Nova-3
 #   api_key_env = HADES_API_KEY
 #   language    = en
 #   timeout_s   = 60
@@ -111,7 +129,7 @@ Embedding {
 #   # command   = ./tools/whisper_reference.sh
 # }
 
-# Voice output (TTS). Uncomment to speak replies to Telegram voice messages (mirror modality:
+# --- Voice output (TTS). Uncomment to speak replies to Telegram voice messages (mirror modality:
 # a voice message gets a spoken reply; typed messages stay text-only).
 # Tts
 # {
@@ -127,55 +145,57 @@ Embedding {
 # }
 
 # --- Telegram front-end (uncomment, set YOUR numeric user id, export TELEGRAM_BOT_TOKEN) ---
-# Get an id: message @userinfobot. Non-listed senders are silently ignored. Private chats only (v1): group messages are ignored. Token via env ONLY
-# (keep it in a gitignored .env you `source`); it is redacted in session.log.
- #Module = telegram
- #Telegram
- #{
- #  token_env      = TELEGRAM_BOT_TOKEN
- #  allow_users    = 123456789
- #  poll_timeout_s = 50
- #}
+# Get an id: message @userinfobot. Non-listed senders are silently ignored. Private chats only
+# (v1): group messages are ignored. Token via env ONLY (keep it in a gitignored .env you
+# `source`); it is redacted in session.log.
+# Module = telegram
+# Telegram
+# {
+#   token_env      = TELEGRAM_BOT_TOKEN
+#   allow_users    = 123456789
+#   poll_timeout_s = 50
+# }
 
 # --- Bridge: multi-agent (uncomment on EACH agent; set name/port/peers; export HADES_BRIDGE_SECRET
 # in the same gitignored .env as the other secrets — same secret on every fleet member, v1) ---
 # A peer request drives a normal turn through THIS agent's own objectives; confirm-gated actions
 # are AUTO-DENIED for peers. Shares arrive as PEER.<name>.<key>. host 0.0.0.0 for LAN.
- Module = bridge
- Bridge
- {
-   name          = hades1
-   host          = 127.0.0.1
-   port          = 9090
-   secret_env    = HADES_BRIDGE_SECRET
-   #share_out     =
-   max_hops      = 1
-   ask_timeout_s = 180
-   #  description         = "hades1 primary agent"  # card persona one-liner (default = name)
-   #  discover_interval_s = 300                      # peer-card /card re-pull seconds; 0 = boot pull only
- }
- Peer = hades2 { url = http://127.0.0.1:9091 }
- # A peer with a trust tier — untrusted peers' shared facts are folded as "unverified claim from".
- # NOTE: MUST be a multi-line block — a packed `Peer = x { url = ..  trust = .. }` line fails LOUD
- # (the one-kv-per-line manifest guard). Default trust is "trusted".
- # Peer = watcher
- # {
- #   url   = http://10.0.0.9:9090
- #   trust = untrusted
- # }
- Tool = ask_agent { native = ./build/hades-ask-agent }
+# Module = bridge
+# Bridge
+# {
+#   name          = hades1
+#   host          = 127.0.0.1
+#   port          = 9090
+#   secret_env    = HADES_BRIDGE_SECRET
+#   max_hops      = 1
+#   ask_timeout_s = 180
+#   # share_out           =
+#   # description         = "hades1 primary agent"  # card persona one-liner (default = name)
+#   # discover_interval_s = 300                      # peer-card /card re-pull seconds; 0 = boot pull only
+# }
+# Peer = hades2 { url = http://127.0.0.1:9091 }
+# A peer with a trust tier — untrusted peers' shared facts are folded as "unverified claim from".
+# NOTE: MUST be a multi-line block — a packed `Peer = x { url = ..  trust = .. }` line fails LOUD
+# (the one-kv-per-line manifest guard). Default trust is "trusted".
+# Peer = watcher
+# {
+#   url   = http://192.0.2.9:9090
+#   trust = untrusted
+# }
+# Tool = ask_agent { native = ./build/hades-ask-agent }
 
 # --- Heartbeat: cron self-triggered turns (the agent acts on its own). Module + >=1 Heartbeat
 # block. Each entry fires a normal gated turn on its cron schedule (machine-local time). notify=true
-# forwards the reply to you (Telegram) UNLESS the agent replies exactly SILENT; notify=false runs a
-# silent background task (tool actions are the output). A tick can call any tool (incl. ask_agent);
-# confirm-band actions are AUTO-DENIED (no human present); a tick is skipped if a turn is running. ---
+# forwards the reply to you (Telegram/SimpleX) UNLESS the agent replies exactly SILENT; notify=false
+# runs a silent background task (tool actions are the output). A tick can call any tool (incl.
+# ask_agent); confirm-band actions are AUTO-DENIED (no human present); a tick is skipped if a turn
+# is running. ---
 # Module = heartbeat
 # Heartbeat = monitor
 # {
 #   schedule = */10 * * * *          # every 10 min. cron: min hour dom month dow (* N A-B */N A,B)
 #   prompt   = Check pi0 is reachable and healthy (ask it). Reply exactly SILENT if all is fine.
-#   notify   = true                  # needs Module = telegram rostered to actually deliver
+#   notify   = true                  # needs Module = telegram (or simplex) rostered to deliver
 # }
 # Heartbeat = daily
 # {
@@ -210,7 +230,7 @@ Embedding {
 # {
 #   when       = BUDGET_SPENT_USD above 0.8
 #   prompt     = The session budget is nearly spent. Summarize what it went on so far.
-#   notify     = true                  # needs Module = telegram rostered to deliver
+#   notify     = true                  # needs Module = telegram (or simplex) rostered to deliver
 #   cooldown_s = 3600                  # at most one warning per hour
 # }
 # Heartbeat = peer_watch
@@ -231,7 +251,7 @@ Embedding {
 # {
 #   host           = 127.0.0.1
 #   port           = 5225
-#   allow_contacts = 2, Vaios K
+#   allow_contacts = 2, Alice Example
 #   auto_accept    = false
 #   # notify_contact = 2   # NOTIFY_USER (heartbeat) delivery target
 # }

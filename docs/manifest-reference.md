@@ -94,9 +94,9 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 `telegram` (poll), `simplex` (event thread), `bridge` (listener), or `heartbeat` (timer); with none
 of those it errors (no-chat-module error).
 
-dev.hades roster (as committed): `llm tool_runner memory chat arbiter serve skills
-embedding_memory bridge` — `telegram`, `simplex`, and `heartbeat` ship as commented examples to
-uncomment per deployment.
+dev.hades roster (as committed): `llm tool_runner memory chat arbiter serve skills` — every other
+module (`status`, `embedding_memory`, `telegram`, `bridge`, `heartbeat`, `simplex`) ships as a
+commented example block to uncomment per deployment.
 
 ---
 

@@ -16,3 +16,14 @@ compile_commands.json
 /.hades/
 # secrets you `source` (HADES_API_KEY / TELEGRAM_BOT_TOKEN) — never commit
 .env
+
+# TSan build lane
+/build-tsan/
+
+# the agent's live memory — personal, never published (dev.hades points here)
+/memory/
+
+# local live manifests — only the dev.hades template is tracked
+/manifests/pi.hades
+/manifests/dev2.hades
+/manifests/*.local.hades
