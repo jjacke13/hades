@@ -41,6 +41,9 @@ nix develop --command ctest --test-dir build               # the whole suite, ~7
 nix build .#hades-aarch64-static                           # static Pi deploy dir
 ```
 
+No Nix? It's a plain CMake project with five permissively-licensed deps — per-distro and macOS
+recipes in [`docs/building.md`](docs/building.md).
+
 A minimal manifest:
 
 ```
