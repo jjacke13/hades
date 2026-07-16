@@ -82,6 +82,7 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 | `embedding_memory` | Semantic recall (reads `Embedding` block). | No semantic recall (keyword-only). |
 | `skills` | Announces the skills library each turn (reads `Skills` block). | No skills roster; `use_skill`/`save_skill` still run if rostered as tools. |
 | `status` | Turn-stats aggregator: posts `AGENT_STATUS` (`{ctx_tokens, spent_usd, turn, model, line}`) from the traffic each turn already produces; the REPL prints the `line` dim under each reply (`[ctx 12.4k tok · $0.0372 · turn 9 · gpt-5.5]`). No config block. `ctx_tokens` = prompt+completion of the last LLM call; `/new` resets ctx/turn, spend stays process-cumulative. | No stats line; REPL output unchanged. |
+| `auto_extract` | Post-turn background memory harvest: after each **human** turn, an aux LLM call reviews the last exchange and appends durable facts to archival memory with `src:"auto"` (reads the optional `AutoExtract` block, §18). Costs one extra small LLM call per turn, metered into the budget. | No automatic harvesting (facts are only saved via the explicit `save_memory` tool). |
 | `chat` | stdin REPL front-end. | No REPL. |
 | `serve` | HTTP/web front-end (`--serve`). | `--serve` errors "no serve module". |
 | `telegram` | Telegram long-poll bot (reads `Telegram` block). | No bot. |
@@ -795,6 +796,7 @@ New signals this module introduces (visible in the Eventlog / `hades-scope`):
 | `NOTIFY_USER` | `{ text, from }` (`from = heartbeat:<name>`) | A `notify = true` tick whose reply is non-empty and not `SILENT`. The Telegram module (§10) is the sink. |
 | `HEARTBEAT_SKIPPED` | the entry name (or `<name> (confirm pending)`) | The tick fired but was skipped: the TurnGate was held by a live human/peer turn (skip-if-busy), or a confirm prompt from an earlier turn is still outstanding. |
 | `HEARTBEAT_ERROR` | `<name> …` (the entry name + a reason) | The tick threw, or the self-turn hit its idle timeout. |
+| `AUX_SPENT_USD` | a USD spend delta (double) | Posted by the `auto_extract` module (§18) after a background review; the LLM module folds positive deltas into the cumulative `BUDGET_SPENT_USD`. |
 
 ### Worked example
 
@@ -986,6 +988,58 @@ subscribes the traffic every turn already produces and posts one latest-value bu
   status` the key is never posted and REPL output is byte-identical to before the module existed.
   The raw fields are the seam for other consumers (a web/telegram `/status` — not built yet); the
   module never touches the terminal itself — the REPL stays the terminal's only writer.
+
+---
+
+## 18. `AutoExtract` block — post-turn background memory harvest
+
+`src/apps/auto_extract/auto_extract.cpp`, wired in `app/agent_wiring.cpp`. Opt-in via
+**`Module = auto_extract`** in the roster; the `AutoExtract` block is optional (all keys default).
+After each **human** turn, the module reviews the last user↔assistant exchange with a small aux LLM
+call and appends any durable facts it finds (preferences, corrections, standing facts about the user
+or their environment) to the **archival** store — the same `.hades/memory.jsonl` the `save_memory`
+tool writes and the `memory` / `embedding_memory` modules read back for recall. This is the "learn by
+itself" leg: the agent captures facts without you having to tell it to `save_memory`.
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `model` | Model id for the aux review call. | **the Session `model`** | Point it at a cheaper/faster model if your provider has one. |
+| `max_facts` | Cap on facts written per turn. | `3` | Bad/`<=0` → default. |
+| `timeout_s` | HTTP timeout for the aux call. | `60` | Only used when the module self-builds its provider (live path). |
+
+**Merged config — inheritance from `Session`.** The module needs the same transport as the main LLM,
+so the wiring builds its config by **inheriting** the missing keys from the `Session` block:
+`endpoint`, `api_key_env`, and `price_per_mtok` are copied from `Session` when the `AutoExtract` block
+omits them, and `model` falls back to `Session.model`. The archival `store` path is injected from the
+resolved `Memory.store` (single source of truth with `save_memory`). So a bare `Module =
+auto_extract` (no block) just reuses the Session provider + the main model.
+
+**Budget fold — `AUX_SPENT_USD`.** Each review posts its spend as an `AUX_SPENT_USD` delta
+(`tokens / 1e6 * price_per_mtok`); the LLM module folds positive deltas into the cumulative
+`BUDGET_SPENT_USD`, so `stay_on_budget` sees the aux cost and trips earlier. The delta is `0` when
+`price_per_mtok` is unset. (Embeddings remain unmetered — this is the one aux path that is metered.)
+
+**Gates & discipline.**
+- **Human-origin only.** A turn is harvested only when `TURN_ORIGIN == human`. Peer (`peer:<name>`)
+  and heartbeat (`heartbeat:<name>`) turns are **never** reviewed — they are the memory-pollution /
+  prompt-injection surface (a peer or a scheduled prompt must not be able to write standing facts).
+- **Artifact gate.** Turns whose assistant reply looks like a tool artifact (not a natural-language
+  answer) are skipped.
+- **Skip-if-busy.** At most **one** review is in flight; a turn finishing while a review runs is
+  **skipped, never queued** (the review is best-effort background work, not a guaranteed per-turn job).
+- **`src:"auto"` provenance.** Auto-harvested facts are tagged `src:"auto"` in the store, distinct
+  from tool-written (`save_memory`) facts — so they are auditable / removable as a class.
+- **Dedup.** An exact-text duplicate already in the store is not re-appended (v1 is exact-match;
+  semantic dedup is a v2 seam).
+- **Fail-soft.** Any extractor error (LLM failure, parse failure, enqueue failure) is swallowed — a
+  background review can never touch or crash a turn.
+
+**Prompt-injection caveat (bounded blast radius).** The aux call reads the assistant's own reply and
+the user's message, so a user who deliberately dictates "remember that X" can steer what gets stored —
+but the blast radius is bounded: facts land in *archival* memory (retrieved as re-verifiable context,
+never as core always-on memory), only human turns are harvested, and `max_facts` caps volume per turn.
+Don't roster `auto_extract` on an agent whose archival memory is readable by an untrusted peer (see the
+Bridge SECURITY note).
 
 ---
 

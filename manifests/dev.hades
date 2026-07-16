@@ -26,6 +26,17 @@ Module = arbiter
 Module = serve
 Module = skills
 # Module = status   # dim per-turn stats line under each REPL reply (ctx tokens · spend · turn · model)
+# --- Auto-extract: after each human turn, a background LLM call harvests durable facts
+# (preferences, corrections, standing facts) into archival memory with src:"auto". Costs one
+# extra small LLM call per turn, metered into the budget. The AutoExtract block is optional;
+# model defaults to the Session model (point it at a cheaper one if your provider has it).
+# Module = auto_extract
+# AutoExtract
+# {
+#   model     = gpt-5.5
+#   max_facts = 3
+#   timeout_s = 60
+# }
 Tool = fs         { native = ./build/hades-fs-read }
 Tool = shell      { native = ./build/hades-shell }
 Tool = write_file { native = ./build/hades-write-file }

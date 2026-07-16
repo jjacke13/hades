@@ -21,6 +21,7 @@
 #include "hades/module/embedding_memory_module.h"
 #include "hades/module/skills_module.h"
 #include "hades/module/status_module.h"
+#include "hades/module/auto_extract_module.h"
 #include "hades/module/telegram_module.h"
 #include "hades/module/simplex_module.h"
 #include "hades/module/bridge_module.h"
@@ -50,6 +51,13 @@ struct Agent {
   std::unique_ptr<EmbeddingMemoryModule> embedding;  // optional semantic-memory app
   std::unique_ptr<SkillsModule> skills;   // optional skills-roster app (announce + refresh)
   std::unique_ptr<StatusModule> status;   // optional turn-stats app (posts AGENT_STATUS)
+  // Optional post-turn background memory harvest. Declared here (with the plain modules,
+  // BEFORE `executor`) so it is destroyed AFTER the executor: its ASSISTANT_MESSAGE handler
+  // submits a worker that captures `&busy_` (a member of THIS module), so the Executor must
+  // join that worker before the module dies. Members destruct in reverse order → `executor`
+  // (declared later) is destroyed first and joins while this module is still alive. Same
+  // load-bearing rule as the LLMModule/executor pairing below. Do NOT move below `executor`.
+  std::unique_ptr<AutoExtractModule> auto_extract;
   std::unique_ptr<ChatModule>   chat;
   // Optional HTTP front-end; always built/attached, but only drives the agent when
   // the binary runs in `--serve` mode (otherwise the stdin REPL drives it).

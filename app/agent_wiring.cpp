@@ -180,7 +180,8 @@ void wire_agent(Agent& a,
                 const std::vector<Block>& peer_blocks = {},
                 const Block& stt_cfg = Block{},
                 const Block& tts_cfg = Block{},
-                const std::vector<Block>& heartbeat_blocks = {}) {
+                const std::vector<Block>& heartbeat_blocks = {},
+                const Block& auto_extract_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   core_memory -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -377,6 +378,27 @@ void wire_agent(Agent& a,
   // 2e) StatusModule: aggregates turn stats onto AGENT_STATUS (latest-value; the chat
   //     front-end renders it via get() after each reply — ordering not load-bearing).
   if (a.status) a.status->on_attach(bb);
+
+  // 2f) AutoExtractModule: merged cfg = Session transport values + AutoExtract overrides +
+  //     the already-resolved archival store path (single source of truth with save_memory).
+  //     Executor set BEFORE on_attach (mirrors the embedding module) so the review runs off
+  //     the pump thread; the Executor joins the worker before this module dies (see the member
+  //     comment in agent_wiring.h). Null on the test overload -> inert.
+  if (a.auto_extract) {
+    Block merged = auto_extract_cfg;                     // model / max_facts / timeout_s
+    auto inherit = [&](const char* k) {
+      if (!merged.kv.count(k) && session.kv.count(k)) merged.kv[k] = session.kv.at(k);
+    };
+    inherit("endpoint");
+    inherit("api_key_env");
+    inherit("price_per_mtok");
+    if (!merged.kv.count("model") && session.kv.count("model"))
+      merged.kv["model"] = session.kv.at("model");       // aux default = the main model
+    merged.kv["store"] = store_path;
+    if (a.executor) a.auto_extract->set_executor(a.executor.get());
+    a.auto_extract->on_start(merged, bb);
+    a.auto_extract->on_attach(bb);
+  }
 
   // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
   //    ToolRunner is absent), model, and objectives, then attach it to the event loop.
@@ -607,6 +629,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
                             []{ return std::make_unique<EmbeddingMemoryModule>(); });
   launcher.register_factory("skills",      []{ return std::make_unique<SkillsModule>(); });
   launcher.register_factory("status",      []{ return std::make_unique<StatusModule>(); });
+  launcher.register_factory("auto_extract",
+                            []{ return std::make_unique<AutoExtractModule>(); });
   launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
   launcher.register_factory("chat",        []{ return std::make_unique<ChatModule>(); });
   launcher.register_factory("serve",       []{ return std::make_unique<HttpServerModule>(); });
@@ -623,6 +647,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.embedding = take_as<EmbeddingMemoryModule>(launcher, "embedding_memory");
   a.skills  = take_as<SkillsModule>(launcher, "skills");
   a.status  = take_as<StatusModule>(launcher, "status");
+  a.auto_extract = take_as<AutoExtractModule>(launcher, "auto_extract");
   a.arbiter = take_as<Arbiter>(launcher, "arbiter");
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
@@ -637,6 +662,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block embedding = embed_blocks.empty() ? Block{} : embed_blocks.front();
   const auto skills_blocks = m.of("Skills");
   const Block skills_cfg = skills_blocks.empty() ? Block{} : skills_blocks.front();
+  const auto ae_blocks = m.of("AutoExtract");
+  const Block ae_cfg = ae_blocks.empty() ? Block{} : ae_blocks.front();
   const auto tg_blocks = m.of("Telegram");
   const Block telegram_cfg = tg_blocks.empty() ? Block{} : tg_blocks.front();
   const auto sx_blocks = m.of("Simplex");
@@ -667,7 +694,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
              skills_cfg, telegram_cfg, simplex_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg,
-             heartbeat_blocks);
+             heartbeat_blocks, ae_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:

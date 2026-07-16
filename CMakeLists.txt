@@ -233,6 +233,7 @@ target_sources(hades_tests PRIVATE tests/test_bridge_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_heartbeat_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_self_schedule_guard.cpp)
 target_sources(hades_tests PRIVATE tests/test_self_scheduling_wiring.cpp)
+target_sources(hades_tests PRIVATE tests/test_auto_extract_wiring.cpp)
 target_sources(hades_tests PRIVATE tests/test_webui.cpp)
 target_sources(hades_tests PRIVATE tests/test_wiring_mcp.cpp)
 target_compile_definitions(hades_tests PRIVATE

@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-11)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below) + **`session_search`** (keyword recall over past-session jsonl, see below), **672/672 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below) + **`session_search`** (keyword recall over past-session jsonl, see below) + **auto-extract** (after each human turn a background LLM call harvests durable facts into archival memory, see below), **686/686 tests** (ASan+UBSan; TSan 686/686 — both lanes run current; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **19 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -302,6 +302,40 @@ complement to the opt-in embeddings recall, answering "did we discuss X last wee
   manifest-reference §4 (argv-append + verdict rows). Pieces: `tools/session_search_main.cpp`, `src/core/session.cpp`,
   `include/hades/objective/capability_policy.h` (+cpp), `app/agent_wiring.cpp` (sessions_dir resolve + argv append),
   `tests/test_session_search_{tool,wiring}.cpp`, `tests/test_capability_policy.cpp`.
+
+### Auto-extract (shipped 2026-07-16, `feat/auto-extract`) — the "learn by itself" leg
+Memory-v2 work-list item 2's remaining half: after each **human** turn a background aux LLM call reviews the last
+exchange and appends durable facts (preferences, corrections, standing facts) to the **archival** store with
+`src:"auto"` — no explicit `save_memory` needed. **Design validated by Hermes-agent** (`auxiliary.background_review`).
+Opt-in via `Module = auto_extract` (omit → `Agent.auto_extract==nullptr`, zero coupling; test overload never builds it).
+- **A MODULE, not a tool** (`AutoExtractModule`, `src/apps/auto_extract/auto_extract.cpp`, `type()=="auto_extract"`): it
+  needs the pump-thread turn state (TURN_ORIGIN/USER_MESSAGE/ASSISTANT_MESSAGE), which a stateless subprocess tool can't
+  see. Subscribes those three; on the ASSISTANT_MESSAGE it **gates on the pump thread**, then runs the review on the
+  **Executor** (or inline w/o executor, in tests).
+- **Gates (pump thread):** **human-origin ONLY** (`TURN_ORIGIN=="human"` — peer/heartbeat turns NEVER harvested: the
+  memory-pollution / prompt-injection surface), non-empty user+assistant, and an **artifact gate** (`is_turn_artifact`
+  skips tool-shaped replies). **Skip-if-busy:** one review in flight max (`std::atomic<bool> busy_`, `exchange(true)`) —
+  a turn finishing mid-review is skipped, never queued.
+- **Worker capture discipline (LLMModule precedent):** the worker captures non-owning `provider_`/`bb_` + plain value
+  copies + `&busy_`; no pump-mutated field read off-thread. **LOAD-BEARING teardown:** because the worker captures
+  `&busy_` (a module member), the **Executor MUST join before the module dies** → `Agent::auto_extract` is declared with
+  the plain modules (after `status`, BEFORE `executor`) so `executor` (later → destroyed first) joins the worker while the
+  module is alive. Enqueue-throw clears `busy_` (else it leaks true and kills extraction for the process).
+- **Budget fold — `AUX_SPENT_USD`:** the worker posts a spend delta (`tokens/1e6 * price_per_mtok`); the LLMModule folds
+  positive deltas into cumulative `BUDGET_SPENT_USD` (rejects non-positive), so `stay_on_budget` sees the aux cost and
+  trips earlier. `0` when `price_per_mtok` unset. (The one metered aux path — embeddings stay unmetered.)
+- **UTF-8 safety:** the digest byte-truncates each side (2000B cap); a mid-codepoint cut is walked back (`trunc_utf8`)
+  BEFORE the request because the real provider strict-`dump()`s and would throw on invalid UTF-8; the fact append uses the
+  UTF-8-replace dump (house pattern). **Fail-soft everywhere** — any extractor error is swallowed, never touches a turn.
+- **Config = merged cfg (`wire_agent` 2f):** `AutoExtract` block (`model` default `Session.model`, `max_facts` 3,
+  `timeout_s` 60) inherits `endpoint`/`api_key_env`/`price_per_mtok` from Session and gets `store` from the resolved
+  `Memory.store` (single source of truth with save_memory). Bare `Module = auto_extract` reuses the Session provider.
+- **Dedup** exact-text (v2 = semantic). **Provenance** `src:"auto"` (auditable/removable as a class). Pieces:
+  `src/apps/auto_extract/{auto_extract,extract}.cpp`, `include/hades/{module/auto_extract_module.h,extract/extract.h}`,
+  `src/apps/llm/llm.cpp` (AUX_SPENT_USD fold), `app/agent_wiring.{h,cpp}` (factory + 2f merged cfg + member order),
+  `tests/test_{extract,auto_extract_module,auto_extract_wiring}.cpp`. Docs: manifest-reference §18 + §2 roster row.
+  Spec/plan: `docs/superpowers/{specs,plans}/*auto-extract*`. **Live-smoke pending** (Vaios: roster it → chat a
+  preference → `.hades/memory.jsonl` gains a `src:"auto"` line; next session it surfaces in recall).
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -847,11 +881,13 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 1. **Storage:** switch the flat `.hades/embeddings/*.vec.jsonl` → **sqlite + binary vectors** (+ ANN index once the
    corpus grows) — drop-in behind the `VectorCache` seam (module/Arbiter untouched). Today = flat jsonl + brute-force cosine.
 2. **Corpus quality (the real weakness — found live):** the agent **rarely saves facts** (core `facts.md` empty, ~3
-   archival records), so recall surfaces chit-chat + "I don't remember" turns. **PARTIALLY DONE 2026-07-11:** soul.md
-   learn-triggers (`3a8d0e6`) + bounded editable core memory (`core_memory`, see its section) shipped. REMAINING =
-   **auto-extract**: a post-turn background review (cheap/aux model, digest not full transcript) that proactively saves
-   preference signals / env facts / corrections without an explicit tool call — **design validated by Hermes-agent**
-   (`auxiliary.background_review`, 2026-07-11 research). The "learn by itself" leg; brainstorm-first.
+   archival records), so recall surfaces chit-chat + "I don't remember" turns. **SHIPPED 2026-07-16 (`feat/auto-extract`):**
+   soul.md learn-triggers (`3a8d0e6`) + bounded editable core memory (`core_memory`) + **auto-extract** — a post-turn
+   background review (cheap/aux model, digest not full transcript) proactively saves preference signals / env facts /
+   corrections without an explicit tool call (**design validated by Hermes-agent** `auxiliary.background_review`, 2026-07-11
+   research; the "learn by itself" leg — see the Auto-extract subsection under Current state). **v2 remaining:** semantic
+   dedup (v1 is exact-text), and the prompt-injection caveat (a user dictating "remember X" can steer archival memory —
+   bounded: human turns only, archival not core, max_facts-capped).
 2b. **`session_search` tool — SHIPPED 2026-07-16, `feat/session-search`** (Hermes borrow, cheap): agent-callable
    token-overlap search over `.hades/sessions/*.jsonl` returning RAW past-session excerpts (no LLM summarization) —
    complements the auto-injected embeddings recall ("did we discuss X last week?"). Grep-level at our scale; sqlite
