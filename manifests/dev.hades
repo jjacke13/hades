@@ -44,6 +44,7 @@ Tool = run_command
   native    = ./build/hades-run-command
   timeout_s = 600
 }
+# Tool = session_search { native = ./build/hades-session-search }   # keyword recall over past sessions
 
 # --- MCP servers: one Tool block per SERVER (stdio command or remote URL). Its tools are
 # discovered at boot and announced to the model as <block>__<tool>; each call is confirm-gated

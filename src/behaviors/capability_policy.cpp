@@ -170,6 +170,7 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "http_fetch")                              return Capability::Net;
   if (tool == "shell")                                   return Capability::Exec;
   if (tool == "save_memory" || tool == "core_memory")    return Capability::MemoryAppend;
+  if (tool == "session_search")                          return Capability::SessionRead;
   if (tool == "use_skill")                               return Capability::SkillRead;
   if (tool == "save_skill")                              return Capability::SkillWrite;
   if (tool == "ask_agent")                               return Capability::PeerAsk;
@@ -237,6 +238,11 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
   switch (capability_of(a.tool)) {
     case Capability::MemoryAppend:
       return allow();                                   // append-only to the agent's own files
+    case Capability::SessionRead:
+      // The agent's own past-session files: dir fixed by wiring argv, read-only. A peer-driven
+      // turn can read excerpts out — the documented Bridge-SECURITY class; per-origin scopes
+      // (capability v2) are the real fix.
+      return allow();
     case Capability::Exec:
       return confirm("exec capability (" + a.tool + "): runs an arbitrary command");
     case Capability::FsWrite: {

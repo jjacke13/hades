@@ -164,6 +164,7 @@ whitespace:
 | `ask_agent` | `<own_name> <secret_env> <ask_timeout_s> <peer=url>…` | `Bridge` + `Peer` blocks | see rules below |
 | `schedule_task` | `<cron_store> <max_tasks> <min_interval_s>` | unnamed `Heartbeat { }` block (§15) | **requires `Module = heartbeat`** (else `MalConfig`); store path whitespace-free |
 | `list_tasks` / `cancel_task` | `<cron_store>` | unnamed `Heartbeat { }` block (§15) | store path whitespace-free |
+| `session_search` | `<sessions_dir> [<live-session filename>]` | `Session.sessions_dir` (default `.hades/sessions`) + the resolved live session | dir whitespace-free; the live session file is excluded from the search |
 
 **`ask_agent` wiring rules** (`wire_agent`): the tool requires **at least one `Peer` block** *and*
 a valid `Bridge.name` — else `MalConfig` ("nobody to call" / "requires Bridge { name }"). Its
@@ -304,6 +305,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | `shell` | Exec | **always confirm**. |
 | unknown tool | Unknown | **always confirm**. |
 | `save_memory`, `core_memory` | MemoryAppend | **always allow** (the agent's own memory files; `core_memory` also edits/removes — curation must be frictionless). |
+| `session_search` | SessionRead | **always allow** (own session files, dir wiring-pinned; peer-turn read-out caveat — see Bridge SECURITY). |
 | `use_skill` | SkillRead | **always allow**. |
 | `save_skill` | SkillWrite | **always allow** (enum kept distinct so a future policy can confirm-gate it). |
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |

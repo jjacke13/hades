@@ -12,6 +12,7 @@
 
 #include "app/agent_wiring.h"
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include "hades/blackboard.h"
@@ -201,6 +202,13 @@ void wire_agent(Agent& a,
   const std::string skills_dir = resolve_skills_dir(skills_cfg);
   reject_ws(skills_dir, "skills dir");
 
+  // session_search: pin the search root (+ live-session filename to exclude) via argv —
+  // the SAME Session.sessions_dir resolution hades_main uses; single source of truth.
+  std::string sessions_dir = ".hades/sessions";
+  if (session.kv.count("sessions_dir") && !session.kv.at("sessions_dir").empty())
+    sessions_dir = session.kv.at("sessions_dir");
+  reject_ws(sessions_dir, "sessions dir");
+
   // Self-scheduling config lives in the UNNAMED `Heartbeat { }` block (a NAMED block is an entry).
   std::string cron_store = ".hades/cron.jsonl";
   bool allow_self_schedule = false;
@@ -308,6 +316,11 @@ void wire_agent(Agent& a,
                        " " + std::to_string(min_interval_s);
     else if ((t.name == "list_tasks" || t.name == "cancel_task") && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + cron_store;
+    else if (t.name == "session_search" && t.kv.count("native")) {
+      t.kv["native"] = t.kv["native"] + " " + sessions_dir;
+      if (!session_path.empty())
+        t.kv["native"] += " " + std::filesystem::path(session_path).filename().string();
+    }
     tools_resolved.push_back(std::move(t));
   }
 

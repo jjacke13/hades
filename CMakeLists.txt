@@ -145,6 +145,7 @@ add_executable(hades-session-search tools/session_search_main.cpp src/core/sessi
 target_link_libraries(hades-session-search PRIVATE nlohmann_json::nlohmann_json)
 target_include_directories(hades-session-search PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_sources(hades_tests PRIVATE tests/test_session_search_tool.cpp)
+target_sources(hades_tests PRIVATE tests/test_session_search_wiring.cpp)
 target_compile_definitions(hades_tests PRIVATE SESSION_SEARCH_BIN="$<TARGET_FILE:hades-session-search>")
 add_dependencies(hades_tests hades-session-search)
 add_executable(hades-grep tools/grep_main.cpp)

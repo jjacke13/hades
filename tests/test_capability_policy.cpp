@@ -417,3 +417,14 @@ TEST(CapabilityPolicy, McpAllowStarAllowsAll) {
   a.tool = "anysrv__anytool";
   EXPECT_FALSE(p.veto(bb, a).vetoed);
 }
+
+TEST(CapabilityPolicy, SessionSearchIsSessionReadAndAllowed) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("session_search"), Capability::SessionRead);
+  CapabilityScope sc;              // confirm_unscoped default true — proves NOT Unknown->confirm
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  Action a{Action::Kind::ToolCall};
+  a.tool = "session_search";
+  a.args = {{"query", "pi deployment"}};
+  EXPECT_FALSE(p.veto(bb, a).vetoed);
+}

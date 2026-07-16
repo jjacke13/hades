@@ -29,7 +29,7 @@ Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Co
 router + Bridge [real multi-agent].
 
 ## Current state (2026-07-11)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below), **662/662 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below) + **`session_search`** (keyword recall over past-session jsonl, see below), **672/672 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -280,6 +280,28 @@ rows. Pieces: `src/apps/tool_runner/tool_runner.cpp` (transports + discovery),
 fixes landed post-plan:** discovered tool names are charset-gated `[A-Za-z0-9_-]{1,64}` (a
 provider-illegal name is skipped, not left to 400 the whole tools array) and duplicate
 discovered names dedup first-wins (a server listing a name twice announces it once).
+
+### session_search (shipped 2026-07-16, `feat/session-search`) — keyword recall over past sessions
+The memory-v2 work-list item 2b (Hermes borrow): an agent-callable native tool that token-overlap-ranks the
+past-session corpus `.hades/sessions/*.jsonl` and returns RAW excerpts (no LLM summarization) — the cheap
+complement to the opt-in embeddings recall, answering "did we discuss X last week?". Grep-level, no index/deps.
+- **Tool contract:** `session_search {query, max_results?}` → `{ok, result:{hits:[{session,text,score}], searched_sessions}}`.
+  Ranks each `"U:…\nA:…"` turn-unit by query-token overlap, **newest session first** on ties; `max_results` default
+  5, clamped to 20; each unit truncated (~700 bytes, **UTF-8-replace dump** so a mid-codepoint cut still emits valid
+  JSON — the `0bfb43f` review fix); empty/non-string query fails closed; corrupt jsonl lines + non-`.jsonl` files
+  skipped; missing dir → `ok` with empty hits.
+- **Binary `hades-session-search`** (`tools/session_search_main.cpp` + `src/core/session.cpp`, no core link). **argv
+  contract:** `argv[1]` = sessions dir, `argv[2]` = live-session filename to EXCLUDE (optional). Both **pinned by
+  wiring** (`wire_agent`): dir from `Session.sessions_dir` (default `.hades/sessions`, the same resolution
+  `hades_main` uses — single source of truth, `reject_ws`), live filename from the threaded `session_path`
+  parameter. The LLM cannot redirect the search root (schema has no dir arg; argv wins).
+- **Capability = `SessionRead` → always allow** (enum after `MemoryAppend`; `capability_of` row; own read-only
+  session files, dir wiring-pinned). **Peer-turn caveat:** a `peer:`-origin `/ask` can read past-session excerpts
+  out — the documented Bridge-SECURITY class; per-origin scopes (capability v2) are the real fix.
+- **Opt-in:** no `Tool = session_search` line → absent. dev.hades ships the tool line COMMENTED. Docs:
+  manifest-reference §4 (argv-append + verdict rows). Pieces: `tools/session_search_main.cpp`, `src/core/session.cpp`,
+  `include/hades/objective/capability_policy.h` (+cpp), `app/agent_wiring.cpp` (sessions_dir resolve + argv append),
+  `tests/test_session_search_{tool,wiring}.cpp`, `tests/test_capability_policy.cpp`.
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -830,9 +852,10 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
    **auto-extract**: a post-turn background review (cheap/aux model, digest not full transcript) that proactively saves
    preference signals / env facts / corrections without an explicit tool call — **design validated by Hermes-agent**
    (`auxiliary.background_review`, 2026-07-11 research). The "learn by itself" leg; brainstorm-first.
-2b. **`session_search` tool (Hermes borrow, cheap):** agent-callable full-text search over `.hades/sessions/*.jsonl`
-   returning RAW past-session excerpts (no LLM summarization) — complements the auto-injected embeddings recall
-   ("did we discuss X last week?"). Grep-level at our scale; sqlite FTS5 only if/when item 1 lands.
+2b. **`session_search` tool — SHIPPED 2026-07-16, `feat/session-search`** (Hermes borrow, cheap): agent-callable
+   token-overlap search over `.hades/sessions/*.jsonl` returning RAW past-session excerpts (no LLM summarization) —
+   complements the auto-injected embeddings recall ("did we discuss X last week?"). Grep-level at our scale; sqlite
+   FTS5 only if/when item 1 lands. See the **session_search** subsection under Current state.
 3. **Session-unit granularity:** each session unit embeds the **FULL assistant answer** (`"U:…\nA:<whole answer>"`) →
    bloated/noisy injection. Truncate or **summarize** long turns before embedding.
 4. **Retrieval tuning:** `min_similarity=0.45` may be high for `text-embedding-3-small` (try 0.35); consider re-ranking.
