@@ -111,6 +111,22 @@ TEST(LLMModule, ResolvesLlmTimeoutFromSession) {
   m2.on_start(cfg2, bb);
   EXPECT_DOUBLE_EQ(m2.resolved_llm_timeout_s(), 600.0);
 }
+TEST(LLMModule, AuxSpendFoldsIntoCumulativeBudget) {
+  // AUX_SPENT_USD is a per-call DELTA from an aux consumer (auto-extract); the LLMModule
+  // folds it into the same cumulative spent_ the LLM_RESPONSE handler owns, so
+  // stay_on_budget gates aux spend too. Non-numeric payloads are ignored.
+  Blackboard bb;
+  LLMModule m(std::make_unique<StubProvider>());
+  Block cfg; cfg.kv["price_per_mtok"] = "2.0";
+  m.on_start(cfg, bb); m.on_attach(bb);
+  double budget = -1.0;
+  bb.subscribe("BUDGET_SPENT_USD", [&](const Entry& e){ budget = e.value.get<double>(); });
+  bb.post("AUX_SPENT_USD", 0.25, "auto_extract");
+  bb.post("AUX_SPENT_USD", "garbage", "x");            // ignored, no crash
+  bb.post("AUX_SPENT_USD", 0.25, "auto_extract");
+  bb.pump();
+  EXPECT_DOUBLE_EQ(budget, 0.5);                        // two deltas accumulated
+}
 TEST(LLMModule, BudgetAccruesOnPumpThreadUnderOffload) {
   // Race-free budget: under an Executor the worker posts ONLY LLM_RESPONSE; the
   // LLMModule accrues spent_ and posts BUDGET_SPENT_USD from a pump-thread

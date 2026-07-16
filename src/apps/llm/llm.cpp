@@ -128,6 +128,16 @@ void LLMModule::on_attach(Blackboard& bb) {
     spent_ += (static_cast<double>(p) + c) / 1e6 * price_per_mtok_;
     bb_->post("BUDGET_SPENT_USD", spent_, "llm");
   });
+
+  // Aux-call spend (auto-extract's background reviews): posted as a per-call DELTA by the
+  // aux consumer's worker. Folded here — the pump thread stays the single writer of spent_,
+  // and BUDGET_SPENT_USD stays the one cumulative number stay_on_budget reads. This closes
+  // the "background LLM calls are unmetered" class the embedding path still has (documented).
+  bb.subscribe("AUX_SPENT_USD", [this](const Entry& e) {
+    if (!e.value.is_number()) return;
+    spent_ += e.value.get<double>();
+    bb_->post("BUDGET_SPENT_USD", spent_, "llm");
+  });
 }
 
 }  // namespace hades
