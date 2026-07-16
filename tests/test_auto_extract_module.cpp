@@ -10,6 +10,7 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include "hades/blackboard.h"
+#include "hades/executor.h"
 #include "hades/module/auto_extract_module.h"
 using namespace hades;
 namespace fs = std::filesystem;
@@ -160,4 +161,34 @@ TEST(AutoExtract, DigestTruncationIsUtf8Safe) {
   auto strict_dump = [&] { return nlohmann::json{{"c", p->last_digest}}.dump(); };
   EXPECT_NO_THROW((void)strict_dump());
   EXPECT_EQ(store_lines(store).size(), 1u);
+}
+
+TEST(AutoExtract, OffloadedReviewRunsOnExecutorAndRecovers) {
+  // The one test that exercises the REAL offload path: worker thread runs the review, posts
+  // AUX_SPENT_USD cross-thread, and clears the atomic busy_ so a later turn reviews again.
+  // busy_ clears strictly AFTER the AUX post, so the second turn may be busy-skipped for a
+  // moment — retried until accepted (bounded).
+  Blackboard bb;
+  const std::string store = fresh_store("offload");
+  std::vector<std::unique_ptr<AutoExtractModule>> keep;
+  auto prov = std::make_unique<ScriptedAux>();
+  ScriptedAux* p = prov.get();
+  AutoExtractModule* m = attach(bb, std::move(prov), store, keep);
+  Executor ex(1);          // declared AFTER the module -> destroyed FIRST (joins the worker
+  m->set_executor(&ex);    // while module/provider/bus are alive — the wiring invariant)
+  double aux = 0.0;
+  bb.subscribe("AUX_SPENT_USD", [&](const Entry& e) { aux = e.value.get<double>(); });
+  turn(bb, "human", "please use metric", "ok");
+  ASSERT_TRUE(bb.run_until([&] { return aux > 0.0; }, 5.0));
+  EXPECT_EQ(store_lines(store).size(), 1u);
+  p->reply = R"(["second fact"])";
+  bool second = false;
+  for (int i = 0; i < 50 && !second; ++i) {
+    aux = 0.0;
+    turn(bb, "human", "more", "words");
+    second = bb.run_until([&] { return aux > 0.0; }, 0.3);
+  }
+  ASSERT_TRUE(second) << "busy_ never released — extraction stayed dead";
+  EXPECT_EQ(store_lines(store).size(), 2u);
+  EXPECT_GE(p->calls, 2);
 }

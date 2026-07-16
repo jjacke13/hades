@@ -119,7 +119,8 @@ void AutoExtractModule::on_attach(Blackboard& bb) {
     if (is_turn_artifact(assistant)) return;
     if (busy_.exchange(true)) return;                     // one review in flight; skip, not queue
     // Capture discipline (LLMModule precedent): non-owning provider/bus pointers + plain
-    // values + the atomic flag. `this` fields are NOT touched by the worker.
+    // values. The worker's only `this`-reachable write is the ATOMIC busy_ (via `busy`);
+    // no pump-mutated field (origin_/last_user_/config) is read or written off-thread.
     Provider* prov = provider_.get();
     Blackboard* bus = bb_;
     std::atomic<bool>* busy = &busy_;
@@ -146,8 +147,18 @@ void AutoExtractModule::on_attach(Blackboard& bb) {
       } catch (...) { /* fail-soft: an extractor error never touches a turn */ }
       busy->store(false);
     };
-    if (executor_) executor_->submit([req = std::move(req), run] { run(req); });
-    else run(req);
+    if (executor_) {
+      // If the enqueue itself fails (bad_alloc building the std::function, or the executor
+      // already stopping), the task never runs and busy_ would leak true — permanently
+      // killing extraction for the process. Clear it and drop this one review instead.
+      try {
+        executor_->submit([req = std::move(req), run] { run(req); });
+      } catch (...) {
+        busy_.store(false);
+      }
+    } else {
+      run(req);
+    }
   });
 }
 }  // namespace hades
