@@ -135,7 +135,9 @@ void LLMModule::on_attach(Blackboard& bb) {
   // the "background LLM calls are unmetered" class the embedding path still has (documented).
   bb.subscribe("AUX_SPENT_USD", [this](const Entry& e) {
     if (!e.value.is_number()) return;
-    spent_ += e.value.get<double>();
+    const double d = e.value.get<double>();
+    if (d <= 0.0) return;   // spend only accrues — a buggy poster must never REFUND budget
+    spent_ += d;
     bb_->post("BUDGET_SPENT_USD", spent_, "llm");
   });
 }
