@@ -10,8 +10,10 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <nlohmann/json.hpp>
 #include "hades/session_id.h"
 #include "hades/session_history.h"
+#include "hades/embedding/session_turns.h"
 #include "hades/launcher.h"  // MalConfig
 
 // ── session-id generation + per-session jsonl path resolution (was src/core/session_id.cpp) ──────────────
@@ -88,5 +90,38 @@ std::vector<nlohmann::json> read_session_jsonl(const std::string& path) {
     if (!j.is_discarded() && j.is_object()) out.push_back(std::move(j));
   }
   return out;
+}
+}  // namespace hades
+
+// ── session_turns: extract per-turn "U:…\nA:…" units from a session jsonl (moved 2026-07-16 from embedding_memory.cpp so tool binaries can compile session.cpp standalone) ──────────────
+namespace hades {
+// Safe role read: a non-string "role" (corrupt/external line) must NOT throw type_error (the
+// function's never-throws contract) — treat anything but a string role as "" (no match).
+static std::string role_of(const nlohmann::json& m) {
+  auto it = m.find("role");
+  return (it != m.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+}
+std::vector<SessionTurn> extract_session_turns(const std::string& session_file) {
+  std::vector<SessionTurn> turns;
+  const auto msgs = read_session_jsonl(session_file);
+  const std::string base = std::filesystem::path(session_file).filename().string();
+  std::size_t idx = 0;
+  for (std::size_t i = 0; i < msgs.size(); ++i) {
+    if (role_of(msgs[i]) != "user") continue;
+    if (!msgs[i].contains("content") || !msgs[i]["content"].is_string()) continue;
+    const std::string user = msgs[i]["content"].get<std::string>();
+    // find the NEXT assistant message with string content (fold tool / tool_call assistants)
+    std::string answer;
+    for (std::size_t j = i + 1; j < msgs.size(); ++j) {
+      if (role_of(msgs[j]) == "user") break;             // next turn started, no answer
+      if (role_of(msgs[j]) == "assistant" && msgs[j].contains("content") && msgs[j]["content"].is_string()) {
+        answer = msgs[j]["content"].get<std::string>(); break;
+      }
+    }
+    if (answer.empty()) continue;                                  // unanswered user -> drop
+    turns.push_back({"session:" + base + "#" + std::to_string(idx), "U: " + user + "\nA: " + answer});
+    ++idx;
+  }
+  return turns;
 }
 }  // namespace hades
