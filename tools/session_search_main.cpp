@@ -127,6 +127,9 @@ int main(int argc, char** argv) {
   } else {
     out = {{"ok", false}, {"result", {{"error", "unknown call: " + call}}}};
   }
-  std::cout << out.dump() << std::endl;
+  // UTF-8-replace dump (house pattern, every content-echoing tool): the 700-byte truncation
+  // can split a multibyte codepoint in real session text, and a strict dump() would THROW on
+  // the invalid tail — the one-JSON-line contract must hold on valid (non-ASCII) sessions.
+  std::cout << out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << std::endl;
   return 0;
 }

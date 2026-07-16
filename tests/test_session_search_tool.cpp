@@ -128,3 +128,19 @@ TEST(SessionSearchTool, CorruptLinesSkippedNonJsonlIgnored) {
   ASSERT_EQ(j["result"]["hits"].size(), 1u);
   EXPECT_EQ(j["result"]["hits"][0].value("session", ""), "c");
 }
+
+TEST(SessionSearchTool, MultibyteStraddlingTruncationStillEmitsValidJson) {
+  // The 700-byte cut lands mid-codepoint: unit prefix "U: needle\nA: " (13 bytes) + 680 'x'
+  // = 693 bytes, then a run of 2-byte "α" — byte 700 is 7 (odd) bytes into the run, so the
+  // truncation splits an α. The tool must still emit one PARSEABLE ok:true line (UTF-8-replace
+  // dump), not throw out of a strict dump().
+  const std::string dir = fresh_dir("utf8");
+  std::string answer(680, 'x');
+  for (int i = 0; i < 20; ++i) answer += "\xCE\xB1";   // 20 × U+03B1 (2 bytes each)
+  write_session(dir, "s.jsonl", {{"needle", answer}});
+  auto j = search({dir}, {{"query", "needle"}});
+  ASSERT_FALSE(j.is_discarded());                      // output parsed at all
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  ASSERT_EQ(j["result"]["hits"].size(), 1u);
+  EXPECT_FALSE(j["result"]["hits"][0].value("text", "").empty());
+}
