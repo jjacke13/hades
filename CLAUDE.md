@@ -285,7 +285,7 @@ discovered names dedup first-wins (a server listing a name twice announces it on
 The memory-v2 work-list item 2b (Hermes borrow): an agent-callable native tool that token-overlap-ranks the
 past-session corpus `.hades/sessions/*.jsonl` and returns RAW excerpts (no LLM summarization) — the cheap
 complement to the opt-in embeddings recall, answering "did we discuss X last week?". Grep-level, no index/deps.
-- **Tool contract:** `session_search {query, max_results?}` → `{ok, result:{hits:[{session,text,score}], searched_sessions}}`.
+- **Tool contract:** `session_search {query, max_results?}` → `{ok, result:{hits:[{session,turn,text}], searched_sessions}}`.
   Ranks each `"U:…\nA:…"` turn-unit by query-token overlap, **newest session first** on ties; `max_results` default
   5, clamped to 20; each unit truncated (~700 bytes, **UTF-8-replace dump** so a mid-codepoint cut still emits valid
   JSON — the `0bfb43f` review fix); empty/non-string query fails closed; corrupt jsonl lines + non-`.jsonl` files

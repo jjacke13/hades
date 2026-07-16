@@ -29,7 +29,6 @@
 #include "hades/executor.h"
 #include "hades/llm/http.h"
 #include "hades/memory/store.h"
-#include "hades/session_history.h"
 
 // ── EmbeddingMemoryModule: semantic rank per turn, incremental index, periodic reindex (was src/module/embedding_memory_module.cpp) ──────────────
 namespace hades {
