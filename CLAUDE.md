@@ -30,8 +30,8 @@ router + Bridge [real multi-agent].
 
 ## Current state (2026-07-11)
 `main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below) + **`session_search`** (keyword recall over past-session jsonl, see below), **672/672 tests** (ASan+UBSan; TSan 614/614 as of feat/simplex — no new thread surface since; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
-Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **18 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent` + **dev tools**
+Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **19 tools**
+(`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run_command allow/confirm/deny + git_read read-only, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
