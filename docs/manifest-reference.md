@@ -1068,9 +1068,10 @@ The manifest never holds secrets — it names the env var. Each is redacted in `
 | `TELEGRAM_BOT_TOKEN` | `Telegram.token_env` | Telegram bot token (required with `Module = telegram`). |
 | `HADES_BRIDGE_SECRET` | `Bridge.secret_env` | Shared bridge secret (required with `Module = bridge`). |
 
-Convention: keep these in a **gitignored `.env`** (`chmod 600`) and either `source` it before
-launch or point the manifest at it with `Session.env_file = .env` — hades then loads it itself at
-boot (real environment still wins over the file; see the §3 `env_file` row). Runtime stores
+Convention: copy the shipped **`.env.example`** to a **gitignored `.env`** (`chmod 600`), fill it
+in, and either `source` it before launch or point the manifest at it with `Session.env_file = .env`
+— hades then loads it itself at boot (real environment still wins over the file; see the §3
+`env_file` row). Runtime stores
 (`.hades/…`) are gitignored; `memory/facts.md` and `skills/` are git-tracked and mutated by the
 agent at runtime (expect working-tree churn to review or gitignore).
 
