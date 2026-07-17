@@ -121,13 +121,15 @@ TEST(EnvFile, ParsesDotenvLines) {
       "SINGLE='x'\n"
       "NOEQ_LINE\n"
       "=novalue-key\n"
-      "TRAIL=v#not-a-comment\n");
-  ASSERT_EQ(v.size(), 5u);
+      "TRAIL=v#not-a-comment\n"
+      "CRLF=from-windows\r\n");
+  ASSERT_EQ(v.size(), 6u);
   EXPECT_EQ(v[0], (std::pair<std::string, std::string>{"HADES_API_KEY", "sk-abc"}));
   EXPECT_EQ(v[1], (std::pair<std::string, std::string>{"TELEGRAM_BOT_TOKEN", "tok123"}));
   EXPECT_EQ(v[2], (std::pair<std::string, std::string>{"QUOTED", "has spaces"}));
   EXPECT_EQ(v[3], (std::pair<std::string, std::string>{"SINGLE", "x"}));
   EXPECT_EQ(v[4], (std::pair<std::string, std::string>{"TRAIL", "v#not-a-comment"}));
+  EXPECT_EQ(v[5], (std::pair<std::string, std::string>{"CRLF", "from-windows"}));  // \r stripped — a stray CR in a key would 401 mysteriously
 }
 
 TEST(EnvFile, EmptyAndGarbageYieldEmpty) {
