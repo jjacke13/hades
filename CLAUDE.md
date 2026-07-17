@@ -1136,7 +1136,7 @@ in this doc, not the tree):
   dependency order). Omit a module → it's absent (`agent.X==nullptr`); binary errors if `llm`/`arbiter`/the
   requested front-end is missing. Cross-wiring (Arbiter←tools/objectives/model/prompt) stays explicit in
   `wire_agent`. dev.hades roster = llm/tool_runner/memory/chat/arbiter/serve/skills/embedding_memory.
-- API key: env var only, redacted in the Eventlog; never put it in the manifest.
+- API key: env var only, redacted in the Eventlog; never put it in the manifest. **`Session.env_file`** (shipped 2026-07-17): optional dotenv-style file loaded by `hades_main` at boot BEFORE resolve_api_key/build_agent — real env WINS (setenv overwrite=0), unreadable named file → MalConfig, `parse_env_file` pure in config.cpp (export prefix/quotes/CRLF handled; no $VAR expansion). Secrets loaded this way still hit the existing redaction.
 - Single-threaded **dispatch** — subscriber handlers run ONLY on the pump thread (the determinism
   invariant). `post()` is thread-safe (workers call it); the blocking LLM call is offloaded to an
   `Executor` worker when set. HTTP server still serializes whole turns under one mutex. All four
