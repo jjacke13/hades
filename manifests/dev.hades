@@ -8,6 +8,7 @@ Session
   endpoint       = https://api.ppq.ai/v1     # any OpenAI-compatible endpoint
   model          = gpt-5.5
   api_key_env    = HADES_API_KEY
+  # env_file     = .env   # optional: hades loads this dotenv file at boot (real env wins); keep it gitignored, chmod 600
   price_per_mtok = 5.0
   system_prompt_file = prompts/soul.md   # SOUL — persona/rules, prepended to every turn
   # user_file        = prompts/user.md   # USER — your profile (optional)

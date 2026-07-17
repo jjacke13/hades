@@ -78,6 +78,20 @@ int main(int argc, char** argv) {
     // missing-key error would mask a corrupt-manifest error. Throws MalConfig (caught below).
     enforce_manifest(manifest);
 
+    // Optional `Session.env_file`: load a dotenv-style file BEFORE anything reads the
+    // environment (resolve_api_key below; every module's on_start secret lookup). The real
+    // environment WINS over the file (setenv overwrite=0 — an operator export overrides).
+    // Named-but-unreadable file refuses to boot: silently skipping it would surface later
+    // as a mystery auth failure.
+    if (auto s = manifest.session(); s && s->kv.count("env_file") && !s->kv.at("env_file").empty()) {
+      const std::string& env_path = s->kv.at("env_file");
+      std::ifstream ef(env_path);
+      if (!ef) throw MalConfig("env_file not readable: " + env_path);
+      std::stringstream ss;
+      ss << ef.rdbuf();
+      for (const auto& [k, v] : parse_env_file(ss.str())) ::setenv(k.c_str(), v.c_str(), 0);
+    }
+
     // Resolve + redact the key BEFORE constructing the blackboard, so the secret
     // can never appear unredacted in session.log.
     const std::string key = resolve_api_key(manifest);

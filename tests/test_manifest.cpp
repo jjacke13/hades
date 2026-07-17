@@ -110,3 +110,27 @@ TEST(Manifest, ShippedDevManifestHasNoWarningsOrFatals) {
   EXPECT_TRUE(m.warnings.empty());          // dev.hades is fully multi-line / single-kv inline
   EXPECT_TRUE(fatal_warnings(m).empty());
 }
+
+TEST(EnvFile, ParsesDotenvLines) {
+  const auto v = parse_env_file(
+      "# comment\n"
+      "\n"
+      "HADES_API_KEY=sk-abc\n"
+      "export TELEGRAM_BOT_TOKEN = tok123\n"
+      "QUOTED=\"has spaces\"\n"
+      "SINGLE='x'\n"
+      "NOEQ_LINE\n"
+      "=novalue-key\n"
+      "TRAIL=v#not-a-comment\n");
+  ASSERT_EQ(v.size(), 5u);
+  EXPECT_EQ(v[0], (std::pair<std::string, std::string>{"HADES_API_KEY", "sk-abc"}));
+  EXPECT_EQ(v[1], (std::pair<std::string, std::string>{"TELEGRAM_BOT_TOKEN", "tok123"}));
+  EXPECT_EQ(v[2], (std::pair<std::string, std::string>{"QUOTED", "has spaces"}));
+  EXPECT_EQ(v[3], (std::pair<std::string, std::string>{"SINGLE", "x"}));
+  EXPECT_EQ(v[4], (std::pair<std::string, std::string>{"TRAIL", "v#not-a-comment"}));
+}
+
+TEST(EnvFile, EmptyAndGarbageYieldEmpty) {
+  EXPECT_TRUE(parse_env_file("").empty());
+  EXPECT_TRUE(parse_env_file("# only\n\n  \n").empty());
+}

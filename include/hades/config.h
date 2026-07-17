@@ -34,4 +34,10 @@ std::vector<std::string> fatal_warnings(const Manifest& m);
 bool set_double_on_string(const std::string& v, double& out);
 bool set_bool_on_string(const std::string& v, bool& out);
 bool set_pos_double_on_string(const std::string& v, double& out);
+// Parse a dotenv-style file (Session.env_file): KEY=VALUE per line, '#' full-line comments
+// and blanks skipped, optional leading "export ", optional matching surrounding quotes on
+// the value stripped. NO $VAR expansion, NO inline-comment stripping (a value may contain
+// '#'). Pure; never throws. hades_main setenv()s the pairs WITHOUT overriding the real
+// environment (dotenv convention: an operator export wins over the file).
+std::vector<std::pair<std::string, std::string>> parse_env_file(const std::string& text);
 }  // namespace hades

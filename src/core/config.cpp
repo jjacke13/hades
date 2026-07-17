@@ -213,3 +213,31 @@ std::string read_memory_layer(const std::string& path) {
 
 // ── hades semver string (was src/core/version.cpp) ──────────────
 namespace hades { std::string version() { return "0.1.0"; } }
+
+// ── parse_env_file: dotenv-style KEY=VALUE loader for Session.env_file (see config.h) ──────────────
+namespace hades {
+std::vector<std::pair<std::string, std::string>> parse_env_file(const std::string& text) {
+  std::vector<std::pair<std::string, std::string>> out;
+  std::istringstream in(text);
+  std::string line;
+  auto trim = [](std::string s) {
+    auto ns = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), ns));
+    s.erase(std::find_if(s.rbegin(), s.rend(), ns).base(), s.end());
+    return s;
+  };
+  while (std::getline(in, line)) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("export ", 0) == 0) line = trim(line.substr(7));
+    const auto eq = line.find('=');
+    if (eq == std::string::npos || eq == 0) continue;   // no '=' / empty key: not an assignment
+    const std::string key = trim(line.substr(0, eq));
+    std::string val = trim(line.substr(eq + 1));
+    if (val.size() >= 2 && (val.front() == '"' || val.front() == '\'') && val.back() == val.front())
+      val = val.substr(1, val.size() - 2);              // strip one matching quote pair
+    if (!key.empty()) out.emplace_back(key, val);
+  }
+  return out;
+}
+}  // namespace hades

@@ -121,6 +121,7 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `memory_char_limit` | Char cap on the core-memory file (it is in EVERY turn's prompt). An over-cap `core_memory` write fails with the entry list so the agent consolidates. | `2400` | Bad/`<=0` value → default. |
 | `sessions_dir` | Directory of per-session conversation `.jsonl` files. | `.hades/sessions` | `--resume` reads from here; `/new` rotates within it. |
 | `history_budget_chars` | Max chars of history sent per LLM request (full history still kept on disk). | `120000` (`kDefaultHistoryBudgetChars`) | ~30k tokens. Very high → effectively "send whole session". |
+| `env_file` | Dotenv-style file loaded at launch, **before** anything reads the environment: `KEY=VALUE` lines, `#` full-line comments, optional `export ` prefix, optional surrounding quotes. No `$VAR` expansion, no inline comments. | none | The **real environment wins** over the file (an operator export overrides). Named-but-unreadable → `MalConfig`. Keep it gitignored + `chmod 600`; the known secrets (API key, tokens) are still redacted in session.log, arbitrary extra vars are not. |
 | `provider` | *(currently unread)* | — | The LLM module always builds an OpenAI-compatible provider; this key is decorative. |
 
 **Gotchas.**
@@ -1067,7 +1068,9 @@ The manifest never holds secrets — it names the env var. Each is redacted in `
 | `TELEGRAM_BOT_TOKEN` | `Telegram.token_env` | Telegram bot token (required with `Module = telegram`). |
 | `HADES_BRIDGE_SECRET` | `Bridge.secret_env` | Shared bridge secret (required with `Module = bridge`). |
 
-Convention: keep these in a **gitignored `.env`** and `source` it before launch. Runtime stores
+Convention: keep these in a **gitignored `.env`** (`chmod 600`) and either `source` it before
+launch or point the manifest at it with `Session.env_file = .env` — hades then loads it itself at
+boot (real environment still wins over the file; see the §3 `env_file` row). Runtime stores
 (`.hades/…`) are gitignored; `memory/facts.md` and `skills/` are git-tracked and mutated by the
 agent at runtime (expect working-tree churn to review or gitignore).
 
