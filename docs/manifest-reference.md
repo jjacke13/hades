@@ -178,6 +178,15 @@ of being killed mid-write.
 they need no extra block. `run_command` carries `timeout_s = 600` in dev.hades (builds/tests run
 long); the other four use the 30s runner default. All five are plain `native` blocks.
 
+**`http_fetch` HTML extraction (always on, no configuration).** HTML responses (by
+`Content-Type`, or a body sniff when the header is absent) are converted to readable text
+before being returned: the page title first, links inline as `label (url)`, scripts/styles
+dropped, entities decoded. The LLM can pass `raw = true` for the unconverted body. The
+result carries an `extracted` flag; the 64 KB cap applies to the returned text (extraction
+runs on the full body first). Non-HTML responses (JSON APIs, plain text) pass through
+untouched. Security posture is unchanged — same Net capability verdicts (§5), redirects
+still disabled.
+
 **Staleness guard (`fs_read` / `edit_file` / `write_file` — always on, no configuration).** The two
 mutating tools are protected against lost updates: `fs_read` (and each successful edit/write) reports
 a content-hash `version`, the Arbiter remembers it per file, and injects an `expect_version` into

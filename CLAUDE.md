@@ -41,8 +41,8 @@ typed shares), heartbeat/cron + when= triggers + self-scheduling, **MCP tool dis
 Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, StatusModule,
 **readline→libedit swap (GPL-3 out, MIT release unblocked)**, README + building.md + .env.example,
 **`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
-both live-validated), **`Simplex.command`** daemon auto-start. **690/690 tests** (ASan+UBSan AND
-TSan, suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
+both live-validated), **`Simplex.command`** daemon auto-start. **714/714 tests** (ASan+UBSan AND
+TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **19 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
@@ -1030,6 +1030,26 @@ already the data feed) · **manifest-parse hardening trio** (from the 2026-07-13
 as gotchas, code fix pending: `stay_on_budget` cap `0`/absent bricks the agent → MalConfig or
 treat-as-disabled; unknown `Embedding.provider` silently falls back to subprocess → MalConfig like
 Stt/Tts; `Tts.max_chars` bare `stoul` accepts `10x`→10 and wraps negatives → strict parse).
+
+### CC tool-gap analysis (2026-07-18, Vaios) — ranked add-list from comparing Claude Code's toolset
+Mapping CC tools ↔ hades's 19: parity or better on fs/search/edit/shell/skills/memory/cron/MCP
+(hades ahead on capability gating, agent-authored skills, bounded core memory, peers, when= watches).
+Ranked gaps to add:
+1. ~~**http_fetch text extraction**~~ — **SHIPPED 2026-07-18** (`feat/http-fetch-extract`): HTML→text
+   by default (title first, links `label (url)`, entities→UTF-8), `raw=true` escape, `extracted`
+   result flag, extract-then-cap; zero-dep header-only `include/hades/tool/html_text.h`; loopback
+   httplib functional tests. Non-HTML passthrough byte-identical.
+2. **`web_search` tool** — biggest practical gap (agent can't discover without a URL). Provider seam like
+   STT/TTS: self-hosted SearXNG (fits Vaios) or API key. Capability Net.
+3. **Todo/plan tool** — `.hades/todo.md` + prompt fold (core-memory pattern); matters for heartbeat
+   multi-step autonomy.
+4. **Background tool execution** — = the tool-offload backlog item (extend epoch/abandonment to TOOL_RESULT).
+5. **Send files/photos to user** — Telegram sendDocument/sendPhoto (out-bound; only text+voice today).
+6. **Vision input** — Telegram photo → image in turn (STT-pattern seam; model-dependent).
+7. **Ephemeral subagent fork** — fresh-context child turn, result back, main history clean (peers partially cover).
+8. **Compact-and-continue** — = the context-full backlog item below.
+Non-gaps (deliberate): AskUserQuestion (confirm y/N + text suffices) · ToolSearch-style deferred schemas
+(only matters if MCP rosters blow up the announce) · Artifact/plan-mode/IDE (not hades's shape).
 
 ### Noted 2026-07-10 (Vaios) — three new future items
 1. **Context-full behavior — DECIDE.** Today when a session grows past `history_budget_chars` (default
