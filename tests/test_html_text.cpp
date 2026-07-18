@@ -107,7 +107,7 @@ TEST(HtmlText, MalformedNoCrash) {
   extract_html_text("<a href=");                             // truncated href
   extract_html_text("<a href=\"u\">no close");
   extract_html_text("<!--");                                 // unclosed comment
-  extract_html_text(std::string("<p>\x00 null\x00</p>", 16));
+  extract_html_text(std::string("<p>\x00 null\x00</p>", 14));   // 14 = the literal's true length
   extract_html_text("<<<>>><//><p</p>");
   std::string big(300000, 'x');
   extract_html_text("<p>" + big + "</p>");
