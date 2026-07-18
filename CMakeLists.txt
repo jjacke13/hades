@@ -84,6 +84,7 @@ add_executable(hades-shell tools/shell_main.cpp)
 target_link_libraries(hades-shell PRIVATE hades_core)               # reuses run_subprocess
 add_executable(hades-http-fetch tools/http_fetch_main.cpp)
 target_link_libraries(hades-http-fetch PRIVATE cpr::cpr nlohmann_json::nlohmann_json)
+target_include_directories(hades-http-fetch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(hades-save-memory tools/save_memory_main.cpp)
 target_link_libraries(hades-save-memory PRIVATE nlohmann_json::nlohmann_json)
 add_executable(hades-core-memory tools/core_memory_main.cpp)
@@ -99,6 +100,7 @@ target_compile_definitions(hades_tests PRIVATE
   FAKE_MCP_SERVER="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_mcp_server.sh")
 target_sources(hades_tests PRIVATE tests/test_tools.cpp)
 target_sources(hades_tests PRIVATE tests/test_html_text.cpp)
+target_sources(hades_tests PRIVATE tests/test_http_fetch_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE
   SHELL_BIN="$<TARGET_FILE:hades-shell>"
   WRITE_FILE_BIN="$<TARGET_FILE:hades-write-file>"
