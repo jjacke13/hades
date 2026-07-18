@@ -281,7 +281,7 @@ fixes landed post-plan:** discovered tool names are charset-gated `[A-Za-z0-9_-]
 provider-illegal name is skipped, not left to 400 the whole tools array) and duplicate
 discovered names dedup first-wins (a server listing a name twice announces it once).
 
-### session_search (shipped 2026-07-16, `feat/session-search`) — keyword recall over past sessions
+### session_search (shipped 2026-07-16, `feat/session-search`) — keyword recall over past sessions — LIVE-VALIDATED 2026-07-18 (Vaios)
 The memory-v2 work-list item 2b (Hermes borrow): an agent-callable native tool that token-overlap-ranks the
 past-session corpus `.hades/sessions/*.jsonl` and returns RAW excerpts (no LLM summarization) — the cheap
 complement to the opt-in embeddings recall, answering "did we discuss X last week?". Grep-level, no index/deps.
@@ -985,7 +985,7 @@ the capability-v2 **per-origin exec scopes** fix it properly (added to that back
 replying over email, Telegram-equivalent — Auth-Results gate, backlog drain-and-discard, In-Reply-To
 threading, NOTIFY_USER email sink) stays a future item with its seeds in that spec.
 
-### Status line (shipped 2026-07-13, `feat/status-module`) — `Module = status`, AGENT_STATUS + dim REPL line
+### Status line (shipped 2026-07-13, `feat/status-module`) — `Module = status`, AGENT_STATUS + dim REPL line — LIVE-VALIDATED 2026-07-18 (Vaios: real turns, real counts)
 Terminal-cosmetics side quest, design A of the brainstorm (data producer ≠ surface — the terminal has ONE
 writer, ChatModule; a second module printing mid-edit would corrupt the libedit line). **`StatusModule`**
 (`src/apps/status/status.cpp`, `type()=="status"`, zero-config, no thread) subscribes the traffic every turn
@@ -1136,7 +1136,7 @@ in this doc, not the tree):
   dependency order). Omit a module → it's absent (`agent.X==nullptr`); binary errors if `llm`/`arbiter`/the
   requested front-end is missing. Cross-wiring (Arbiter←tools/objectives/model/prompt) stays explicit in
   `wire_agent`. dev.hades roster = llm/tool_runner/memory/chat/arbiter/serve/skills/embedding_memory.
-- API key: env var only, redacted in the Eventlog; never put it in the manifest. **`Session.env_file`** (shipped 2026-07-17): optional dotenv-style file loaded by `hades_main` at boot BEFORE resolve_api_key/build_agent — real env WINS (setenv overwrite=0), unreadable named file → MalConfig, `parse_env_file` pure in config.cpp (export prefix/quotes/CRLF handled; no $VAR expansion). Secrets loaded this way still hit the existing redaction.
+- API key: env var only, redacted in the Eventlog; never put it in the manifest. **`Session.env_file`** (shipped 2026-07-17): optional dotenv-style file loaded by `hades_main` at boot BEFORE resolve_api_key/build_agent — real env WINS (setenv overwrite=0), unreadable named file → MalConfig, `parse_env_file` pure in config.cpp (export prefix/quotes/CRLF handled; no $VAR expansion). Secrets loaded this way still hit the existing redaction. LIVE-VALIDATED 2026-07-18 (Vaios).
 - Single-threaded **dispatch** — subscriber handlers run ONLY on the pump thread (the determinism
   invariant). `post()` is thread-safe (workers call it); the blocking LLM call is offloaded to an
   `Executor` worker when set. HTTP server still serializes whole turns under one mutex. All four
@@ -1226,7 +1226,7 @@ in this doc, not the tree):
 - `skills/` is **git-tracked** the same way — the agent authors skills at runtime via `save_skill`, so
   agent-written `skills/<name>/SKILL.md` show as working-tree churn to review/commit (or gitignore it).
 - Interactive REPL uses libedit (readline-compat) only when stdin is a **real TTY**; piped/test input falls back to
-  `std::getline` (keeps the injected-stream test seam). Arrow-key editing verified live 2026-06-29.
+  `std::getline` (keeps the injected-stream test seam). Arrow-key editing verified live 2026-06-29; libedit swap re-verified live 2026-07-18 (Vaios: arrows/history/colors good on real terminal).
 - **Embedding `endpoint` must be the BASE url, NOT `.../embeddings`** — the HTTP provider appends `/embeddings`.
   PPQ: `endpoint = https://api.ppq.ai/v1` (→ `…/v1/embeddings`). Setting `…/v1/embeddings` → `…/embeddings/embeddings`
   → every embed fails → fail-soft (`EMBED_INDEX_DONE=false`, `RETRIEVED_MEMORY_SEMANTIC=""`, no cache file). Bit Vaios once.
