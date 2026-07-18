@@ -175,6 +175,12 @@ std::unique_ptr<SimplexApi> make_ws_simplex_api(std::string host, int port,
 #include "hades/module/simplex_module.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
 #include "hades/launcher.h"          // MalConfig
 #include "hades/telegram/parse.h"    // split_message
 #include "hades/timeouts.h"          // kDefaultTurnIdleTimeoutS
@@ -217,6 +223,50 @@ SimplexModule::~SimplexModule() {
   stop_cv_.notify_all();
   // NOTE: a live next_event can hold the join up to ~poll_timeout_s_ (the WS read deadline).
   if (ev_thread_.joinable()) ev_thread_.join();
+  stop_daemon_();   // AFTER the join — the event thread may be mid-socket-op against the daemon
+}
+
+void SimplexModule::spawn_daemon_() {
+  if (daemon_argv_.empty() || daemon_pid_ > 0) return;
+  std::vector<char*> argv;
+  argv.reserve(daemon_argv_.size() + 1);
+  for (auto& a : daemon_argv_) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    std::cerr << "hades: simplex: cannot fork daemon (" << daemon_argv_[0] << ")\n";
+    return;   // fail-soft: the reconnect loop will keep reporting the daemon unreachable
+  }
+  if (pid == 0) {
+    // Child: stdin -> /dev/null, stdout+stderr -> append log (an auto-started daemon must not
+    // fail invisibly, and must not scribble on the libedit REPL). exec only returns on failure.
+    ::mkdir(".hades", 0755);
+    if (const int fd = ::open(".hades/simplex-chat.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
+        fd >= 0) {
+      ::dup2(fd, 1);
+      ::dup2(fd, 2);
+      if (fd > 2) ::close(fd);
+    }
+    if (const int nul = ::open("/dev/null", O_RDONLY); nul >= 0) {
+      ::dup2(nul, 0);
+      if (nul > 2) ::close(nul);
+    }
+    ::execvp(argv[0], argv.data());
+    ::_exit(127);   // exec failed (message lands in the log via stderr redirect above)
+  }
+  daemon_pid_ = static_cast<int>(pid);
+}
+
+void SimplexModule::stop_daemon_() {
+  if (daemon_pid_ <= 0) return;
+  ::kill(daemon_pid_, SIGTERM);
+  for (int i = 0; i < 20; ++i) {   // ~2s grace, then force — never hang shutdown on the daemon
+    if (::waitpid(daemon_pid_, nullptr, WNOHANG) != 0) { daemon_pid_ = 0; return; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  ::kill(daemon_pid_, SIGKILL);
+  ::waitpid(daemon_pid_, nullptr, 0);
+  daemon_pid_ = 0;
 }
 
 double SimplexModule::effective_timeout_() const {
@@ -236,6 +286,11 @@ void SimplexModule::on_start(const Block& cfg, Blackboard&) {
   if (cfg.kv.count("connect_timeout_s")) {
     double t = 0.0;
     if (set_pos_double_on_string(cfg.kv.at("connect_timeout_s"), t)) connect_timeout_s_ = t;
+  }
+  if (cfg.kv.count("command")) {                  // auto-start the daemon (start() spawns it)
+    std::istringstream is(cfg.kv.at("command"));
+    std::string w;
+    while (is >> w) daemon_argv_.push_back(w);
   }
   if (api_) return;                               // injected (tests)
   const std::string host = cfg.kv.count("host") ? cfg.kv.at("host") : "127.0.0.1";
@@ -424,6 +479,7 @@ void SimplexModule::run_loop_() {
 
 void SimplexModule::start() {
   if (ev_thread_.joinable()) return;   // idempotent
+  spawn_daemon_();                     // before the thread; reconnect backoff absorbs its boot
   ev_thread_ = std::thread([this] { run_loop_(); });
 }
 

@@ -1186,7 +1186,7 @@ in this doc, not the tree):
   themselves like an allowlisted display name → **prefer numeric ids**). Confirms are plain **`y/N` text**
   (no inline keyboards) — the next message from that contact answers. **Notify:** subscribes `NOTIFY_USER`,
   delivers to `notify_contact` (id direct; name resolves once seen, else skipped) — heartbeat sink, same as
-  Telegram; both rostered → delivered on both. Event thread started by `hades_main` (`start()`) AFTER wiring,
+  Telegram; both rostered → delivered on both. **`Simplex.command`** (shipped 2026-07-18): optional daemon auto-start — `start()` fork/execvp's it (no shell) before the event thread (reconnect backoff absorbs daemon boot), dtor SIGTERM+reaps AFTER the thread join (~2s grace → SIGKILL); stdio → `.hades/simplex-chat.log`; port in command must match `port`; first-run profile init stays manual. Event thread started by `hades_main` (`start()`) AFTER wiring,
   never `on_attach` (tests spawn no thread/socket); reconnects with `connect_timeout_s` backoff. Simplex-only
   roster (no chat/serve) → `hades_main` blocks on `wait()`. `Agent::simplex` sits between `telegram` and
   `heartbeat` (teardown tail telegram → simplex → heartbeat). Docs: manifest-reference §16. Pi runtime dep =

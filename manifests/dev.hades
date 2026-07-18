@@ -267,4 +267,5 @@ Serve
 #   allow_contacts = 2, Alice Example
 #   auto_accept    = false
 #   # notify_contact = 2   # NOTIFY_USER (heartbeat) delivery target
+#   # command = simplex-chat -p 5225   # auto-start the daemon (port must match; first-run profile setup stays manual)
 # }

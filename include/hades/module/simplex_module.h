@@ -38,8 +38,9 @@ class SimplexModule : public Module {
   void set_turn_gate(TurnGate* g) { gate_ = g; }
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
 
-  void start();          // spawn the event loop (called by hades_main when rostered)
+  void start();          // spawn the daemon child (if `command` set) + the event loop (hades_main)
   void wait();           // join the event thread (simplex-only roster blocks here)
+  int daemon_pid() const { return daemon_pid_; }   // 0 = no daemon spawned (test seam)
   // One next_event dispatch (the loop body; public as the test seam). Returns false on
   // Closed/Error — the loop then backs off and reconnects.
   bool step_once();
@@ -79,6 +80,14 @@ class SimplexModule : public Module {
   nlohmann::json pending_confirm_;
   std::string outstanding_confirm_id_;           // confirm prompt sent, awaiting the y/N text
   long long outstanding_contact_id_ = 0;
+
+  // Optional auto-started daemon (`Simplex.command`): spawned by start() BEFORE the event
+  // thread (the reconnect backoff absorbs the daemon's boot time), SIGTERM+reaped by the dtor
+  // AFTER the thread joins. Empty argv = external daemon (default, unchanged).
+  void spawn_daemon_();
+  void stop_daemon_();
+  std::vector<std::string> daemon_argv_;
+  int daemon_pid_ = 0;
 
   std::thread ev_thread_;
   std::atomic<bool> stop_{false};

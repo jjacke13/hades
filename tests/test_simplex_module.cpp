@@ -7,6 +7,7 @@
 #include <vector>
 #include "hades/blackboard.h"
 #include "hades/launcher.h"          // MalConfig
+#include <signal.h>
 #include "hades/module/simplex_module.h"
 using namespace hades;
 
@@ -240,4 +241,36 @@ TEST(SimplexModule, NotifyByNameResolvesViaKnownContacts) {
 TEST(SimplexModule, ClosedYieldsFalseForTheReconnectPath) {
   Rig r;
   EXPECT_FALSE(r.mod->step_once());        // empty script = Closed -> false (loop reconnects)
+}
+
+TEST(SimplexModule, DaemonCommandSpawnedOnStartAndReapedOnDestroy) {
+  // Simplex.command: hades spawns the daemon child itself. Proven with `sleep` standing in
+  // for simplex-chat: alive after start(), SIGTERM+reaped by the dtor (no orphan, no zombie).
+  struct NoConnectFake : FakeApi {                 // backoff path -> event thread sleeps
+    bool reconnect() override { return false; }
+  };
+  int pid = 0;
+  {
+    Blackboard bb;
+    SimplexModule m(std::make_unique<NoConnectFake>());
+    Block cfg;
+    cfg.kv["allow_contacts"] = "1";
+    cfg.kv["command"] = "sleep 1000";
+    m.on_start(cfg, bb);
+    m.on_attach(bb);
+    m.start();
+    pid = m.daemon_pid();
+    ASSERT_GT(pid, 0);
+    EXPECT_EQ(::kill(pid, 0), 0);                  // child alive
+  }                                                // dtor: join event thread, TERM + reap child
+  EXPECT_NE(::kill(pid, 0), 0);                    // gone (ESRCH; pid-reuse race negligible)
+}
+
+TEST(SimplexModule, NoCommandMeansNoDaemon) {
+  Blackboard bb;
+  SimplexModule m(std::make_unique<FakeApi>());
+  Block cfg;
+  cfg.kv["allow_contacts"] = "1";
+  m.on_start(cfg, bb);
+  EXPECT_EQ(m.daemon_pid(), 0);
 }
