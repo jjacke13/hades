@@ -28,8 +28,21 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-07-11)
-`main` @ `23f2bd2` + `feat/voice-stt` + `feat/voice-tts` + `feat/bridge-protocol` (**voice STT + TTS shipped** — Telegram voice messages transcribed to text, and a voice-origin reply spoken back as a voice note; no new tool binary — plus the **bridge protocol**: card discovery + typed sharing between agents, see below) + a **heartbeat/cron** self-trigger (the agent runs its own turns on a schedule, see below) + **self-scheduling** (the agent creates its own cron/one-shot tasks at runtime via 3 tools, see below) + a **reactive when= trigger** (heartbeat entries + dynamic watches fire on a Blackboard condition, see below) + **`session_search`** (keyword recall over past-session jsonl, see below) + **auto-extract** (after each human turn a background LLM call harvests durable facts into archival memory, see below), **686/686 tests** (ASan+UBSan; TSan 686/686 — both lanes run current; suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` LLM per dev.hades + `openai/text-embedding-3-small` embeddings; dev.hades ships Vaios's live two-agent bridge config → boot needs `HADES_BRIDGE_SECRET`).
+## Current state (2026-07-18)
+**PUBLIC: https://github.com/jjacke13/hades** (published 2026-07-13, MIT LICENSE, full history —
+telegram id scrubbed via filter-repo pre-push; pre-rewrite backup with the real id lives PRIVATE at
+`~/Desktop/repos/hades-prerewrite-backup.bundle`). Everything merged to `main`, no live feature
+branches. **Push ONLY on Vaios's word** (`origin` = github; main is typically N commits ahead —
+say "push" to publish). **The tracked `manifests/dev.hades` is the SANITIZED public reference
+template** (all optional features as commented blocks, placeholder ids); **Vaios's live config is
+`manifests/dev.local.hades`** (gitignored, run that one) + `pi.hades`/`dev2.hades` local-only;
+`memory/` is gitignored. Shipped since the last header: voice STT+TTS, bridge protocol (cards +
+typed shares), heartbeat/cron + when= triggers + self-scheduling, **MCP tool discovery (stdio +
+Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, StatusModule,
+**readline→libedit swap (GPL-3 out, MIT release unblocked)**, README + building.md + .env.example,
+**`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
+both live-validated), **`Simplex.command`** daemon auto-start. **690/690 tests** (ASan+UBSan AND
+TSan, suite ~7s), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **19 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
