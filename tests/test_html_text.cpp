@@ -42,6 +42,14 @@ TEST(HtmlText, AnchorJsAndEmptyHrefsKeepLabelOnly) {
   EXPECT_EQ(extract_html_text("<a>NoHref</a>"), "NoHref");
 }
 
+TEST(HtmlText, HrefAttributeNeedsWordBoundary) {
+  // hreflang= / data-href= must never latch as the link target (final-review fix)
+  EXPECT_EQ(extract_html_text("<a hreflang=\"en\" href=\"/real\">L</a>"), "L (/real)");
+  EXPECT_EQ(extract_html_text("<a data-href=\"/decoy\" href=\"/real\">L</a>"), "L (/real)");
+  EXPECT_EQ(extract_html_text("<a hreflang=\"en\">L</a>"), "L");
+  EXPECT_EQ(extract_html_text("<a href = \"/spaced\">L</a>"), "L (/spaced)");
+}
+
 TEST(HtmlText, UnquotedAndSingleQuotedHrefs) {
   EXPECT_EQ(extract_html_text("<a href=/rel>R</a>"), "R (/rel)");
   EXPECT_EQ(extract_html_text("<a href='/sq'>S</a>"), "S (/sq)");

@@ -41,7 +41,7 @@ typed shares), heartbeat/cron + when= triggers + self-scheduling, **MCP tool dis
 Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, StatusModule,
 **readline→libedit swap (GPL-3 out, MIT release unblocked)**, README + building.md + .env.example,
 **`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
-both live-validated), **`Simplex.command`** daemon auto-start. **714/714 tests** (ASan+UBSan AND
+both live-validated), **`Simplex.command`** daemon auto-start. **715/715 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **19 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search` + **dev tools**

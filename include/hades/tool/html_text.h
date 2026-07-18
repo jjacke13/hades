@@ -101,12 +101,23 @@ inline std::string decode_entities(const std::string& s) {
   return out;
 }
 
-// From an <a ...> open tag's source, pull the href value. "" for anchors (#...),
-// javascript: URLs, empty/missing hrefs — the label then stands alone.
+// From an <a ...> open tag's source, pull the href value. The attribute match requires a
+// word boundary — whitespace before and '=' (spaces allowed) after — so hreflang= or
+// data-href= never latch onto the wrong attribute. "" for anchors (#...), javascript:
+// URLs, empty/missing hrefs — the label then stands alone.
 inline std::string parse_href(const std::string& tag) {
-  const std::size_t h = ifind(tag, "href", 0);
-  if (h == std::string::npos) return "";
-  const std::size_t eq = tag.find('=', h + 4);
+  std::size_t h = 0;
+  std::size_t eq = std::string::npos;
+  while ((h = ifind(tag, "href", h)) != std::string::npos) {
+    const bool left_ok = h > 0 && std::isspace(static_cast<unsigned char>(tag[h - 1]));
+    std::size_t after = h + 4;
+    while (after < tag.size() && std::isspace(static_cast<unsigned char>(tag[after]))) ++after;
+    if (left_ok && after < tag.size() && tag[after] == '=') {
+      eq = after;
+      break;
+    }
+    ++h;
+  }
   if (eq == std::string::npos) return "";
   std::size_t v = eq + 1;
   while (v < tag.size() && std::isspace(static_cast<unsigned char>(tag[v]))) ++v;
