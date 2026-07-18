@@ -303,7 +303,7 @@ complement to the opt-in embeddings recall, answering "did we discuss X last wee
   `include/hades/objective/capability_policy.h` (+cpp), `app/agent_wiring.cpp` (sessions_dir resolve + argv append),
   `tests/test_session_search_{tool,wiring}.cpp`, `tests/test_capability_policy.cpp`.
 
-### Auto-extract (shipped 2026-07-16, `feat/auto-extract`) — the "learn by itself" leg
+### Auto-extract (shipped 2026-07-16, `feat/auto-extract`) — the "learn by itself" leg — LIVE-VALIDATED 2026-07-18 (Vaios: harvest + recall-injection confirmed)
 Memory-v2 work-list item 2's remaining half: after each **human** turn a background aux LLM call reviews the last
 exchange and appends durable facts (preferences, corrections, standing facts) to the **archival** store with
 `src:"auto"` — no explicit `save_memory` needed. **Design validated by Hermes-agent** (`auxiliary.background_review`).
