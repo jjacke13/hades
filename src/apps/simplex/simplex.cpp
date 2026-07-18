@@ -178,6 +178,7 @@ std::unique_ptr<SimplexApi> make_ws_simplex_api(std::string host, int port,
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -240,6 +241,11 @@ void SimplexModule::spawn_daemon_() {
   if (pid == 0) {
     // Child: stdin -> /dev/null, stdout+stderr -> append log (an auto-started daemon must not
     // fail invisibly, and must not scribble on the libedit REPL). exec only returns on failure.
+    // PDEATHSIG: a hades-SPAWNED daemon must die with hades — without this, a SIGINT/SIGTERM
+    // shutdown (the NORMAL exit on a headless/systemd roster, where no dtor runs) would orphan
+    // the daemon still holding the port, and the next launch would spawn a second one into a
+    // bind failure.
+    ::prctl(PR_SET_PDEATHSIG, SIGTERM);
     ::mkdir(".hades", 0755);
     if (const int fd = ::open(".hades/simplex-chat.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
         fd >= 0) {
@@ -252,7 +258,11 @@ void SimplexModule::spawn_daemon_() {
       if (nul > 2) ::close(nul);
     }
     ::execvp(argv[0], argv.data());
-    ::_exit(127);   // exec failed (message lands in the log via stderr redirect above)
+    // execvp itself prints nothing — write the failure to fd 2 (= the log) so a mistyped
+    // `command` is distinguishable from a daemon that started and then crashed.
+    constexpr char m[] = "hades: simplex: exec failed for daemon command\n";
+    [[maybe_unused]] auto r = ::write(2, m, sizeof(m) - 1);
+    ::_exit(127);
   }
   daemon_pid_ = static_cast<int>(pid);
 }
