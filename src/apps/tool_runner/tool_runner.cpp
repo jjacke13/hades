@@ -9,6 +9,7 @@
 // Executor, the resolved tool runs on a worker (execute_tool core) and posts TOOL_RESULT
 // back so the pump thread stays live mid-tool; null (default) -> inline, byte-identical.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +40,13 @@ void ToolRunner::on_start(const Block& cfg, Blackboard&) {
     set_pos_double_on_string(cfg.kv.at("timeout"), timeout_s_);
   if (cfg.kv.count("timeout_s"))
     set_pos_double_on_string(cfg.kv.at("timeout_s"), timeout_s_);   // Tools block key
+  if (cfg.kv.count("background_timeout_s"))
+    set_pos_double_on_string(cfg.kv.at("background_timeout_s"), bg_timeout_s_);
+  if (cfg.kv.count("max_background")) {
+    double v = 0.0;
+    set_pos_double_on_string(cfg.kv.at("max_background"), v);
+    if (v >= 1.0 && v <= 64.0) max_background_ = static_cast<unsigned>(v);  // bound the cast
+  }
   // Build the describe/spec cache ONCE here, so we never re-spawn a tool's
   // `describe` subprocess on each TOOL_REQUEST.
   reg_.warm(timeout_s_);
@@ -89,6 +97,14 @@ void ToolRunner::on_attach(Blackboard& bb) {
       }
     }
 
+    // Background opt-in: harness-owned — strip it in ALL paths so the tool binary / MCP
+    // server never sees it. Non-bool value = absent (house rule).
+    bool background = false;
+    if (auto ba = args.find("background"); ba != args.end()) {
+      if (ba->is_boolean()) background = ba->get<bool>();
+      args.erase(ba);
+    }
+
     // PUMP THREAD ONLY: find_by_tool_name/mcp_real_name lazily warm mutable caches. The
     // worker below receives value copies exclusively.
     const ToolEntry* te = reg_.find_by_tool_name(name);
@@ -104,6 +120,41 @@ void ToolRunner::on_attach(Blackboard& bb) {
     const ToolEntry entry = *te;                    // value copy: worker independent of registry
     const std::string real = reg_.mcp_real_name(name);
 
+    if (background && executor_) {
+      if (bg_running_.size() >= max_background_) {
+        nlohmann::json out{
+            {"id", id}, {"ok", false},
+            {"content",
+             {{"error", "too many background tasks (" + std::to_string(bg_running_.size()) +
+                            " running, cap " + std::to_string(max_background_) +
+                            ") — wait for one to finish"}}}};
+        if (has_epoch) out["epoch"] = epoch;
+        bb_->post("TOOL_RESULT", out, "tool_runner", id);
+        return;
+      }
+      const std::string task_id = "bg-" + std::to_string(bg_counter_++);
+      bg_running_.emplace(task_id, BgRunning{name, std::chrono::steady_clock::now()});
+      // Builds need longer than the interactive per-tool cap; the invariant EXEMPTS this
+      // timeout (no run_until waits on a background task).
+      const double bg_timeout = std::max(timeout, bg_timeout_s_);
+      Blackboard* bbg = bb_;
+      executor_->submit([bbg, task_id, name, args, entry, real, bg_timeout] {
+        auto [ok, content] = execute_tool(entry, name, real, args, bg_timeout);
+        // Epoch-FREE by design: completion is cross-turn; the BG_TASKS fold delivers it.
+        bbg->post("BG_DONE", {{"task_id", task_id}, {"ok", ok}, {"content", content}},
+                  "tool_runner", task_id);
+      });
+      post_bg_tasks_();   // the running entry is visible to the very next start_turn
+      nlohmann::json out{{"id", id}, {"ok", true},
+                         {"content",
+                          {{"started", true},
+                           {"task_id", task_id},
+                           {"note", "result will appear in the Background tasks block"}}}};
+      if (has_epoch) out["epoch"] = epoch;
+      bb_->post("TOOL_RESULT", out, "tool_runner", id);
+      return;
+    }
+
     // CONCURRENCY (LLMModule precedent): the closure captures value copies + ONE non-owning
     // pointer (`bb2`); `this` is NOT captured, so the worker can reach no mutable module
     // field. Teardown order joins the Executor before modules/Blackboard die.
@@ -117,6 +168,45 @@ void ToolRunner::on_attach(Blackboard& bb) {
     if (executor_) executor_->submit(run);
     else run();                                     // inline (default, unchanged)
   });
+  bb.subscribe("BG_DONE", [this](const Entry& e) { on_bg_done_(e); });
+}
+
+// Pump-thread only (bus contract): fold a worker's completion into the registry and
+// republish the fold block. Unknown/duplicate task_id -> ignore.
+void ToolRunner::on_bg_done_(const Entry& e) {
+  if (!e.value.is_object()) return;
+  auto it = bg_running_.find(e.value.value("task_id", ""));
+  if (it == bg_running_.end()) return;
+  BgFinished f;
+  f.task_id = it->first;
+  f.tool = it->second.tool;
+  f.ok = e.value.value("ok", false);
+  const auto content =
+      e.value.contains("content") ? e.value["content"] : nlohmann::json::object();
+  f.output = trunc_utf8_bytes(
+      content.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), 2000);
+  bg_running_.erase(it);
+  bg_finished_.push_back(std::move(f));
+  while (bg_finished_.size() > 5) bg_finished_.pop_front();   // ring cap
+  post_bg_tasks_();
+}
+
+void ToolRunner::post_bg_tasks_() {
+  std::string block;
+  if (!bg_running_.empty() || !bg_finished_.empty()) {
+    block = "Background tasks (started earlier with background:true):";
+    const auto now = std::chrono::steady_clock::now();
+    for (const auto& [tid, r] : bg_running_) {
+      const auto secs =
+          std::chrono::duration_cast<std::chrono::seconds>(now - r.started).count();
+      block += "\n- " + tid + " · " + r.tool + " · running (" +
+               std::to_string(secs) + "s)";
+    }
+    for (const auto& f : bg_finished_)
+      block += "\n- " + f.task_id + " · " + f.tool +
+               (f.ok ? " · finished ok: " : " · FAILED: ") + f.output;
+  }
+  bb_->post("BG_TASKS", block, "tool_runner");   // "" when the registry is empty
 }
 
 }  // namespace hades
@@ -205,6 +295,19 @@ void ToolRegistry::ensure_warm(double timeout_s) const {
                         res.value("schema", nlohmann::json::object())});
     }
     by_tool_name_.emplace(reported, &t);
+  }
+  // Background opt-in (harness-owned): every announced tool accepts `background:true` —
+  // the ToolRunner strips it before the subprocess/MCP call, so tool binaries and MCP
+  // servers never see it. Injected here so native AND discovered-MCP specs get it.
+  for (auto& sp : specs_) {
+    if (!sp.schema.is_object()) sp.schema = nlohmann::json::object();
+    if (!sp.schema.contains("properties") || !sp.schema["properties"].is_object())
+      sp.schema["properties"] = nlohmann::json::object();
+    sp.schema["properties"]["background"] =
+        {{"type", "boolean"},
+         {"description",
+          "run in background: returns {started, task_id} immediately; the result appears "
+          "in the 'Background tasks' block when done (default false)"}};
   }
 }
 
