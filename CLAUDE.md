@@ -1029,7 +1029,11 @@ status bar + scrolling chat region; a NEW front-end, fights libedit, weeks not h
 already the data feed) · **manifest-parse hardening trio** (from the 2026-07-13 newcomer audit — doc'd
 as gotchas, code fix pending: `stay_on_budget` cap `0`/absent bricks the agent → MalConfig or
 treat-as-disabled; unknown `Embedding.provider` silently falls back to subprocess → MalConfig like
-Stt/Tts; `Tts.max_chars` bare `stoul` accepts `10x`→10 and wraps negatives → strict parse).
+Stt/Tts; `Tts.max_chars` bare `stoul` accepts `10x`→10 and wraps negatives → strict parse) ·
+**avoid_destructive vs free-text-arg tools** (web_search final review 2026-07-19: the arg-scan
+confirm-gates a query like "how to reboot ubuntu" — human turn gets a needless confirm, heartbeat/peer
+turn silently fails; same accepted class as save_skill bodies. v2 = exclude query-only tools
+(`web_search`, `session_search`) from the destructive-pattern arg-scan).
 
 ### CC tool-gap analysis (2026-07-18, Vaios) — ranked add-list from comparing Claude Code's toolset
 Mapping CC tools ↔ hades's 20: parity or better on fs/search/edit/shell/skills/memory/cron/MCP
