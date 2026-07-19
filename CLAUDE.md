@@ -28,7 +28,7 @@ agent's goals, NOT other agents. More agents = replicate the community; bridge t
 Bridge. Levels: (1) separate manifests [today], (2) `/persona` switch, (3) a `Community` struct ×N +
 router + Bridge [real multi-agent].
 
-## Current state (2026-07-18)
+## Current state (2026-07-19)
 **PUBLIC: https://github.com/jjacke13/hades** (published 2026-07-13, MIT LICENSE, full history —
 telegram id scrubbed via filter-repo pre-push; pre-rewrite backup with the real id lives PRIVATE at
 `~/Desktop/repos/hades-prerewrite-backup.bundle`). Everything merged to `main`, no live feature
@@ -41,7 +41,9 @@ typed shares), heartbeat/cron + when= triggers + self-scheduling, **MCP tool dis
 Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, StatusModule,
 **readline→libedit swap (GPL-3 out, MIT release unblocked)**, README + building.md + .env.example,
 **`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
-both live-validated), **`Simplex.command`** daemon auto-start, **`web_search`** (SearXNG/brave/http). **752/752 tests** (ASan+UBSan AND
+both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML→text extraction** (default-on, raw=true escape),
+**`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold). Pushed
+through `433b92e` 2026-07-19 (main = origin at that point; todo branch commits ahead since). **752/752 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -349,6 +351,38 @@ Opt-in via `Module = auto_extract` (omit → `Agent.auto_extract==nullptr`, zero
   `tests/test_{extract,auto_extract_module,auto_extract_wiring}.cpp`. Docs: manifest-reference §18 + §2 roster row.
   Spec/plan: `docs/superpowers/{specs,plans}/*auto-extract*`. **Live-smoke pending** (Vaios: roster it → chat a
   preference → `.hades/memory.jsonl` gains a `src:"auto"` line; next session it surfaces in recall).
+
+### CC tool-gap wave (shipped 2026-07-18/19) — http_fetch extraction · web_search · todo
+Items 1–3 of the CC tool-gap analysis (see that section for the ranked list), three SDD branches, all
+merged ff; **752/752 both lanes**, zero blocking findings at any final review. **Live-smoke pending all three.**
+- **http_fetch HTML→text** (`d55cc70`): HTML responses (Content-Type or sniff) auto-convert — title first
+  line, links `label (url)`, entities→UTF-8 (Greek-safe), drop script/style/head, table `|`s; `raw=true`
+  escape; `extracted` result flag; **extract-then-64KB-cap**; non-HTML passthrough byte-identical. Zero-dep
+  header-only `include/hades/tool/html_text.h` (lexical stripper, never throws, fuzz-tested). Tool reply now
+  uses replace-dump (fixed pre-existing strict-dump crash on binary bodies). parse_href needs word boundary
+  (hreflang=/data-href= never latch). cpr redirects stay OFF (http_fetch) — SSRF reasoning unchanged.
+- **web_search** (`c2aac69`): 21st→20th tool; ONE generic engine (`tools/web_search_main.cpp`) + presets in
+  header-only `include/hades/search/search_config.h` — `provider = searxng` (endpoint REQUIRED, `/search`
+  appended, `format=json`, snippet=`content`) | `brave` (full pre-fill, `X-Subscription-Token`) | `http`
+  (raw knobs: method get/post, query_param, auth_header/scheme, results_path JSON pointer, field keys).
+  `Search` block (manifest-reference §19) resolved by wiring → **whole config pinned as argv `k=v`** (LLM
+  can't redirect endpoint); **key NEVER in argv** — env NAME travels, value redacted in session.log; boot
+  MalConfig on missing block/endpoint/unset key env. `Capability::WebSearch` → allow (operator-pinned
+  endpoint = loopback/LAN SearXNG works, mcp_url precedent). Null result fields degrade per-entry (real
+  SearXNG/Brave emit null descriptions — the review MEDIUM). max_results clamp 1..10, snippets 500B.
+  SearXNG gotcha: instance needs `formats: [html, json]` in settings.yml else 403 (tool error says so).
+- **todo** (`99decc7`): whole-list-replace tool (TodoWrite shape — NOT core_memory-style match edits;
+  models are trained on it) → `.hades/todo.md` checkboxes `[ ]`/`[~]`/`[x]`; caps 20 items/200B refuse the
+  WHOLE call; non-string text AND status fail closed; atomic write. Arbiter folds the file into the leading
+  system message every turn (`set_todo_path`, after skills fold; label "Your task list (keep it current
+  with the todo tool):"); fold is live even MID-turn (start_turn rebuilds on tool-loop continuations);
+  survives restart + `/new`. `Session.todo_file` (default `.hades/todo.md`); fold only when the tool is
+  rostered. `Capability::TodoList` → allow (heartbeat continuing the plan = the point; peer rewrite =
+  documented caveat class). soul.md: todo = CURRENT plan, schedule_task = FUTURE turns.
+- **ASan lane restoration (process discovery, 2026-07-18):** `build/` had silently LOST its
+  `-fsanitize=address,undefined` flags at some past reconfigure (flags live only in the CMake cache; the
+  "~7s suite" era was an UNSANITIZED build). Restored → immediately caught a bad test literal. Sanitized
+  suite ~110-130s. The Build/run configure command above now carries the flags — never reconfigure without them.
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -754,7 +788,7 @@ objectives are strictly per-agent (one helm); a cross-agent veto is a new archit
 ## Build / run
 ```bash
 export HADES_API_KEY=<key>                                   # key never in the manifest
-nix develop --command cmake -S . -B build -G Ninja           # configure (once)
+nix develop --command cmake -S . -B build -G Ninja -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"  # configure (once — the flags live ONLY in the cache; omitting them on a reconfigure silently drops the sanitizer lane, bit us 2026-07-18)
 nix develop --command cmake --build build                    # build
 nix develop --command ctest --test-dir build                 # test (558/558, ~5.9s)
 nix develop --command ./build/hades manifests/dev.hades --serve      # web UI -> http://localhost:8080/
