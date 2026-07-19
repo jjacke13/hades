@@ -428,3 +428,14 @@ TEST(CapabilityPolicy, SessionSearchIsSessionReadAndAllowed) {
   a.args = {{"query", "pi deployment"}};
   EXPECT_FALSE(p.veto(bb, a).vetoed);
 }
+
+TEST(CapabilityPolicy, WebSearchIsAllowed) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("web_search"), Capability::WebSearch);
+  CapabilityScope sc;              // defaults: confirm_unscoped — proves NOT Unknown->confirm
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  Action a{Action::Kind::ToolCall};
+  a.tool = "web_search";
+  a.args = {{"query", "anything"}};
+  EXPECT_FALSE(p.veto(bb, a).vetoed);
+}

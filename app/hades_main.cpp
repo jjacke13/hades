@@ -135,6 +135,16 @@ int main(int argc, char** argv) {
       if (const char* br_secret = std::getenv(br_env.c_str()); br_secret && *br_secret)
         eventlog.add_redaction(br_secret);
     }
+    // Redact the web-search API key too (it travels in a request header). Best-effort:
+    // resolve the same env var the tool will use (Search.api_key_env or its preset default).
+    {
+      const auto se = manifest.of("Search");
+      std::string se_env = "HADES_SEARCH_KEY";
+      if (!se.empty() && se.front().kv.count("api_key_env"))
+        se_env = se.front().kv.at("api_key_env");
+      if (const char* se_key = std::getenv(se_env.c_str()); se_key && *se_key)
+        eventlog.add_redaction(se_key);
+    }
 
     // LOAD-BEARING declaration order: `bb` BEFORE `agent`, so at scope exit `agent`
     // (and the Executor it owns, its last member) is destroyed FIRST and `bb` LAST.

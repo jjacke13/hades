@@ -29,6 +29,7 @@
 #include "hades/bridge/protocol.h"  // valid_peer_name
 #include "hades/bridge/registry.h"  // caps_summary
 #include "hades/prompt.h"  // assemble_system_prompt
+#include "hades/search/search_config.h"  // resolve_search_config / to_argv_kv
 #include "hades/skills/scan.h"  // resolve_skills_dir
 #include "hades/stt/http_stt_provider.h"
 #include "hades/stt/command_stt_provider.h"
@@ -181,7 +182,8 @@ void wire_agent(Agent& a,
                 const Block& stt_cfg = Block{},
                 const Block& tts_cfg = Block{},
                 const std::vector<Block>& heartbeat_blocks = {},
-                const Block& auto_extract_cfg = Block{}) {
+                const Block& auto_extract_cfg = Block{},
+                const Block& search_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   core_memory -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -209,6 +211,26 @@ void wire_agent(Agent& a,
   if (session.kv.count("sessions_dir") && !session.kv.at("sessions_dir").empty())
     sessions_dir = session.kv.at("sessions_dir");
   reject_ws(sessions_dir, "sessions dir");
+
+  // web_search: resolve the Search block (presets + overrides) and pin the FULL provider
+  // config via argv k=v — single source of truth, the LLM can never redirect the endpoint.
+  // The API key stays OUT of argv (/proc-visible): only the env var NAME travels, and its
+  // PRESENCE is checked here so a missing key fails loud at boot, not mid-turn.
+  bool has_web_search = false;
+  for (const auto& t : tools)
+    if (t.name == "web_search" && t.kv.count("native")) has_web_search = true;
+  std::string search_argv;
+  if (has_web_search) {
+    if (search_cfg.section.empty())
+      throw MalConfig("Tool web_search requires a Search block");
+    const SearchConfig sc = resolve_search_config(search_cfg);
+    if (!sc.api_key_env.empty()) {
+      const char* k = std::getenv(sc.api_key_env.c_str());
+      if (!k || !*k)
+        throw MalConfig("Search api_key_env " + sc.api_key_env + " is not set");
+    }
+    search_argv = to_argv_kv(sc);   // values whitespace-rejected inside
+  }
 
   // Self-scheduling config lives in the UNNAMED `Heartbeat { }` block (a NAMED block is an entry).
   std::string cron_store = ".hades/cron.jsonl";
@@ -322,6 +344,8 @@ void wire_agent(Agent& a,
       if (!session_path.empty())
         t.kv["native"] += " " + std::filesystem::path(session_path).filename().string();
     }
+    else if (t.name == "web_search" && t.kv.count("native"))
+      t.kv["native"] += search_argv;
     tools_resolved.push_back(std::move(t));
   }
 
@@ -662,6 +686,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block embedding = embed_blocks.empty() ? Block{} : embed_blocks.front();
   const auto skills_blocks = m.of("Skills");
   const Block skills_cfg = skills_blocks.empty() ? Block{} : skills_blocks.front();
+  const auto search_blocks = m.of("Search");
+  const Block search_cfg = search_blocks.empty() ? Block{} : search_blocks.front();
   const auto ae_blocks = m.of("AutoExtract");
   const Block ae_cfg = ae_blocks.empty() ? Block{} : ae_blocks.front();
   const auto tg_blocks = m.of("Telegram");
@@ -694,7 +720,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
              skills_cfg, telegram_cfg, simplex_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg,
-             heartbeat_blocks, ae_cfg);
+             heartbeat_blocks, ae_cfg, search_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:

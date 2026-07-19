@@ -171,6 +171,7 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "shell")                                   return Capability::Exec;
   if (tool == "save_memory" || tool == "core_memory")    return Capability::MemoryAppend;
   if (tool == "session_search")                          return Capability::SessionRead;
+  if (tool == "web_search")                              return Capability::WebSearch;
   if (tool == "use_skill")                               return Capability::SkillRead;
   if (tool == "save_skill")                              return Capability::SkillWrite;
   if (tool == "ask_agent")                               return Capability::PeerAsk;
@@ -242,6 +243,13 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
       // The agent's own past-session files: dir fixed by wiring argv, read-only. A peer-driven
       // turn can read excerpts out — the documented Bridge-SECURITY class; per-origin scopes
       // (capability v2) are the real fix.
+      return allow();
+    case Capability::WebSearch:
+      // Endpoint is operator-pinned via argv (the mcp_url precedent: operator-set
+      // endpoints are exempt from the private-net gate — a loopback/LAN SearXNG works);
+      // the LLM supplies only query text, so there is no SSRF surface in the args.
+      // Peer/heartbeat turns can search unattended: exposure is query text flowing to
+      // the operator-chosen backend only (per-origin scopes = capability v2).
       return allow();
     case Capability::Exec:
       return confirm("exec capability (" + a.tool + "): runs an arbitrary command");
