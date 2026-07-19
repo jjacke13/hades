@@ -263,3 +263,26 @@ TEST(BackgroundTools, ThrowingWorkerStillDrainsRunningSlot) {
   ASSERT_TRUE(bb.run_until([&] { return results.size() >= 2; }, 5.0));
   EXPECT_TRUE(results.back()["content"].value("started", false)) << results.back().dump();
 }
+
+TEST(ToolOffload, ThrowingForegroundWorkerStillPostsToolResult) {
+  // Foreground mirror of ThrowingWorkerStillDrainsRunningSlot: invalid UTF-8 args make
+  // call.dump() throw on the worker; the wrapper must still post a terminal ok:false
+  // TOOL_RESULT (with the epoch echoed) instead of hanging the turn until abandonment.
+  Blackboard bb;
+  ToolRunner tr;
+  Block b; b.section = "Tool"; b.name = "slow"; b.kv["native"] = write_slow_tool("h", 0.0);
+  tr.add_tool(b);
+  tr.on_start(Block{}, bb);
+  tr.on_attach(bb);
+  nlohmann::json result;
+  bb.subscribe("TOOL_RESULT", [&](const Entry& e) { result = e.value; });
+  Executor ex(2);
+  tr.set_executor(&ex);
+  bb.post("TOOL_REQUEST",
+          {{"id", "t1"}, {"tool", "slow"}, {"args", {{"bad", "\xFF\xFE"}}}, {"epoch", 4}},
+          "arbiter");
+  ASSERT_TRUE(bb.run_until([&] { return !result.is_null(); }, 5.0));
+  EXPECT_FALSE(result.value("ok", true));
+  EXPECT_NE(result["content"].value("error", "").find("tool threw"), std::string::npos);
+  EXPECT_EQ(result.value("epoch", 0), 4);          // epoch echoed even on the throw path
+}

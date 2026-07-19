@@ -173,7 +173,20 @@ void ToolRunner::on_attach(Blackboard& bb) {
     // field. Teardown order joins the Executor before modules/Blackboard die.
     Blackboard* bb2 = bb_;
     auto run = [bb2, id, name, args, entry, real, timeout, epoch, has_epoch] {
-      auto [ok, content] = execute_tool(entry, name, real, args, timeout);
+      // Same throw discipline as the background worker: a throw swallowed by the
+      // Executor's catch-all would mean NO TOOL_RESULT — the turn would hang until the
+      // idle ceiling abandons it. Always reach the post (terminal ok:false on throw).
+      bool ok = false;
+      nlohmann::json content;
+      try {
+        auto r = execute_tool(entry, name, real, args, timeout);
+        ok = r.first;
+        content = std::move(r.second);
+      } catch (const std::exception& ex) {
+        content = {{"error", std::string("tool threw: ") + ex.what()}};
+      } catch (...) {
+        content = {{"error", "tool threw"}};
+      }
       nlohmann::json out{{"id", id}, {"ok", ok}, {"content", content}};
       if (has_epoch) out["epoch"] = epoch;          // echo the turn stamp (absent in -> absent out)
       bb2->post("TOOL_RESULT", out, "tool_runner", id);

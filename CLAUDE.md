@@ -44,7 +44,7 @@ Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, Statu
 both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML→text extraction** (default-on, raw=true escape),
 **`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold),
 **tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload branch commits ahead since). **773/773 tests** (ASan+UBSan AND
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload branch commits ahead since). **774/774 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -355,7 +355,7 @@ Opt-in via `Module = auto_extract` (omit → `Agent.auto_extract==nullptr`, zero
 
 ### CC tool-gap wave (shipped 2026-07-18/20) — http_fetch extraction · web_search · todo · tool-offload
 Items 1–4 of the CC tool-gap analysis (see that section for the ranked list), four SDD branches, all
-merged ff; **752/752 both lanes** for items 1–3, **773/773 both lanes** after tool-offload (item 4), zero
+merged ff; **752/752 both lanes** for items 1–3, **774/774 both lanes** after tool-offload (item 4), zero
 blocking findings at any final review. **Live-smoke pending all four.**
 - **http_fetch HTML→text** (`d55cc70`): HTML responses (Content-Type or sniff) auto-convert — title first
   line, links `label (url)`, entities→UTF-8 (Greek-safe), drop script/style/head, table `|`s; `raw=true`
@@ -397,7 +397,7 @@ blocking findings at any final review. **Live-smoke pending all four.**
   (600). **`kExecutorThreads` = 8.** v1 edges: a **restart kills bg tasks** (in-memory registry, not persisted);
   a **bg `write_file` doesn't update the staleness guard** → next edit refused stale → agent re-reads (self-heal);
   a **bg `save_skill` misses the SkillsModule rescan** (pending-id tracking is pump-thread; bg completion is
-  off-turn). **773/773 both lanes.**
+  off-turn). **774/774 both lanes.**
 - **ASan lane restoration (process discovery, 2026-07-18):** `build/` had silently LOST its
   `-fsanitize=address,undefined` flags at some past reconfigure (flags live only in the CMake cache; the
   "~7s suite" era was an UNSANITIZED build). Restored → immediately caught a bad test literal. Sanitized

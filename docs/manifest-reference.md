@@ -1114,9 +1114,10 @@ Every announced tool accepts an extra `background: true` argument (harness-owned
 stripped before the subprocess/MCP call; tool binaries never see it). The call
 immediately returns `{started, task_id}`; the result is folded into the system prompt's
 "Background tasks" block (running + last 5 finished, output truncated to 2000 bytes) on
-later turns. Background tasks die with the process (not persisted); a background
-`write_file` does not update the staleness guard (the next edit is refused stale → the
-agent re-reads — self-healing).
+later turns. Background tasks die with the process (not persisted); a **graceful**
+shutdown waits for running background subprocesses to finish or time out (bounded by the
+effective background timeout) before exiting. A background `write_file` does not update
+the staleness guard (the next edit is refused stale → the agent re-reads — self-healing).
 
 **Launch invariant (tool-offload):** `turn_idle_timeout_s` must exceed `llm_timeout_s`,
 `Tools.timeout_s`, every `Tool` block's `timeout_s`, and — when `ask_agent` is rostered —
