@@ -24,6 +24,14 @@ TEST(ToolsWiring, RunnerDefaultTimeoutOverIdleCeilingThrows) {
   Manifest m = mk("Tools\n{\n  timeout_s = 2000\n}\n");
   EXPECT_THROW(build_agent(bb, m), MalConfig);
 }
+TEST(ToolsWiring, BridgeAskTimeoutNearIdleCeilingThrows) {
+  // ask_agent's ToolRunner cap is synthesized (ask_timeout_s + 10, overwriting any declared
+  // timeout_s) — the invariant must count it: 895 + 10 = 905 > default idle 900.
+  Blackboard bb;
+  Manifest m = mk("Tool = ask_agent\n{\n  native = /bin/true\n}\n"
+                  "Bridge\n{\n  name = me\n  ask_timeout_s = 895\n}\n");
+  EXPECT_THROW(build_agent(bb, m), MalConfig);
+}
 TEST(ToolsWiring, InRangeTimeoutsBoot) {
   Blackboard bb;
   Manifest m = mk("Tool = ok\n{\n  native = /bin/true\n  timeout_s = 600\n}\n"

@@ -676,6 +676,19 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
     if (t.kv.count("timeout_s")) set_pos_double_on_string(t.kv.at("timeout_s"), tt);
     if (tt > max_fg) { max_fg = tt; max_fg_src = "Tool '" + t.name + "' timeout_s"; }
   }
+  // ask_agent's ToolRunner cap is SYNTHESIZED in wire_agent (Bridge.ask_timeout_s + 10;
+  // it overwrites any declared timeout_s), so the Tool-block scan above cannot see it —
+  // fold it in here or a near-idle ask_timeout_s would slip past the guard and be
+  // abandoned mid-flight at runtime instead of refused at boot.
+  for (const Block& t : m.of("Tool")) {
+    if (t.name != "ask_agent" || !t.kv.count("native")) continue;
+    double ask = kDefaultAskTimeoutS;
+    const auto br = m.of("Bridge");
+    if (!br.empty() && br.front().kv.count("ask_timeout_s"))
+      set_pos_double_on_string(br.front().kv.at("ask_timeout_s"), ask);
+    if (ask + 10 > max_fg) { max_fg = ask + 10; max_fg_src = "Bridge ask_timeout_s + 10"; }
+    break;
+  }
   if (turn_idle_timeout_s <= max_fg) {
     auto fmt2 = [](double d) { std::ostringstream o; o << d; return o.str(); };
     throw MalConfig("turn_idle_timeout_s (" + fmt2(turn_idle_timeout_s) +
