@@ -85,6 +85,9 @@ target_link_libraries(hades-shell PRIVATE hades_core)               # reuses run
 add_executable(hades-http-fetch tools/http_fetch_main.cpp)
 target_link_libraries(hades-http-fetch PRIVATE cpr::cpr nlohmann_json::nlohmann_json)
 target_include_directories(hades-http-fetch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_executable(hades-web-search tools/web_search_main.cpp)
+target_link_libraries(hades-web-search PRIVATE cpr::cpr nlohmann_json::nlohmann_json)
+target_include_directories(hades-web-search PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(hades-save-memory tools/save_memory_main.cpp)
 target_link_libraries(hades-save-memory PRIVATE nlohmann_json::nlohmann_json)
 add_executable(hades-core-memory tools/core_memory_main.cpp)
@@ -102,12 +105,14 @@ target_sources(hades_tests PRIVATE tests/test_tools.cpp)
 target_sources(hades_tests PRIVATE tests/test_html_text.cpp)
 target_sources(hades_tests PRIVATE tests/test_search_config.cpp)
 target_sources(hades_tests PRIVATE tests/test_http_fetch_tool.cpp)
+target_sources(hades_tests PRIVATE tests/test_web_search_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE
   SHELL_BIN="$<TARGET_FILE:hades-shell>"
   WRITE_FILE_BIN="$<TARGET_FILE:hades-write-file>"
   LIST_DIR_BIN="$<TARGET_FILE:hades-list-dir>"
-  HTTP_FETCH_BIN="$<TARGET_FILE:hades-http-fetch>")
-add_dependencies(hades_tests hades-shell hades-write-file hades-list-dir hades-http-fetch)
+  HTTP_FETCH_BIN="$<TARGET_FILE:hades-http-fetch>"
+  WEB_SEARCH_BIN="$<TARGET_FILE:hades-web-search>")
+add_dependencies(hades_tests hades-shell hades-write-file hades-list-dir hades-http-fetch hades-web-search)
 target_sources(hades_tests PRIVATE tests/test_save_memory_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE SAVE_MEMORY_BIN="$<TARGET_FILE:hades-save-memory>")
 add_dependencies(hades_tests hades-save-memory)
