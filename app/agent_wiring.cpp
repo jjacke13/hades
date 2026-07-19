@@ -183,7 +183,8 @@ void wire_agent(Agent& a,
                 const Block& tts_cfg = Block{},
                 const std::vector<Block>& heartbeat_blocks = {},
                 const Block& auto_extract_cfg = Block{},
-                const Block& search_cfg = Block{}) {
+                const Block& search_cfg = Block{},
+                const Block& tools_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   core_memory -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -366,7 +367,7 @@ void wire_agent(Agent& a,
   //    Arbiter pulls them.
   if (a.tools) {
     for (const auto& t : tools_resolved) a.tools->add_tool(t);
-    a.tools->on_start(Block{}, bb);
+    a.tools->on_start(tools_cfg, bb);
     a.tools->on_attach(bb);
   }
 
@@ -656,6 +657,32 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
                     ") — a slow LLM call would be abandoned mid-flight");
   }
 
+  // Tool-offload invariant extension: tools now run OFF the pump thread, so a silent
+  // stretch can be a foreground tool run — the idle ceiling must outlast EVERY
+  // foreground-effective tool timeout or run_until would abandon a slow-but-alive tool
+  // mid-flight. Background runs are exempt (no run_until waits on them; delivery is
+  // cross-turn via the BG_TASKS fold).
+  const auto tools_cfg_blocks = m.of("Tools");
+  const Block tools_cfg = tools_cfg_blocks.empty() ? Block{} : tools_cfg_blocks.front();
+  double max_fg = 30.0;                                  // ToolRunner default timeout
+  std::string max_fg_src = "the tool-runner default timeout_s";
+  if (tools_cfg.kv.count("timeout_s")) {
+    double v = max_fg;
+    set_pos_double_on_string(tools_cfg.kv.at("timeout_s"), v);
+    if (v > max_fg) { max_fg = v; max_fg_src = "Tools timeout_s"; }
+  }
+  for (const Block& t : m.of("Tool")) {
+    double tt = 0.0;
+    if (t.kv.count("timeout_s")) set_pos_double_on_string(t.kv.at("timeout_s"), tt);
+    if (tt > max_fg) { max_fg = tt; max_fg_src = "Tool '" + t.name + "' timeout_s"; }
+  }
+  if (turn_idle_timeout_s <= max_fg) {
+    auto fmt2 = [](double d) { std::ostringstream o; o << d; return o.str(); };
+    throw MalConfig("turn_idle_timeout_s (" + fmt2(turn_idle_timeout_s) +
+                    ") must be greater than " + max_fg_src + " (" + fmt2(max_fg) +
+                    ") — a slow-but-alive offloaded tool would be abandoned mid-flight");
+  }
+
   // pAntler: the Module= roster decides which modules exist. Factories just construct;
   // the LLM self-builds its provider from the Session block in on_start (existing path).
   Launcher launcher(bb);
@@ -716,24 +743,27 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block tts_cfg = tts_blocks.empty() ? Block{} : tts_blocks.front();
   const auto heartbeat_blocks = m.of("Heartbeat");
 
-  // Live path only: own a small worker pool and offload the blocking LLM call onto it so
-  // the bus stays responsive (front-ends drive turns via run_until). Created BEFORE
-  // wire_agent because the optional EmbeddingMemoryModule submits its corpus index to this
-  // executor when it attaches INSIDE wire_agent (set_executor must precede its on_attach) —
-  // so the index runs off the pump thread. The TEST overload deliberately leaves a.executor
-  // null -> the LLM runs inline + a.embedding is null -> the whole existing suite is
-  // unchanged. `a.executor` is the Agent's LAST member, so it is joined before the
-  // modules/Blackboard tear down regardless of this construction order (see agent_wiring.h /
-  // hades_main).
-  constexpr unsigned kExecutorThreads = 2;
+  // Live path only: worker pool for every offloaded blocking call — the LLM think, the
+  // FOREGROUND tool run, background tool tasks (up to max_background), auto-extract reviews,
+  // the embedding index, bridge share pushes — so the bus stays responsive (front-ends drive
+  // turns via run_until). 8 threads = 1 llm + 1 fg tool + 4 bg (default cap) + 2 slack; idle
+  // workers only cost a blocked thread. Created BEFORE wire_agent because the optional
+  // EmbeddingMemoryModule submits its corpus index to this executor when it attaches INSIDE
+  // wire_agent (set_executor must precede its on_attach) — so the index runs off the pump
+  // thread. The TEST overload deliberately leaves a.executor null -> the LLM runs inline +
+  // a.embedding is null -> the whole existing suite is unchanged. `a.executor` is the Agent's
+  // LAST member, so it is joined before the modules/Blackboard tear down regardless of this
+  // construction order (see agent_wiring.h / hades_main).
+  constexpr unsigned kExecutorThreads = 8;
   a.executor = std::make_unique<Executor>(kExecutorThreads);
   if (a.llm) a.llm->set_executor(a.executor.get());
+  if (a.tools) a.tools->set_executor(a.executor.get());
 
   // Pass the resolved live-session path through so wire_agent sets it on the embedding module
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
              skills_cfg, telegram_cfg, simplex_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg,
-             heartbeat_blocks, ae_cfg, search_cfg);
+             heartbeat_blocks, ae_cfg, search_cfg, tools_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:

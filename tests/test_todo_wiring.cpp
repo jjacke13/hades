@@ -29,7 +29,10 @@ TEST(TodoWiring, ConfiguredFileWrittenAndFoldReachesLlmRequest) {
            {"tool", "todo"},
            {"args", {{"items", {{{"text", "wire the fold"}, {"status", "in_progress"}}}}}}},
           "arbiter");
-  bb.pump();
+  // Tool offloaded on the manifest path -> wait for the worker's TOOL_RESULT (posted only
+  // after the subprocess wrote the file) before asserting the file and driving the fold turn.
+  bb.run_until([&]{ auto r = bb.get("TOOL_RESULT");
+                    return r.has_value() && r->value.value("id", "") == "t1"; }, 10.0);
   ASSERT_TRUE(fs::exists(f));                        // argv carried the configured path
   bb.post("USER_MESSAGE", "hi", "chat");
   bb.pump();

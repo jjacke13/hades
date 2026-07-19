@@ -128,9 +128,11 @@ std::string with_timeouts(const std::string& llm, const std::string& idle) {
 TEST(PantlerWiring, IdleTimeoutFromManifest) {
   setenv("HADES_TEST_KEY", "x", 1);
   Blackboard bb;
-  Agent a = build_agent(bb, parse_manifest(with_timeouts("10", "30")));
+  // idle must exceed the foreground-tool ceiling (tool-runner default 30s) post tool-offload,
+  // so use 50 (>30); this test only proves the manifest idle value flows to the front-end.
+  Agent a = build_agent(bb, parse_manifest(with_timeouts("10", "50")));
   ASSERT_NE(a.chat, nullptr);
-  EXPECT_DOUBLE_EQ(a.chat->idle_timeout_s(), 30.0);   // manifest value flows to the front-end
+  EXPECT_DOUBLE_EQ(a.chat->idle_timeout_s(), 50.0);   // manifest value flows to the front-end
 }
 TEST(PantlerWiring, InvalidTimeoutInvariant) {
   setenv("HADES_TEST_KEY", "x", 1);

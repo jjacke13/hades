@@ -63,7 +63,10 @@ TEST(SkillsWiring, SaveSkillRoundTripRefreshesAnnounceAndWritesConfiguredDir) {
            {"tool", "save_skill"},
            {"args", {{"name", "newskill"}, {"description", "fresh"}, {"body", "steps"}}}},
           "arbiter");
-  bb.pump();
+  // save_skill offloaded on the manifest path -> wait for the worker's TOOL_RESULT (which the
+  // SkillsModule then consumes to rescan) before asserting the file + the refreshed announce.
+  bb.run_until([&]{ auto r = bb.get("TOOL_RESULT");
+                    return r.has_value() && r->value.value("id", "") == "c9"; }, 10.0);
   EXPECT_TRUE(fs::exists(root + "/newskill/SKILL.md"));   // argv append worked
   bb.post("USER_MESSAGE", "hi", "chat");
   bb.pump();

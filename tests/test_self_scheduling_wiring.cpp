@@ -43,7 +43,10 @@ static void post_schedule(Blackboard& bb, const char* id) {
   bb.post("TOOL_REQUEST",
           {{"id", id}, {"tool", "schedule_task"},
            {"args", {{"name", "n"}, {"prompt", "p"}, {"schedule", "* * * * *"}}}}, "arbiter");
-  bb.pump();
+  // Tools offload on the manifest path -> wait for the worker's TOOL_RESULT (posted only after
+  // the subprocess wrote the store) so the cap test's 2nd call observes the 1st's write.
+  bb.run_until([&]{ auto r = bb.get("TOOL_RESULT");
+                    return r.has_value() && r->value.value("id", "") == id; }, 10.0);
 }
 
 TEST(SelfSchedulingWiring, ScheduleTaskWritesToWiredStore) {

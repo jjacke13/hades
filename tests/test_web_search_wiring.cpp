@@ -61,7 +61,7 @@ TEST(WebSearchWiring, ArgvCarriesResolvedConfigEndToEnd) {
   bb.post("TOOL_REQUEST",
           {{"id", "w1"}, {"tool", "web_search"}, {"args", {{"query", "needle"}}}},
           "arbiter");
-  bb.pump();
+  bb.run_until([&]{ return result.is_object(); }, 10.0);   // tool offloaded on the manifest path
   ASSERT_TRUE(result.is_object());
   ASSERT_TRUE(result.value("ok", false)) << result.dump();
   const auto& hits = result["content"]["results"];

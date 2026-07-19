@@ -96,7 +96,7 @@ TEST(BridgeWiring, TwoAgentAskEndToEnd) {
              {"tool", "ask_agent"},
              {"args", {{"peer", "worker1"}, {"message", "status?"}}}},
             "arbiter");
-  bb_a.pump();
+  bb_a.run_until([&]{ return result.is_object(); }, 15.0);   // ask_agent tool offloaded on the manifest path
   ASSERT_TRUE(result.is_object());
   EXPECT_TRUE(result.value("ok", false)) << result.dump();
   EXPECT_EQ(result["content"].value("reply", ""),

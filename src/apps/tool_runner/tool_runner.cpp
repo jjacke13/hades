@@ -37,6 +37,8 @@ static std::vector<std::string> split_ws(const std::string& s) {
 void ToolRunner::on_start(const Block& cfg, Blackboard&) {
   if (cfg.kv.count("timeout"))
     set_pos_double_on_string(cfg.kv.at("timeout"), timeout_s_);
+  if (cfg.kv.count("timeout_s"))
+    set_pos_double_on_string(cfg.kv.at("timeout_s"), timeout_s_);   // Tools block key
   // Build the describe/spec cache ONCE here, so we never re-spawn a tool's
   // `describe` subprocess on each TOOL_REQUEST.
   reg_.warm(timeout_s_);
