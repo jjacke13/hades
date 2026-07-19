@@ -127,7 +127,8 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 
 **Gotchas.**
 - `turn_idle_timeout_s` must exceed every **foreground** in-flight timeout (`llm_timeout_s`,
-  `Tools.timeout_s`, each `Tool` block's `timeout_s`) — enforced with a hard `MalConfig` before
+  `Tools.timeout_s`, each `Tool` block's `timeout_s`, and — when `ask_agent` is rostered —
+  `Bridge.ask_timeout_s + 10`, its synthesized cap) — enforced with a hard `MalConfig` before
   anything heavy is built. Rationale: the LLM call and (post tool-offload) foreground tool calls run
   on workers; a slow-but-alive call must post back (resetting the idle deadline) before `run_until`
   abandons the turn. `background_timeout_s` is exempt — nothing waits on a background run. See §20.
@@ -1118,7 +1119,9 @@ later turns. Background tasks die with the process (not persisted); a background
 agent re-reads — self-healing).
 
 **Launch invariant (tool-offload):** `turn_idle_timeout_s` must exceed `llm_timeout_s`,
-`Tools.timeout_s`, and every `Tool` block's `timeout_s` — boot fails with `MalConfig`
+`Tools.timeout_s`, every `Tool` block's `timeout_s`, and — when `ask_agent` is rostered —
+`Bridge.ask_timeout_s + 10` (ask_agent's ToolRunner cap is synthesized from the Bridge
+block, overriding any declared `timeout_s`; see §4) — boot fails with `MalConfig`
 otherwise. `background_timeout_s` is exempt (nothing waits on a background run).
 
 ---
