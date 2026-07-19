@@ -1086,7 +1086,11 @@ Stt/Tts; `Tts.max_chars` bare `stoul` accepts `10x`→10 and wraps negatives →
 **avoid_destructive vs free-text-arg tools** (web_search final review 2026-07-19: the arg-scan
 confirm-gates a query like "how to reboot ubuntu" — human turn gets a needless confirm, heartbeat/peer
 turn silently fails; same accepted class as save_skill bodies. v2 = exclude query-only tools
-(`web_search`, `session_search`) from the destructive-pattern arg-scan).
+(`web_search`, `session_search`) from the destructive-pattern arg-scan) ·
+**BG_TASKS finished-ring prompt tax** (tool-offload final review 2026-07-20: up to 5 finished
+bg outputs ≤2000B each re-fold into EVERY later turn's system message until newer tasks push them
+out — for an agent that rarely backgrounds, that's the rest of the session (~10KB max recurring);
+v2 = consumed-ack or drop-after-first-fold trim).
 
 ### CC tool-gap analysis (2026-07-18, Vaios) — ranked add-list from comparing Claude Code's toolset
 Mapping CC tools ↔ hades's 21: parity or better on fs/search/edit/shell/skills/memory/cron/MCP
