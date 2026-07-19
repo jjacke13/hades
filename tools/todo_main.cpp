@@ -86,10 +86,12 @@ int main(int argc, char** argv) {
           err = "item text over " + std::to_string(kTextCap) + " chars — shorten it";
           break;
         }
+        if (it.contains("status") && !it["status"].is_string()) {
+          err = "status must be a string: pending | in_progress | done";   // fail closed
+          break;
+        }
         const std::string status =
-            it.contains("status") && it["status"].is_string()
-                ? it["status"].get<std::string>()
-                : std::string{};
+            it.contains("status") ? it["status"].get<std::string>() : std::string{};
         std::string mark;
         if (status.empty() || status == "pending") mark = " ";
         else if (status == "in_progress") mark = "~";

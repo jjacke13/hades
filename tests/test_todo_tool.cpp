@@ -90,6 +90,7 @@ TEST(TodoTool, MalformedInputsFailClosed) {
   EXPECT_FALSE(call_todo(f, {{"items", "notanarray"}}).value("ok", true));
   EXPECT_FALSE(call_todo(f, {{"items", {"bare string"}}}).value("ok", true));    // item not object
   EXPECT_FALSE(call_todo(f, {{"items", {{{"text", 42}}}}}).value("ok", true));   // non-string text
+  EXPECT_FALSE(call_todo(f, {{"items", {{{"text", "x"}, {"status", 42}}}}}).value("ok", true));  // non-string status
   EXPECT_FALSE(call_todo(f, {{"items", {{{"text", ""}}}}}).value("ok", true));   // empty text
   EXPECT_FALSE(fs::exists(f));
   ProcResult r = run_subprocess({TODO_BIN, f}, "not json", 30.0);
