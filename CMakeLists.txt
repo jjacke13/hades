@@ -100,6 +100,7 @@ target_compile_definitions(hades_tests PRIVATE
   FAKE_MCP_SERVER="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_mcp_server.sh")
 target_sources(hades_tests PRIVATE tests/test_tools.cpp)
 target_sources(hades_tests PRIVATE tests/test_html_text.cpp)
+target_sources(hades_tests PRIVATE tests/test_search_config.cpp)
 target_sources(hades_tests PRIVATE tests/test_http_fetch_tool.cpp)
 target_compile_definitions(hades_tests PRIVATE
   SHELL_BIN="$<TARGET_FILE:hades-shell>"
