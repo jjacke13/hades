@@ -68,6 +68,14 @@ Tool = run_command
 #   api_key_env = LINEAR_MCP_KEY            # Bearer token env var (optional)
 # }
 
+# Web search (opt-in): self-hosted SearXNG (enable json in its settings.yml) or brave/http.
+# Tool = web_search { native = ./build/hades-web-search }
+# Search
+# {
+#   provider = searxng
+#   endpoint = http://127.0.0.1:8888
+# }
+
 Memory
 {
   store = .hades/memory.jsonl

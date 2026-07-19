@@ -167,6 +167,7 @@ whitespace:
 | `schedule_task` | `<cron_store> <max_tasks> <min_interval_s>` | unnamed `Heartbeat { }` block (§15) | **requires `Module = heartbeat`** (else `MalConfig`); store path whitespace-free |
 | `list_tasks` / `cancel_task` | `<cron_store>` | unnamed `Heartbeat { }` block (§15) | store path whitespace-free |
 | `session_search` | `<sessions_dir> [<live-session filename>]` | `Session.sessions_dir` (default `.hades/sessions`) + the resolved live session | dir whitespace-free; the live session file is excluded from the search |
+| `web_search` | full resolved provider config as `k=v` pairs | `Search` block (§19) | requires the `Search` block (else `MalConfig`); the API key is NEVER in argv — only the env var NAME travels |
 
 **`ask_agent` wiring rules** (`wire_agent`): the tool requires **at least one `Peer` block** *and*
 a valid `Bridge.name` — else `MalConfig` ("nobody to call" / "requires Bridge { name }"). Its
@@ -317,6 +318,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | unknown tool | Unknown | **always confirm**. |
 | `save_memory`, `core_memory` | MemoryAppend | **always allow** (the agent's own memory files; `core_memory` also edits/removes — curation must be frictionless). |
 | `session_search` | SessionRead | **always allow** (own session files, dir wiring-pinned; peer-turn read-out caveat — see Bridge SECURITY). |
+| `web_search` | WebSearch | **always allow** — endpoint operator-pinned via argv (mcp_url precedent; loopback/LAN SearXNG works); only the query text is LLM-chosen. Peer/heartbeat turns can search unattended (query flows to the operator-chosen backend only). |
 | `use_skill` | SkillRead | **always allow**. |
 | `save_skill` | SkillWrite | **always allow** (enum kept distinct so a future policy can confirm-gate it). |
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |
@@ -1051,6 +1053,47 @@ but the blast radius is bounded: facts land in *archival* memory (retrieved as r
 never as core always-on memory), only human turns are harvested, and `max_facts` caps volume per turn.
 Don't roster `auto_extract` on an agent whose archival memory is readable by an untrusted peer (see the
 Bridge SECURITY note).
+
+---
+
+## 19. Search block — `web_search`
+
+Backing config for the opt-in `web_search` native tool (roster `Tool = web_search` + this
+block; the tool line without the block is a boot `MalConfig`). One generic HTTP engine;
+`provider` presets fill the knobs, any explicit key overrides its preset value.
+
+| key | meaning | default |
+|---|---|---|
+| `provider` | `searxng` \| `brave` \| `http` | REQUIRED |
+| `endpoint` | base URL — searxng: instance base (`/search` appended); brave/http: full request URL | brave preset only |
+| `api_key_env` | env var NAME holding the key; empty = no auth. The key value is redacted in `session.log`. | preset (`HADES_SEARCH_KEY` for brave; empty otherwise) |
+| `method` | `get` \| `post` (post body = `{query_param: query}`) | `get` |
+| `query_param` | URL param (get) / JSON body key (post) carrying the query | `q` |
+| `auth_header` / `auth_scheme` | header carrying the key; `bearer` prefixes `Bearer `, `none` sends the raw key | `Authorization` / `bearer` |
+| `results_path` | JSON pointer to the results array | `/results` (brave: `/web/results`) |
+| `title_key` / `url_key` / `snippet_key` | per-result field names | `title`/`url`/`snippet` (searxng snippet: `content`; brave: `description`) |
+| `extra_query` | one literal `k=v` appended to a GET query (searxng preset: `format=json`) | empty |
+| `max_results` | default result count (clamp 1..10; per-call `max_results` arg can lower/raise within the clamp) | `5` |
+| `timeout_s` | per-request HTTP timeout | `15` |
+
+SearXNG worked example (self-hosted, loopback):
+
+```
+Tool = web_search { native = ./build/hades-web-search }
+
+Search
+{
+  provider = searxng
+  endpoint = http://127.0.0.1:8888
+}
+```
+
+**Gotchas:** the SearXNG instance must enable the JSON API — `search: formats: [html, json]`
+in its `settings.yml`, else every query 403s (the tool's error says so). `endpoint` is the
+BASE url for searxng (house footgun family — the tool appends `/search`). Boot fails loud
+(`MalConfig`) on: missing `Search` block, missing `endpoint`, `api_key_env` naming an unset
+env var, any value containing whitespace. Snippets are byte-capped at 500; zero hits is
+`ok` with an empty list, not an error.
 
 ---
 

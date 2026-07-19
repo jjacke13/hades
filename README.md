@@ -22,7 +22,7 @@ Most harnesses are **app-centric**: an application embeds an LLM, and "the agent
 ### What it does
 
 - **4 chat front-ends** — terminal REPL, browser web UI, Telegram bot, SimpleX Chat — all driving one gated conversation; voice notes in/out (STT/TTS provider seams).
-- **19 native tools** (files, shell, git, http, grep/glob/edit, memory, skills, scheduling, peer delegation), each an isolated subprocess — plus any **MCP server** (stdio or Streamable HTTP): its tools are discovered at boot and announced to the model as `<block>__<tool>`.
+- **20 native tools** (files, shell, git, http, grep/glob/edit, memory, skills, scheduling, peer delegation), each an isolated subprocess — plus any **MCP server** (stdio or Streamable HTTP): its tools are discovered at boot and announced to the model as `<block>__<tool>`.
 - **Capability gate** on every action: allow / confirm / hard-veto bands from manifest scopes (path allowlists, command prefixes, SSRF-hardened net gate, per-MCP-tool allowlist). Unattended turns get only the unconfirmed power set.
 - **Three memory layers** — always-on core facts (bounded, self-consolidating), archival keyword recall, opt-in semantic embeddings over memories *and* past sessions — plus a **skills library** the agent authors itself at runtime.
 - **Autonomy** — cron heartbeats, reactive `when =` watches over bus state, and self-scheduled tasks: the agent plants its own future work, still fully gated.
@@ -84,7 +84,7 @@ Secrets are env-var-only — never in the manifest, redacted in the event log. T
 
 ### Status
 
-Personal project, in active development, moving toward a public release. 686/686 tests green under ASan+UBSan and TSan. License: [MIT](LICENSE) — the whole linked dependency stack is permissive (MIT/BSD/Apache-2.0/curl).
+Personal project, in active development, moving toward a public release. 740/740 tests green under ASan+UBSan and TSan. License: [MIT](LICENSE) — the whole linked dependency stack is permissive (MIT/BSD/Apache-2.0/curl).
 
 ---
 
