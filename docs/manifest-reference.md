@@ -121,6 +121,7 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `memory_char_limit` | Char cap on the core-memory file (it is in EVERY turn's prompt). An over-cap `core_memory` write fails with the entry list so the agent consolidates. | `2400` | Bad/`<=0` value → default. |
 | `sessions_dir` | Directory of per-session conversation `.jsonl` files. | `.hades/sessions` | `--resume` reads from here; `/new` rotates within it. |
 | `history_budget_chars` | Max chars of history sent per LLM request (full history still kept on disk). | `120000` (`kDefaultHistoryBudgetChars`) | ~30k tokens. Very high → effectively "send whole session". |
+| `todo_file` | Task-list file the `todo` tool rewrites and the Arbiter folds into every turn's system message. | `.hades/todo.md` | Only used when the `todo` tool is rostered; path whitespace-free (argv-appended). |
 | `env_file` | Dotenv-style file loaded at launch, **before** anything reads the environment: `KEY=VALUE` lines, `#` full-line comments, optional `export ` prefix, optional surrounding quotes. No `$VAR` expansion, no inline comments. | none | The **real environment wins** over the file (an operator export overrides). Named-but-unreadable → `MalConfig`. Keep it gitignored + `chmod 600`; the known secrets (API key, tokens) are still redacted in session.log, arbitrary extra vars are not. |
 | `provider` | *(currently unread)* | — | The LLM module always builds an OpenAI-compatible provider; this key is decorative. |
 
@@ -168,6 +169,7 @@ whitespace:
 | `list_tasks` / `cancel_task` | `<cron_store>` | unnamed `Heartbeat { }` block (§15) | store path whitespace-free |
 | `session_search` | `<sessions_dir> [<live-session filename>]` | `Session.sessions_dir` (default `.hades/sessions`) + the resolved live session | dir whitespace-free; the live session file is excluded from the search |
 | `web_search` | full resolved provider config as `k=v` pairs | `Search` block (§19) | requires the `Search` block (else `MalConfig`); the API key is NEVER in argv — only the env var NAME travels |
+| `todo` | task-list file path | `Session.todo_file` (default `.hades/todo.md`) | path whitespace-free |
 
 **`ask_agent` wiring rules** (`wire_agent`): the tool requires **at least one `Peer` block** *and*
 a valid `Bridge.name` — else `MalConfig` ("nobody to call" / "requires Bridge { name }"). Its
@@ -319,6 +321,7 @@ regardless of your scopes.** File reads/writes, `http_fetch` and `run_command` a
 | `save_memory`, `core_memory` | MemoryAppend | **always allow** (the agent's own memory files; `core_memory` also edits/removes — curation must be frictionless). |
 | `session_search` | SessionRead | **always allow** (own session files, dir wiring-pinned; peer-turn read-out caveat — see Bridge SECURITY). |
 | `web_search` | WebSearch | **always allow** — endpoint operator-pinned via argv (mcp_url precedent; loopback/LAN SearXNG works); only the query text is LLM-chosen. Peer/heartbeat turns can search unattended (query flows to the operator-chosen backend only). |
+| `todo` | TodoList | **always allow** — the agent's own plan file, path wiring-pinned; whole-list replace. Heartbeat turns continuing the plan is the point; a peer-driven turn can rewrite it (documented caveat, capability v2). |
 | `use_skill` | SkillRead | **always allow**. |
 | `save_skill` | SkillWrite | **always allow** (enum kept distinct so a future policy can confirm-gate it). |
 | `ask_agent` | PeerAsk | **always allow** (the receiving agent's own gates are the real protection). |

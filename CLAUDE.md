@@ -41,10 +41,10 @@ typed shares), heartbeat/cron + when= triggers + self-scheduling, **MCP tool dis
 Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, StatusModule,
 **readline→libedit swap (GPL-3 out, MIT release unblocked)**, README + building.md + .env.example,
 **`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
-both live-validated), **`Simplex.command`** daemon auto-start, **`web_search`** (SearXNG/brave/http). **740/740 tests** (ASan+UBSan AND
+both live-validated), **`Simplex.command`** daemon auto-start, **`web_search`** (SearXNG/brave/http). **752/752 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
-Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **20 tools**
-(`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search` + **dev tools**
+Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
+(`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
 `grep glob edit_file git_read run_command` + **self-scheduling** `schedule_task list_tasks cancel_task`, self-describing) · **tool capability
 model** (`CapabilityPolicy` objective — scoped fs_read/fs_write/http_fetch/run_command allow/confirm/deny + git_read read-only, see below) + the older
 destructive-pattern gate (`avoid_destructive`, kept as backstop) ·
@@ -1036,7 +1036,7 @@ turn silently fails; same accepted class as save_skill bodies. v2 = exclude quer
 (`web_search`, `session_search`) from the destructive-pattern arg-scan).
 
 ### CC tool-gap analysis (2026-07-18, Vaios) — ranked add-list from comparing Claude Code's toolset
-Mapping CC tools ↔ hades's 20: parity or better on fs/search/edit/shell/skills/memory/cron/MCP
+Mapping CC tools ↔ hades's 21: parity or better on fs/search/edit/shell/skills/memory/cron/MCP
 (hades ahead on capability gating, agent-authored skills, bounded core memory, peers, when= watches).
 Ranked gaps to add:
 1. ~~**http_fetch text extraction**~~ — **SHIPPED 2026-07-18** (`feat/http-fetch-extract`): HTML→text
@@ -1045,8 +1045,7 @@ Ranked gaps to add:
    httplib functional tests. Non-HTML passthrough byte-identical.
 2. ~~**`web_search` tool**~~ — **SHIPPED 2026-07-18** (`feat/web-search`): generic engine + searxng/brave
    presets + raw http knobs; Search block; WebSearch capability allow; key env-only + redacted.
-3. **Todo/plan tool** — `.hades/todo.md` + prompt fold (core-memory pattern); matters for heartbeat
-   multi-step autonomy.
+3. ~~**Todo/plan tool**~~ — **SHIPPED 2026-07-19** (`feat/todo-tool`): whole-list-replace `todo` tool → .hades/todo.md checkboxes + Arbiter every-turn fold; TodoList capability allow; Session.todo_file.
 4. **Background tool execution** — = the tool-offload backlog item (extend epoch/abandonment to TOOL_RESULT).
 5. **Send files/photos to user** — Telegram sendDocument/sendPhoto (out-bound; only text+voice today).
 6. **Vision input** — Telegram photo → image in turn (STT-pattern seam; model-dependent).
