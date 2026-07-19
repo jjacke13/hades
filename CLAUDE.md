@@ -42,8 +42,9 @@ Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, Statu
 **readline→libedit swap (GPL-3 out, MIT release unblocked)**, README + building.md + .env.example,
 **`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
 both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML→text extraction** (default-on, raw=true escape),
-**`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo branch commits ahead since). **752/752 tests** (ASan+UBSan AND
+**`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold),
+**tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold). Pushed
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload branch commits ahead since). **773/773 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -352,9 +353,10 @@ Opt-in via `Module = auto_extract` (omit → `Agent.auto_extract==nullptr`, zero
   Spec/plan: `docs/superpowers/{specs,plans}/*auto-extract*`. **Live-smoke pending** (Vaios: roster it → chat a
   preference → `.hades/memory.jsonl` gains a `src:"auto"` line; next session it surfaces in recall).
 
-### CC tool-gap wave (shipped 2026-07-18/19) — http_fetch extraction · web_search · todo
-Items 1–3 of the CC tool-gap analysis (see that section for the ranked list), three SDD branches, all
-merged ff; **752/752 both lanes**, zero blocking findings at any final review. **Live-smoke pending all three.**
+### CC tool-gap wave (shipped 2026-07-18/20) — http_fetch extraction · web_search · todo · tool-offload
+Items 1–4 of the CC tool-gap analysis (see that section for the ranked list), four SDD branches, all
+merged ff; **752/752 both lanes** for items 1–3, **773/773 both lanes** after tool-offload (item 4), zero
+blocking findings at any final review. **Live-smoke pending all four.**
 - **http_fetch HTML→text** (`d55cc70`): HTML responses (Content-Type or sniff) auto-convert — title first
   line, links `label (url)`, entities→UTF-8 (Greek-safe), drop script/style/head, table `|`s; `raw=true`
   escape; `extracted` result flag; **extract-then-64KB-cap**; non-HTML passthrough byte-identical. Zero-dep
@@ -379,6 +381,23 @@ merged ff; **752/752 both lanes**, zero blocking findings at any final review. *
   survives restart + `/new`. `Session.todo_file` (default `.hades/todo.md`); fold only when the tool is
   rostered. `Capability::TodoList` → allow (heartbeat continuing the plan = the point; peer rewrite =
   documented caveat class). soul.md: todo = CURRENT plan, schedule_task = FUTURE turns.
+- **tool-offload + background tasks** (`feat/tool-offload`, item 4): tools now run OFF the pump thread via
+  the **LLM-offload pattern in ToolRunner** — pump-thread resolve, value-capture worker (non-owning
+  `provider`/`bb` + arg copies, no pump-mutated field read off-thread), epoch echo. The arbiter.cpp
+  TOOL_RESULT deferral is CLOSED: **epoch gate on TOOL_RESULT** (tolerant-if-absent → hand-posted/legacy
+  results still continue) + **TURN_ABANDONED orphan-pop** of a trailing `assistant(tool_calls)`. **Extended
+  idle invariant:** `turn_idle_timeout_s` must exceed `max(llm_timeout_s, Tools.timeout_s, every Tool
+  timeout_s, Bridge ask_timeout_s+10 when ask_agent rostered)` — `MalConfig` otherwise; **`background_timeout_s`
+  is exempt** (nothing waits on a bg run). **`background:true` on every tool schema** (harness-owned — stripped
+  before the subprocess/MCP call), call returns immediate `{started,task_id}`; the worker posts terminal
+  **`BG_DONE`** via a **throw-safe wrapper** (a throwing worker still posts BG_DONE → no cap wedge), folded into
+  a **`BG_TASKS` ring** (cap 5 finished, 2000B UTF-8-safe truncation) → **Arbiter fold** (this task) into the
+  leading system message every start_turn (tool-loop continuations included). **`Tools` block** (manifest-ref
+  §20): `timeout_s` (runner default 30), `max_background` (4, bounds 1..64 — over-cap refused), `background_timeout_s`
+  (600). **`kExecutorThreads` = 8.** v1 edges: a **restart kills bg tasks** (in-memory registry, not persisted);
+  a **bg `write_file` doesn't update the staleness guard** → next edit refused stale → agent re-reads (self-heal);
+  a **bg `save_skill` misses the SkillsModule rescan** (pending-id tracking is pump-thread; bg completion is
+  off-turn). **773/773 both lanes.**
 - **ASan lane restoration (process discovery, 2026-07-18):** `build/` had silently LOST its
   `-fsanitize=address,undefined` flags at some past reconfigure (flags live only in the CMake cache; the
   "~7s suite" era was an UNSANITIZED build). Restored → immediately caught a bad test literal. Sanitized
@@ -1080,7 +1099,9 @@ Ranked gaps to add:
 2. ~~**`web_search` tool**~~ — **SHIPPED 2026-07-18** (`feat/web-search`): generic engine + searxng/brave
    presets + raw http knobs; Search block; WebSearch capability allow; key env-only + redacted.
 3. ~~**Todo/plan tool**~~ — **SHIPPED 2026-07-19** (`feat/todo-tool`): whole-list-replace `todo` tool → .hades/todo.md checkboxes + Arbiter every-turn fold; TodoList capability allow; Session.todo_file.
-4. **Background tool execution** — = the tool-offload backlog item (extend epoch/abandonment to TOOL_RESULT).
+4. ~~**Background tool execution**~~ — **SHIPPED 2026-07-20** (`feat/tool-offload`): tools run off the
+   pump thread (LLM-offload pattern); `background:true` on every tool → immediate `{started,task_id}`,
+   `BG_DONE`→`BG_TASKS` ring, Arbiter fold. Closed the arbiter.cpp TOOL_RESULT epoch/abandonment deferral.
 5. **Send files/photos to user** — Telegram sendDocument/sendPhoto (out-bound; only text+voice today).
 6. **Vision input** — Telegram photo → image in turn (STT-pattern seam; model-dependent).
 7. **Ephemeral subagent fork** — fresh-context child turn, result back, main history clean (peers partially cover).

@@ -236,6 +236,18 @@ void Arbiter::start_turn() {
       }
     }
   }
+  // Background tasks: fold the ToolRunner's BG_TASKS block (latest-value; posted on task
+  // start and completion) — running + finished background work, the cross-turn delivery
+  // half of background:true. The block carries its own header. Rebuilt every start_turn
+  // (tool-loop continuations included), so a completion landing mid-turn is visible on
+  // the next LLM round-trip. Absent, non-string, or empty -> no block.
+  if (auto bg = bb_->get("BG_TASKS"); bg && bg->value.is_string()) {
+    const std::string tasks = bg->value.get<std::string>();
+    if (!tasks.empty()) {
+      if (!sys.empty()) sys += "\n\n";
+      sys += tasks;
+    }
+  }
   // Peer capability + report folds (bridge protocol). Two blocks from the PEER.* map: cards ->
   // delegation targets; facts -> peer reports (trust-labeled, re-verify). Empty -> no block.
   {

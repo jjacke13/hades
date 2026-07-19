@@ -114,7 +114,7 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `api_key_env` | **Name of the env var** holding the API key. | `HADES_API_KEY` | Key resolved from the env; unset → `MalConfig`. Redacted in `session.log`. |
 | `price_per_mtok` | USD per million tokens, for the budget objective. | `0` | Only meters the LLM (not embeddings). |
 | `llm_timeout_s` | Per-call LLM HTTP timeout (cpr). The real cap on one "think". | `600` (`kDefaultLlmTimeoutS`) | Bad/0 → default. |
-| `turn_idle_timeout_s` | Front-end `run_until` **idle** ceiling. Resets on every bus event → bounds a single silent stretch, not total turn time. | `900` (`kDefaultTurnIdleTimeoutS`) | **MUST be > `llm_timeout_s`** or `MalConfig` at launch (see below). |
+| `turn_idle_timeout_s` | Front-end `run_until` **idle** ceiling. Resets on every bus event → bounds a single silent stretch, not total turn time. | `900` (`kDefaultTurnIdleTimeoutS`) | **MUST exceed `llm_timeout_s`, `Tools.timeout_s`, and every `Tool` block's `timeout_s`** or `MalConfig` at launch (tool-offload extended this from llm-only; `background_timeout_s` is exempt — see below and §20). |
 | `system_prompt_file` | SOUL persona file, prepended to every turn. | none | Unreadable path → `MalConfig`. |
 | `user_file` | USER profile file, appended after SOUL. | none | Optional; unreadable path → `MalConfig`. |
 | `memory_file` | Core "always-on" memory file; the Arbiter re-reads it each turn; `core_memory` edits it. | `""` | **Required if the `core_memory` tool is rostered** (else `MalConfig`). Path must be whitespace-free. |
@@ -126,10 +126,11 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `provider` | *(currently unread)* | — | The LLM module always builds an OpenAI-compatible provider; this key is decorative. |
 
 **Gotchas.**
-- `turn_idle_timeout_s > llm_timeout_s` is enforced with a hard `MalConfig` before anything heavy
-  is built. Rationale: only the LLM call is offloaded to a worker; a slow-but-alive call must post
-  back (resetting the idle deadline) before `run_until` abandons the turn. Tools run inline and
-  can't trip the idle timer.
+- `turn_idle_timeout_s` must exceed every **foreground** in-flight timeout (`llm_timeout_s`,
+  `Tools.timeout_s`, each `Tool` block's `timeout_s`) — enforced with a hard `MalConfig` before
+  anything heavy is built. Rationale: the LLM call and (post tool-offload) foreground tool calls run
+  on workers; a slow-but-alive call must post back (resetting the idle deadline) before `run_until`
+  abandons the turn. `background_timeout_s` is exempt — nothing waits on a background run. See §20.
 - `system_prompt_file`/`user_file`/`memory_file` are **cwd-relative** — run hades from the repo root.
 - `provider = openai_compat` in dev.hades does nothing; the transport is fixed.
 
@@ -1097,6 +1098,28 @@ BASE url for searxng (house footgun family — the tool appends `/search`). Boot
 (`MalConfig`) on: missing `Search` block, missing `endpoint`, `api_key_env` naming an unset
 env var, any value containing whitespace. Snippets are byte-capped at 500; zero hits is
 `ok` with an empty list, not an error.
+
+---
+
+## 20. `Tools` block — tool-runner tuning (optional)
+
+| key | default | meaning |
+|---|---|---|
+| `timeout_s` | 30 | runner-wide default per-tool subprocess timeout (a `Tool` block's `timeout_s` overrides per tool) |
+| `max_background` | 4 | max concurrently RUNNING background tasks (bounds 1..64); an over-cap `background:true` call is refused with an error result |
+| `background_timeout_s` | 600 | background run timeout — the effective cap is `max(per-tool timeout_s, background_timeout_s)` |
+
+Every announced tool accepts an extra `background: true` argument (harness-owned —
+stripped before the subprocess/MCP call; tool binaries never see it). The call
+immediately returns `{started, task_id}`; the result is folded into the system prompt's
+"Background tasks" block (running + last 5 finished, output truncated to 2000 bytes) on
+later turns. Background tasks die with the process (not persisted); a background
+`write_file` does not update the staleness guard (the next edit is refused stale → the
+agent re-reads — self-healing).
+
+**Launch invariant (tool-offload):** `turn_idle_timeout_s` must exceed `llm_timeout_s`,
+`Tools.timeout_s`, and every `Tool` block's `timeout_s` — boot fails with `MalConfig`
+otherwise. `background_timeout_s` is exempt (nothing waits on a background run).
 
 ---
 

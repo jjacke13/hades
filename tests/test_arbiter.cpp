@@ -1207,3 +1207,23 @@ TEST(Arbiter, StaleSuccessfulWriteStillHarvestsVersion) {
           {"arguments",{{"path","w.txt"},{"old_string","a"},{"new_string","b"}}}}}}, "llm"); bb.pump();
   EXPECT_EQ(toolreq["args"].value("expect_version",""), "abc123");   // disk truth injected
 }
+TEST(Arbiter, FoldsBgTasksIntoSystemMessage) {
+  Blackboard bb; Arbiter a; a.set_system_prompt("SOUL"); a.on_attach(bb);
+  bb.post("BG_TASKS",
+          "Background tasks (started earlier with background:true):\n- bg-0 · shell · running (3s)",
+          "tool_runner");
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("bg-0 · shell · running"), std::string::npos);
+  EXPECT_LT(sys.find("SOUL"), sys.find("Background tasks"));
+}
+TEST(Arbiter, EmptyOrMissingBgTasksInjectsNothing) {
+  Blackboard bb; Arbiter a; a.set_system_prompt("SOUL"); a.on_attach(bb);
+  bb.post("BG_TASKS", "", "tool_runner");   // registry empty -> module posts ""
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  EXPECT_EQ(req["messages"][0]["content"], "SOUL");
+}

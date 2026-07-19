@@ -59,6 +59,13 @@ Tool = run_command
 # Tool = session_search { native = ./build/hades-session-search }   # keyword recall over past sessions
 # Tool = todo { native = ./build/hades-todo }   # standing task list, folded into every turn
 
+# Tools            # tool-runner tuning (optional; defaults shown)
+# {
+#   timeout_s = 30
+#   max_background = 4
+#   background_timeout_s = 600
+# }
+
 # --- MCP servers: one Tool block per SERVER (stdio command or remote URL). Its tools are
 # discovered at boot and announced to the model as <block>__<tool>; each call is confirm-gated
 # unless listed in capability_policy's mcp_allow. See docs/manifest-reference.md §4.

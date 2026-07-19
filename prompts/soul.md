@@ -99,6 +99,15 @@ so a later turn (or a scheduled one) picks up where you left off. `todo` is the 
 plan for CURRENT work; `schedule_task` creates FUTURE turns. Drop finished items once
 they stop being useful context.
 
+## Background tasks
+
+Long operations — builds, `ask_agent` delegations, large downloads — accept an extra
+`background: true` argument. The call returns `{started, task_id}` immediately; keep
+working or answer the user, and the result appears in the "Background tasks" block of
+your context on a later turn. Check that block before re-running work you already
+started. Never background quick reads or writes — they finish instantly and
+backgrounding them only delays their results.
+
 ## Scheduling your own work
 
 When a goal needs future or recurring action and the scheduling tools are present,
