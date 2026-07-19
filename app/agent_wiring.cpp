@@ -212,6 +212,16 @@ void wire_agent(Agent& a,
     sessions_dir = session.kv.at("sessions_dir");
   reject_ws(sessions_dir, "sessions dir");
 
+  // todo: the task-list file the Arbiter folds each turn and the todo tool rewrites —
+  // the SAME resolved path goes to both (single source of truth; no silent drift).
+  std::string todo_path = ".hades/todo.md";
+  if (session.kv.count("todo_file") && !session.kv.at("todo_file").empty())
+    todo_path = session.kv.at("todo_file");
+  reject_ws(todo_path, "todo_file");
+  bool has_todo = false;
+  for (const auto& t : tools)
+    if (t.name == "todo" && t.kv.count("native")) has_todo = true;
+
   // web_search: resolve the Search block (presets + overrides) and pin the FULL provider
   // config via argv k=v — single source of truth, the LLM can never redirect the endpoint.
   // The API key stays OUT of argv (/proc-visible): only the env var NAME travels, and its
@@ -346,6 +356,8 @@ void wire_agent(Agent& a,
     }
     else if (t.name == "web_search" && t.kv.count("native"))
       t.kv["native"] += search_argv;
+    else if (t.name == "todo" && t.kv.count("native"))
+      t.kv["native"] = t.kv["native"] + " " + todo_path;
     tools_resolved.push_back(std::move(t));
   }
 
@@ -431,6 +443,7 @@ void wire_agent(Agent& a,
     a.arbiter->set_model(std::move(model));
     a.arbiter->set_system_prompt(assemble_system_prompt(session));  // SOUL/USER/MEMORY (empty Block -> "")
     a.arbiter->set_memory_path(core_path);  // live core memory (memory_file), re-read each turn
+    if (has_todo) a.arbiter->set_todo_path(todo_path);  // fold only when the tool is rostered
     // The bridge brings its OWN safety behavior (not manifest-optional): a peer-driven turn
     // must never ask_agent onward — the A<->B mutual-wait deadlock. Registered FIRST so its
     // hard veto short-circuits before any manifest objective.

@@ -11,6 +11,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <vector>
+#include <unistd.h>   // ::getpid (todo-fold temp filenames)
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
@@ -1090,4 +1091,52 @@ TEST(Arbiter, PathKeysAreLexicallyNormalized) {
           "llm");
   bb.pump();
   EXPECT_EQ(req["args"].value("expect_version", ""), "cccccccccccccccc");   // same canonical key
+}
+
+TEST(Arbiter, TodoListFoldedIntoLeadingSystemMessage) {
+  const std::string f =
+      ::testing::TempDir() + "/arb_todo_" + std::to_string(::getpid()) + ".md";
+  { std::ofstream out(f); out << "- [ ] write the test\n- [~] run it\n"; }
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL TEXT");
+  a.set_todo_path(f);
+  a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  ASSERT_FALSE(req.is_null());
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("Your task list (keep it current with the todo tool):"),
+            std::string::npos);
+  EXPECT_NE(sys.find("- [~] run it"), std::string::npos);
+  EXPECT_LT(sys.find("SOUL TEXT"), sys.find("Your task list"));
+}
+
+TEST(Arbiter, MissingOrEmptyTodoFileInjectsNothing) {
+  Blackboard bb;
+  Arbiter a;
+  a.set_system_prompt("SOUL TEXT");
+  a.set_todo_path("/nonexistent/dir/todo.md");
+  a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { req = e.value; });
+  bb.post("USER_MESSAGE", "hi", "chat");
+  bb.pump();
+  EXPECT_EQ(req["messages"][0]["content"].get<std::string>(), "SOUL TEXT");
+
+  const std::string f =
+      ::testing::TempDir() + "/arb_todo_empty_" + std::to_string(::getpid()) + ".md";
+  { std::ofstream out(f); }
+  Blackboard bb2;
+  Arbiter b;
+  b.set_system_prompt("SOUL TEXT");
+  b.set_todo_path(f);
+  b.on_attach(bb2);
+  nlohmann::json req2;
+  bb2.subscribe("LLM_REQUEST", [&](const Entry& e) { req2 = e.value; });
+  bb2.post("USER_MESSAGE", "hi", "chat");
+  bb2.pump();
+  EXPECT_EQ(req2["messages"][0]["content"].get<std::string>(), "SOUL TEXT");
 }

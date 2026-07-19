@@ -15,6 +15,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <system_error>
 namespace hades {
@@ -207,6 +208,23 @@ void Arbiter::start_turn() {
     if (!ann.empty()) {
       if (!sys.empty()) sys += "\n\n";
       sys += ann;
+    }
+  }
+  // Task list: fold the todo file (whole-list, agent-curated via the todo tool) into the
+  // same leading system message — the standing plan for multi-step work, re-read each
+  // turn like core memory. Empty path (tool not rostered) or missing/empty file -> no
+  // block, zero cost.
+  if (!todo_path_.empty()) {
+    std::ifstream tf(todo_path_);
+    if (tf) {
+      std::stringstream ts;
+      ts << tf.rdbuf();
+      std::string plan = ts.str();
+      while (!plan.empty() && (plan.back() == '\n' || plan.back() == ' ')) plan.pop_back();
+      if (!plan.empty()) {
+        if (!sys.empty()) sys += "\n\n";
+        sys += "Your task list (keep it current with the todo tool):\n" + plan;
+      }
     }
   }
   // Peer capability + report folds (bridge protocol). Two blocks from the PEER.* map: cards ->

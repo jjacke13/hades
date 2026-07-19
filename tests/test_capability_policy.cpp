@@ -439,3 +439,14 @@ TEST(CapabilityPolicy, WebSearchIsAllowed) {
   a.args = {{"query", "anything"}};
   EXPECT_FALSE(p.veto(bb, a).vetoed);
 }
+
+TEST(CapabilityPolicy, TodoIsAllowed) {
+  EXPECT_EQ(CapabilityPolicy::capability_of("todo"), Capability::TodoList);
+  CapabilityScope sc;              // defaults: confirm_unscoped — proves NOT Unknown->confirm
+  CapabilityPolicy p(sc);
+  Blackboard bb;
+  Action a{Action::Kind::ToolCall};
+  a.tool = "todo";
+  a.args = {{"items", nlohmann::json::array()}};
+  EXPECT_FALSE(p.veto(bb, a).vetoed);
+}

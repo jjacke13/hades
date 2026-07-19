@@ -33,6 +33,8 @@ public:
   void set_system_prompt(std::string s) { system_prompt_ = std::move(s); }
   // Path to the always-on core-memory file (memory_file). Re-read every turn so pins are live.
   void set_memory_path(std::string p) { memory_path_ = std::move(p); }
+  // Path to the task-list file (todo tool). Folded into the system message each turn; empty -> off.
+  void set_todo_path(std::string p) { todo_path_ = std::move(p); }
   // Path to the per-session conversation jsonl (one history_ message per line). When set,
   // append_history persists each message as it is added; load_history reloads it on resume.
   void set_session_path(std::string p) { session_path_ = std::move(p); }
@@ -78,6 +80,7 @@ private:
   std::string model_;
   std::string system_prompt_;   // prepended as a {role:system} message each turn (may be empty)
   std::string memory_path_;     // live core-memory file; re-read each turn into the system message
+  std::string todo_path_;       // task-list file (todo tool); folded into the system message each turn
   std::string session_path_;    // per-session conversation jsonl; append-per-message when set
   std::string sessions_dir_;    // dir for a `/new` rotation (dir/<id>.jsonl); empty -> no rotation
   std::function<std::string()> id_gen_;  // NEW_SESSION id source (test seam); null -> make_session_id

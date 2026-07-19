@@ -172,6 +172,7 @@ Capability CapabilityPolicy::capability_of(const std::string& tool) {
   if (tool == "save_memory" || tool == "core_memory")    return Capability::MemoryAppend;
   if (tool == "session_search")                          return Capability::SessionRead;
   if (tool == "web_search")                              return Capability::WebSearch;
+  if (tool == "todo")                                    return Capability::TodoList;
   if (tool == "use_skill")                               return Capability::SkillRead;
   if (tool == "save_skill")                              return Capability::SkillWrite;
   if (tool == "ask_agent")                               return Capability::PeerAsk;
@@ -250,6 +251,11 @@ VetoResult CapabilityPolicy::veto(const Blackboard&, const Action& a) const {
       // the LLM supplies only query text, so there is no SSRF surface in the args.
       // Peer/heartbeat turns can search unattended: exposure is query text flowing to
       // the operator-chosen backend only (per-origin scopes = capability v2).
+      return allow();
+    case Capability::TodoList:
+      // The agent's own plan file: path wiring-pinned via argv, whole-list replace. A
+      // heartbeat tick continuing the plan unattended is the point; a peer rewriting it
+      // is the documented session_search-class caveat (per-origin scopes = capability v2).
       return allow();
     case Capability::Exec:
       return confirm("exec capability (" + a.tool + "): runs an arbitrary command");
