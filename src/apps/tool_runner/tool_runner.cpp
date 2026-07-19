@@ -4,7 +4,12 @@
 // timeout override) + tool/registry (Tool blocks, describe/spec warm cache) + tool/
 // mcp_adapter (MCP stdio call shim). Tools themselves are transient subprocesses
 // (tools/*.cpp binaries) — actions, not apps; run_subprocess lives in core/subprocess.
+//
+// Offload (tool-offload phase 2, LLM-offload pattern): when set_executor() is given an
+// Executor, the resolved tool runs on a worker (execute_tool core) and posts TOOL_RESULT
+// back so the pump thread stays live mid-tool; null (default) -> inline, byte-identical.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -12,6 +17,7 @@
 #include "hades/module/tool_runner.h"
 #include "hades/blackboard.h"
 #include "hades/config.h"
+#include "hades/executor.h"
 #include "hades/tool/subprocess.h"
 #include "hades/tool/mcp_adapter.h"
 #include "hades/tool/registry.h"
@@ -36,6 +42,29 @@ void ToolRunner::on_start(const Block& cfg, Blackboard&) {
   reg_.warm(timeout_s_);
 }
 
+// Pure execution core: run a RESOLVED tool (native subprocess or MCP call) and return
+// {ok, content}. Thread-safe by construction — it reads ONLY its parameters (the ToolEntry
+// is a value copy), so it behaves identically on the pump thread (inline) or on an
+// Executor worker. All mutable-registry access (find_by_tool_name / mcp_real_name lazily
+// warm caches) must happen BEFORE this, on the pump thread.
+static std::pair<bool, nlohmann::json> execute_tool(const ToolEntry& te,
+                                                    const std::string& name,
+                                                    const std::string& real,
+                                                    const nlohmann::json& args,
+                                                    double timeout) {
+  if (te.kind == "native") {
+    nlohmann::json call{{"call", name}, {"args", args}};
+    auto r = run_subprocess(split_ws(te.command), call.dump(), timeout);
+    if (r.timed_out) return {false, {{"error", "tool timed out: " + name}}};
+    auto j = nlohmann::json::parse(r.out, nullptr, false);  // guarded
+    if (!j.is_object()) return {false, {{"error", "bad tool output"}}};
+    return {j.value("ok", false),
+            j.contains("result") ? j["result"] : nlohmann::json::object()};
+  }
+  nlohmann::json content = mcp_call(te, real.empty() ? name : real, args, timeout);
+  return {content.is_object() && !content.contains("error"), content};
+}
+
 void ToolRunner::on_attach(Blackboard& bb) {
   bb_ = &bb;
   // SAFETY: `this`/bb_ are non-owning. ToolRunner lifetime is managed by the
@@ -44,46 +73,47 @@ void ToolRunner::on_attach(Blackboard& bb) {
   bb.subscribe("TOOL_REQUEST", [this](const Entry& e) {
     // Guard all external (blackboard) JSON access.
     std::string id, name;
+    std::uint64_t epoch = 0;
+    bool has_epoch = false;
     nlohmann::json args = nlohmann::json::object();
     if (e.value.is_object()) {
       id = e.value.value("id", "");
       name = e.value.value("tool", "");
-      if (e.value.contains("args") && e.value["args"].is_object())
-        args = e.value["args"];
-    }
-
-    const ToolEntry* te = reg_.find_by_tool_name(name);
-    nlohmann::json content;
-    bool ok = false;
-
-    // Per-tool override (Tool block timeout_s, e.g. ask_agent's long peer-call window);
-    // 0 -> the runner-wide default.
-    const double timeout = (te && te->timeout_s > 0.0) ? te->timeout_s : timeout_s_;
-
-    if (!te) {
-      content = {{"error", "unknown tool: " + name}};
-    } else if (te->kind == "native") {
-      nlohmann::json call{{"call", name}, {"args", args}};
-      auto r = run_subprocess(split_ws(te->command), call.dump(), timeout);
-      if (r.timed_out) {
-        content = {{"error", "tool timed out: " + name}};
-      } else {
-        auto j = nlohmann::json::parse(r.out, nullptr, false);  // guarded
-        if (!j.is_object()) {
-          content = {{"error", "bad tool output"}};
-        } else {
-          ok = j.value("ok", false);
-          content = j.contains("result") ? j["result"] : nlohmann::json::object();
-        }
+      if (e.value.contains("args") && e.value["args"].is_object()) args = e.value["args"];
+      if (e.value.contains("epoch") &&
+          (e.value["epoch"].is_number_integer() || e.value["epoch"].is_number_unsigned())) {
+        epoch = e.value["epoch"].get<std::uint64_t>();
+        has_epoch = true;
       }
-    } else {  // mcp | mcp_http
-      const std::string real = reg_.mcp_real_name(name);
-      content = mcp_call(*te, real.empty() ? name : real, args, timeout);
-      ok = content.is_object() && !content.contains("error");
     }
 
-    bb_->post("TOOL_RESULT", {{"id", id}, {"ok", ok}, {"content", content}},
-              "tool_runner", id);
+    // PUMP THREAD ONLY: find_by_tool_name/mcp_real_name lazily warm mutable caches. The
+    // worker below receives value copies exclusively.
+    const ToolEntry* te = reg_.find_by_tool_name(name);
+    if (!te) {
+      nlohmann::json out{{"id", id}, {"ok", false},
+                         {"content", {{"error", "unknown tool: " + name}}}};
+      if (has_epoch) out["epoch"] = epoch;
+      bb_->post("TOOL_RESULT", out, "tool_runner", id);
+      return;
+    }
+    // Per-tool override (Tool block timeout_s); 0 -> the runner-wide default.
+    const double timeout = te->timeout_s > 0.0 ? te->timeout_s : timeout_s_;
+    const ToolEntry entry = *te;                    // value copy: worker independent of registry
+    const std::string real = reg_.mcp_real_name(name);
+
+    // CONCURRENCY (LLMModule precedent): the closure captures value copies + ONE non-owning
+    // pointer (`bb2`); `this` is NOT captured, so the worker can reach no mutable module
+    // field. Teardown order joins the Executor before modules/Blackboard die.
+    Blackboard* bb2 = bb_;
+    auto run = [bb2, id, name, args, entry, real, timeout, epoch, has_epoch] {
+      auto [ok, content] = execute_tool(entry, name, real, args, timeout);
+      nlohmann::json out{{"id", id}, {"ok", ok}, {"content", content}};
+      if (has_epoch) out["epoch"] = epoch;          // echo the turn stamp (absent in -> absent out)
+      bb2->post("TOOL_RESULT", out, "tool_runner", id);
+    };
+    if (executor_) executor_->submit(run);
+    else run();                                     // inline (default, unchanged)
   });
 }
 
