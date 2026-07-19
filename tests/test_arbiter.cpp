@@ -1140,3 +1140,70 @@ TEST(Arbiter, MissingOrEmptyTodoFileInjectsNothing) {
   bb2.pump();
   EXPECT_EQ(req2["messages"][0]["content"].get<std::string>(), "SOUL TEXT");
 }
+
+TEST(Arbiter, ToolRequestCarriesTurnEpoch) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json toolreq;
+  bb.subscribe("TOOL_REQUEST",[&](const Entry& e){ toolreq=e.value; });
+  bb.post("USER_MESSAGE","go","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","x"},
+          {"arguments",nlohmann::json::object()}}}}, "llm"); bb.pump();
+  EXPECT_EQ(toolreq.value("epoch", 0), 1);
+}
+TEST(Arbiter, StaleEpochToolResultIsDroppedNotContinued) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  nlohmann::json dropped;
+  bb.subscribe("DROPPED_STALE_TOOL_RESULT",[&](const Entry& e){ dropped=e.value; });
+  bb.post("USER_MESSAGE","go","chat"); bb.pump();          // epoch 1, first LLM_REQUEST
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","x"},
+          {"arguments",nlohmann::json::object()}}}}, "llm"); bb.pump();
+  bb.post("TURN_ABANDONED", true, "chat"); bb.pump();      // epoch -> 2 (+ orphan popped)
+  const std::size_t before = a.history_size();
+  bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"x",1}}},{"epoch",1}},
+          "tool_runner"); bb.pump();
+  EXPECT_FALSE(dropped.is_null());
+  EXPECT_EQ(reqs.size(), 1u);                    // no continuation request fired
+  EXPECT_EQ(a.history_size(), before);           // no orphan tool message appended
+}
+TEST(Arbiter, ToolResultWithoutEpochStillContinues) {   // legacy/hand-posted compat
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  bb.post("USER_MESSAGE","go","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","x"},
+          {"arguments",nlohmann::json::object()}}}}, "llm"); bb.pump();
+  bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",nlohmann::json::object()}},
+          "tool_runner"); bb.pump();
+  EXPECT_EQ(reqs.size(), 2u);                    // continuation fired (no epoch = not gated)
+}
+TEST(Arbiter, TurnAbandonedPopsTrailingAssistantToolCalls) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","go","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","x"},
+          {"arguments",nlohmann::json::object()}}}}, "llm"); bb.pump();
+  EXPECT_EQ(a.history_size(), 2u);               // user + assistant(tool_calls)
+  bb.post("TURN_ABANDONED", true, "chat"); bb.pump();
+  EXPECT_EQ(a.history_size(), 1u);               // orphan pair-head popped
+  bb.post("USER_MESSAGE","again","chat"); bb.pump();
+  for (const auto& msg : req["messages"])        // next request has no dangling tool_calls
+    EXPECT_FALSE(msg.contains("tool_calls"));
+}
+TEST(Arbiter, StaleSuccessfulWriteStillHarvestsVersion) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json toolreq;
+  bb.subscribe("TOOL_REQUEST",[&](const Entry& e){ toolreq=e.value; });
+  bb.post("USER_MESSAGE","go","chat"); bb.pump();          // epoch 1
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","write_file"},
+          {"arguments",{{"path","w.txt"},{"content","x"}}}}}}, "llm"); bb.pump();
+  bb.post("TURN_ABANDONED", true, "chat"); bb.pump();      // epoch -> 2
+  bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"version","abc123"}}},
+          {"epoch",1}}, "tool_runner"); bb.pump();         // stale: dropped BUT harvested
+  bb.post("USER_MESSAGE","edit","chat"); bb.pump();        // epoch 3
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",3},{"tool_call",{{"id","c2"},{"name","edit_file"},
+          {"arguments",{{"path","w.txt"},{"old_string","a"},{"new_string","b"}}}}}}, "llm"); bb.pump();
+  EXPECT_EQ(toolreq["args"].value("expect_version",""), "abc123");   // disk truth injected
+}

@@ -94,11 +94,20 @@ void Arbiter::on_attach(Blackboard& bb) {
   // epoch invalidates the abandoned turn's in-flight LLM_RESPONSE (dropped by on_llm_response's
   // freshness gate when it lands after this), and clearing the pending confirm prevents a
   // confirm-gated action from the abandoned turn surviving into the next one (same reset as
-  // on_confirm). NOTE: tools run SYNCHRONOUSLY today so no stale TOOL_RESULT can exist; when
-  // tool-offload lands, extend this epoch+abandonment pattern to TOOL_RESULT as well.
+  // on_confirm). Tools are offloaded now (tool-offload), so a stale TOOL_RESULT CAN arrive after
+  // abandonment: on_tool_result's epoch gate drops it, and the orphan pop below keeps the
+  // history clean.
   bb.subscribe("TURN_ABANDONED", [this](const Entry&) {
     ++turn_epoch_;
     clear_pending();
+    // Tool-offload: an abandoned turn can leave a trailing assistant(tool_calls) whose
+    // TOOL_RESULT is dropped by the epoch gate above (or never arrives). A later request
+    // would then carry the orphan pair-head — provider-invalid. Pop it (the same sanitize
+    // load_history applies on resume; the on-disk session line stays, resume handles it).
+    while (!history_.empty() &&
+           history_.back().value("role", "") == "assistant" &&
+           history_.back().contains("tool_calls"))
+      history_.pop_back();
   });
   // `/new` (REPL) posts NEW_SESSION to start a FRESH session mid-run: drop the in-memory
   // conversation and rotate session_path_ to a brand-new file so subsequent appends land there,
@@ -390,7 +399,9 @@ void Arbiter::dispatch_or_gate(const Action& act_in, const nlohmann::json& assis
   append_history(assistant_msg);
   if (act.kind == Action::Kind::ToolCall) {
     track_file_op_(act.tool_id, act.tool, act.args);
-    bb_->post("TOOL_REQUEST", {{"id", act.tool_id}, {"tool", act.tool}, {"args", act.args}},
+    bb_->post("TOOL_REQUEST",
+              {{"id", act.tool_id}, {"tool", act.tool}, {"args", act.args},
+               {"epoch", turn_epoch_}},
               "arbiter");
   } else {
     bb_->post("ASSISTANT_MESSAGE", act.text, "arbiter");
@@ -419,6 +430,18 @@ void Arbiter::on_tool_result(const Entry& e) {
         file_versions_[it->second] = ver->get<std::string>();
     pending_file_ops_.erase(it);
   }
+  // Freshness gate (tool-offload): a result stamped with a superseded epoch — its turn was
+  // abandoned or rotated while the offloaded worker ran — must not continue the CURRENT
+  // turn. The version harvest above already ran: a stale-but-successful write DID change
+  // the disk, so its version is truth. A result with NO epoch field is NOT gated
+  // (hand-posted/legacy producers).
+  if (v.contains("epoch") &&
+      (v["epoch"].is_number_integer() || v["epoch"].is_number_unsigned()) &&
+      v["epoch"].get<std::uint64_t>() != turn_epoch_) {
+    bb_->post("DROPPED_STALE_TOOL_RESULT",
+              {{"epoch", v["epoch"]}, {"current", turn_epoch_}}, "arbiter");
+    return;
+  }
   // History push BEFORE the guard so the assistant/tool message pair is always preserved.
   append_history({{"role", "tool"},
                   {"tool_call_id", v.value("id", "")},
@@ -443,7 +466,8 @@ void Arbiter::on_confirm(const Entry& e) {
     bb_->post("TOOL_REQUEST",
               {{"id", pending_.value("tool_id", "")},
                {"tool", pending_.value("tool", "")},
-               {"args", pending_.contains("args") ? pending_["args"] : nlohmann::json::object()}},
+               {"args", pending_.contains("args") ? pending_["args"] : nlohmann::json::object()},
+               {"epoch", turn_epoch_}},
               "arbiter");
   } else {
     bb_->post("ASSISTANT_MESSAGE", "[declined by user]", "arbiter");
