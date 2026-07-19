@@ -108,13 +108,21 @@ int main(int argc, char** argv) {
             const nlohmann::json::json_pointer ptr(cfg.results_path);
             if (j.contains(ptr) && j.at(ptr).is_array()) {
               path_ok = true;
+              // Type-safe field read: real backends (SearXNG engines, Brave) routinely emit
+              // null descriptions — e.value() THROWS on a null/non-string field, and one bad
+              // element must degrade per-entry, never abort the whole result walk.
+              auto sv = [](const nlohmann::json& o, const std::string& k) {
+                auto it = o.find(k);
+                return it != o.end() && it->is_string() ? it->get<std::string>()
+                                                        : std::string{};
+              };
               for (const auto& e : j.at(ptr)) {
                 if (static_cast<int>(hits.size()) >= max_results) break;
                 if (!e.is_object()) continue;
-                const std::string title = e.value(cfg.title_key, "");
-                const std::string href = e.value(cfg.url_key, "");
+                const std::string title = sv(e, cfg.title_key);
+                const std::string href = sv(e, cfg.url_key);
                 if (title.empty() || href.empty()) continue;   // spec: skip incomplete
-                std::string snippet = e.value(cfg.snippet_key, "");
+                std::string snippet = sv(e, cfg.snippet_key);
                 constexpr std::size_t kSnippetCap = 500;
                 if (snippet.size() > kSnippetCap) snippet.resize(kSnippetCap);
                 hits.push_back({{"title", title}, {"url", href}, {"snippet", snippet}});

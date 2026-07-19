@@ -68,6 +68,14 @@ struct StubSearch {
     srv.Get("/empty", [](const httplib::Request&, httplib::Response& res) {
       res.set_content(R"({"results":[]})", "application/json");
     });
+    srv.Get("/nulls", [](const httplib::Request&, httplib::Response& res) {
+      // real backends emit null descriptions/titles — must degrade per-entry
+      res.set_content(
+          R"({"results":[{"title":"A","url":"https://a.example/","snippet":null},)"
+          R"({"title":null,"url":"https://skip.example/"},)"
+          R"({"title":"B","url":"https://b.example/","snippet":"ok"}]})",
+          "application/json");
+    });
     port = srv.bind_to_any_port("127.0.0.1");
     th = std::thread([this] { srv.listen_after_bind(); });
     srv.wait_until_ready();
@@ -174,6 +182,18 @@ TEST(WebSearchTool, ErrorPathsFailSoft) {
   auto down = call({"provider=http", "endpoint=http://127.0.0.1:1", "timeout_s=2"},
                    {{"query", "x"}});
   EXPECT_FALSE(down.value("ok", true));
+}
+
+TEST(WebSearchTool, NullFieldsDegradePerEntry) {
+  // Task-2 review M1: a null snippet/title mid-array must not abort the walk.
+  StubSearch web;
+  auto j = call({"provider=http", "endpoint=" + web.base() + "/nulls"}, {{"query", "x"}});
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  const auto& res = j["result"]["results"];
+  ASSERT_EQ(res.size(), 2u) << j.dump();               // null-title entry skipped
+  EXPECT_EQ(res[0].value("title", ""), "A");
+  EXPECT_EQ(res[0].value("snippet", "x"), "");         // null snippet -> empty, kept
+  EXPECT_EQ(res[1].value("snippet", ""), "ok");
 }
 
 TEST(WebSearchTool, ZeroHitsIsOkEmpty) {
