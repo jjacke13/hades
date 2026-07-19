@@ -234,3 +234,32 @@ TEST(BackgroundTools, FinishedRingKeepsLastFiveAndTruncatesOutput) {
   EXPECT_NE(tasks.find("bg-5 ·"), std::string::npos);
   EXPECT_NE(tasks.find(" (truncated)"), std::string::npos);  // 3000-char output capped at 2000B
 }
+
+TEST(BackgroundTools, ThrowingWorkerStillDrainsRunningSlot) {
+  // Args with invalid UTF-8 make call.dump() throw inside execute_tool on the worker; the
+  // submit wrapper must convert the throw into a terminal BG_DONE{ok:false} so the running
+  // slot always drains — else the cap wedges permanently (review I1).
+  Blackboard bb;
+  ToolRunner tr;
+  Block b; b.section = "Tool"; b.name = "slow"; b.kv["native"] = write_slow_tool("g", 0.0);
+  tr.add_tool(b);
+  Block cfg; cfg.kv["max_background"] = "1";
+  tr.on_start(cfg, bb);
+  tr.on_attach(bb);
+  std::string tasks;
+  std::vector<nlohmann::json> results;
+  bb.subscribe("BG_TASKS", [&](const Entry& e) { if (e.value.is_string()) tasks = e.value; });
+  bb.subscribe("TOOL_RESULT", [&](const Entry& e) { results.push_back(e.value); });
+  Executor ex(2);
+  tr.set_executor(&ex);
+  bb.post("TOOL_REQUEST",
+          {{"id", "t1"}, {"tool", "slow"}, {"args", {{"background", true}, {"bad", "\xFF\xFE"}}}},
+          "arbiter");
+  ASSERT_TRUE(bb.run_until([&] { return tasks.find("FAILED") != std::string::npos; }, 5.0));
+  EXPECT_NE(tasks.find("tool threw"), std::string::npos);
+  // The slot drained: a second background task under cap 1 must START, not be refused.
+  bb.post("TOOL_REQUEST",
+          {{"id", "t2"}, {"tool", "slow"}, {"args", {{"background", true}}}}, "arbiter");
+  ASSERT_TRUE(bb.run_until([&] { return results.size() >= 2; }, 5.0));
+  EXPECT_TRUE(results.back()["content"].value("started", false)) << results.back().dump();
+}

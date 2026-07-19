@@ -139,7 +139,20 @@ void ToolRunner::on_attach(Blackboard& bb) {
       const double bg_timeout = std::max(timeout, bg_timeout_s_);
       Blackboard* bbg = bb_;
       executor_->submit([bbg, task_id, name, args, entry, real, bg_timeout] {
-        auto [ok, content] = execute_tool(entry, name, real, args, bg_timeout);
+        // A throw here would be swallowed by the Executor's catch — BG_DONE would never
+        // post and the running entry would occupy a max_background slot FOREVER. Always
+        // reach the post: convert any throw into a terminal ok:false completion.
+        bool ok = false;
+        nlohmann::json content;
+        try {
+          auto r = execute_tool(entry, name, real, args, bg_timeout);
+          ok = r.first;
+          content = std::move(r.second);
+        } catch (const std::exception& ex) {
+          content = {{"error", std::string("tool threw: ") + ex.what()}};
+        } catch (...) {
+          content = {{"error", "tool threw"}};
+        }
         // Epoch-FREE by design: completion is cross-turn; the BG_TASKS fold delivers it.
         bbg->post("BG_DONE", {{"task_id", task_id}, {"ok", ok}, {"content", content}},
                   "tool_runner", task_id);
