@@ -83,6 +83,7 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 | `skills` | Announces the skills library each turn (reads `Skills` block). | No skills roster; `use_skill`/`save_skill` still run if rostered as tools. |
 | `status` | Turn-stats aggregator: posts `AGENT_STATUS` (`{ctx_tokens, spent_usd, turn, model, line}`) from the traffic each turn already produces; the REPL prints the `line` dim under each reply (`[ctx 12.4k tok · $0.0372 · turn 9 · gpt-5.5]`). No config block. `ctx_tokens` = prompt+completion of the last LLM call; `/new` resets ctx/turn, spend stays process-cumulative. | No stats line; REPL output unchanged. |
 | `auto_extract` | Post-turn background memory harvest: after each **human** turn, an aux LLM call reviews the last exchange and appends durable facts to archival memory with `src:"auto"` (reads the optional `AutoExtract` block, §18). Costs one extra small LLM call per turn, metered into the budget. | No automatic harvesting (facts are only saved via the explicit `save_memory` tool). |
+| `compactor` | Background session summarizer: when old turns fall outside the per-turn request window (`history_budget_chars`), an aux LLM call summarizes them into a sidecar and the summary is folded back into context (reads the optional `Compactor` block, §21). | No summarization — turns outside the window are silently truncated from the request (still on disk); today's behavior. |
 | `chat` | stdin REPL front-end. | No REPL. |
 | `serve` | HTTP/web front-end (`--serve`). | `--serve` errors "no serve module". |
 | `telegram` | Telegram long-poll bot (reads `Telegram` block). | No bot. |
@@ -96,8 +97,8 @@ Omit a line → that module is absent (`agent.X == nullptr`, zero coupling). An 
 of those it errors (no-chat-module error).
 
 dev.hades roster (as committed): `llm tool_runner memory chat arbiter serve skills` — every other
-module (`status`, `embedding_memory`, `telegram`, `bridge`, `heartbeat`, `simplex`) ships as a
-commented example block to uncomment per deployment.
+module (`status`, `auto_extract`, `compactor`, `embedding_memory`, `telegram`, `bridge`,
+`heartbeat`, `simplex`) ships as a commented example block to uncomment per deployment.
 
 ---
 
@@ -120,7 +121,7 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `memory_file` | Core "always-on" memory file; the Arbiter re-reads it each turn; `core_memory` edits it. | `""` | **Required if the `core_memory` tool is rostered** (else `MalConfig`). Path must be whitespace-free. |
 | `memory_char_limit` | Char cap on the core-memory file (it is in EVERY turn's prompt). An over-cap `core_memory` write fails with the entry list so the agent consolidates. | `2400` | Bad/`<=0` value → default. |
 | `sessions_dir` | Directory of per-session conversation `.jsonl` files. | `.hades/sessions` | `--resume` reads from here; `/new` rotates within it. |
-| `history_budget_chars` | Max chars of history sent per LLM request (full history still kept on disk). | `120000` (`kDefaultHistoryBudgetChars`) | ~30k tokens. Very high → effectively "send whole session". |
+| `history_budget_chars` | Max chars of history sent per LLM request (full history still kept on disk). | `120000` (`kDefaultHistoryBudgetChars`) | ~30k tokens. Very high → effectively "send whole session". Turns that fall outside this window are silently truncated from the request unless `Module = compactor` is rostered — see the Compactor section (§21), which summarizes what falls outside this window. |
 | `todo_file` | Task-list file the `todo` tool rewrites and the Arbiter folds into every turn's system message. | `.hades/todo.md` | Only used when the `todo` tool is rostered; path whitespace-free (argv-appended). |
 | `env_file` | Dotenv-style file loaded at launch, **before** anything reads the environment: `KEY=VALUE` lines, `#` full-line comments, optional `export ` prefix, optional surrounding quotes. No `$VAR` expansion, no inline comments. | none | The **real environment wins** over the file (an operator export overrides). Named-but-unreadable → `MalConfig`. Keep it gitignored + `chmod 600`; the known secrets (API key, tokens) are still redacted in session.log, arbitrary extra vars are not. |
 | `provider` | *(currently unread)* | — | The LLM module always builds an OpenAI-compatible provider; this key is decorative. |
@@ -1124,6 +1125,71 @@ the staleness guard (the next edit is refused stale → the agent re-reads — s
 `Bridge.ask_timeout_s + 10` (ask_agent's ToolRunner cap is synthesized from the Bridge
 block, overriding any declared `timeout_s`; see §4) — boot fails with `MalConfig`
 otherwise. `background_timeout_s` is exempt (nothing waits on a background run).
+
+---
+
+## 21. `Compactor` block — session compaction (optional)
+
+`src/apps/compactor/compactor.cpp`, with the Arbiter half in `src/apps/arbiter/arbiter.cpp` and
+pure helpers in `src/core/compact.cpp`. Opt-in via **`Module = compactor`** in the roster; the
+`Compactor` block is optional (all keys default).
+
+When a session grows past `history_budget_chars` (§3), the oldest turns fall outside the per-turn
+request window. Without this module they are silently truncated from the request (still on disk,
+recoverable only via embeddings recall if rostered). With it, those dropped turns are **summarized**
+into a rolling summary that is folded back into every turn's context, so the agent keeps a compact
+memory of the start of a long session.
+
+| Key | What it does | Default | Notes |
+|---|---|---|---|
+| `model` | Model id for the aux summarize call. | **the Session `model`** | Point it at a cheaper/faster model if your provider has one. |
+| `summary_char_limit` | Byte cap on the rolling summary (UTF-8-safe truncation of the aux reply). | `4000` | Bad/`<=0` → default. |
+| `timeout_s` | HTTP timeout for the aux call. | `60` | Only used when the module self-builds its provider (live path). |
+
+**Merged config — inheritance from `Session`.** Like `auto_extract` (§18), the module inherits the
+transport from the `Session` block: `endpoint`, `api_key_env`, and `price_per_mtok` are copied from
+`Session` when the `Compactor` block omits them, and `model` falls back to `Session.model`. So a bare
+`Module = compactor` (no block) just reuses the Session provider + the main model.
+
+**How it works.**
+1. **Detect (Arbiter, pump thread).** At the start of each turn the Arbiter computes the request
+   window; turns before its start that have not yet been summarized are the *span*. It posts at most
+   one in-flight `COMPACT_REQUEST` (session id + `upto` index + a byte-bounded digest of the span +
+   the current summary).
+2. **Summarize (Compactor, background).** The module answers on an Executor worker: an aux LLM call
+   **merges** the existing rolling summary with the newly dropped turns into one updated summary
+   (keeping decisions, open tasks, preferences/corrections, key facts, file/tool state), truncated to
+   `summary_char_limit`. It **always** posts a terminal reply — `SESSION_SUMMARY` on success,
+   `COMPACT_FAILED` on any error, blank/whitespace reply, or busy-skip — so the Arbiter's pending flag
+   can never wedge.
+3. **Apply + persist (Arbiter, pump thread).** On `SESSION_SUMMARY` (guarded: session id must match
+   the current session, `upto` must advance monotonically within the loaded history, text non-blank)
+   the Arbiter adopts the summary and writes it atomically to a sidecar
+   **`.hades/sessions/<id>.summary.md`** (first line `upto: N`, then the markdown). It folds the
+   summary into the leading system message — after core memory, before the skills roster — labeled
+   *"Earlier in this session (compacted from turns no longer shown; may be stale — re-verify
+   files/live state before relying on a past action's result)"*.
+4. **Resume.** On `--resume` the Arbiter reloads the sidecar alongside the session jsonl (tolerant: a
+   missing/garbage sidecar, or an `upto` beyond the loaded history, → no summary; the next window drop
+   regenerates it), so the compacted context survives a restart.
+
+**Fail-soft.** Without the module rostered nothing subscribes to `COMPACT_REQUEST`; the single post is
+inert and the old silent-truncation behavior is unchanged. Any summarize failure re-arms detection so
+a later turn (with a grown span) re-fires.
+
+**Budget fold — `AUX_SPENT_USD`.** The summarize call posts its spend as an `AUX_SPENT_USD` delta
+(`tokens / 1e6 * price_per_mtok`), folded into `BUDGET_SPENT_USD` like auto-extract — so
+`stay_on_budget` sees the compaction cost. The delta is `0` when `price_per_mtok` is unset.
+
+**Bus keys.** `COMPACT_REQUEST` (Arbiter → Compactor), `SESSION_SUMMARY` / `COMPACT_FAILED`
+(Compactor → Arbiter, always exactly one), `COMPACTED` (Arbiter announces an applied summary:
+`{upto, chars}`).
+
+**v1 edges.** The summary lags one turn behind a drop (detection fires this turn; the summary applies
+on a later turn). The window and the not-yet-summarized span can briefly overlap — benign (a turn may
+appear both in the tail window and in the summary). Compaction runs for **all** turn origins (human,
+peer, heartbeat). A `/new` racing an in-flight worker is handled by the session-id guard + busy-skip
+re-arm.
 
 ---
 

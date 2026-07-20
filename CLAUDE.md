@@ -43,8 +43,9 @@ Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, Statu
 **`Session.env_file`** dotenv loader, **`session_search`** + **auto-extract** (memory-v2 core,
 both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML→text extraction** (default-on, raw=true escape),
 **`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold),
-**tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload branch commits ahead since). **774/774 tests** (ASan+UBSan AND
+**tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold),
+**session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below). Pushed
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor branch commits ahead since). **797/797 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -421,6 +422,58 @@ Background tasks fold). **ALL FOUR wave items live-validated.**
   `-fsanitize=address,undefined` flags at some past reconfigure (flags live only in the CMake cache; the
   "~7s suite" era was an UNSANITIZED build). Restored → immediately caught a bad test literal. Sanitized
   suite ~110-130s. The Build/run configure command above now carries the flags — never reconfigure without them.
+
+### Session compaction (shipped 2026-07-20, `feat/compactor`) — dropped-window turns summarized + folded back
+The DECIDED answer to the "Context-full behavior — DECIDE" backlog item (CC-gap item 8, compact-and-continue).
+Today when a session grows past `history_budget_chars` (default 120000) the Arbiter sends only the most-recent
+window and the older turns are **silently truncated** from the request (still on disk). With **`Module = compactor`**
+rostered those dropped turns get **summarized** into a rolling summary folded into every turn's context — compact
+memory of the start of a long session. **Opt-in** (omit → `Agent.compactor==nullptr`, zero coupling, silent-truncation
+floor unchanged; test `build_agent` overload never builds it). **797/797 both lanes** (ASan+UBSan AND TSan).
+- **Split: Arbiter detects/applies (pump thread), CompactorModule summarizes (background).** At each `start_turn`
+  the Arbiter computes `window_start_()`; not-yet-summarized turns before it are the *span*. It posts **one**
+  in-flight `COMPACT_REQUEST` `{session, upto, span:digest_span(...), current_summary}` (guarded `ws > summarized_upto_
+  && !pending_compact_`). Without the module nothing subscribes → the single post is inert (today's behavior exactly).
+- **CompactorModule** (`src/apps/compactor/compactor.cpp`, `type()=="compactor"`): answers on the **Executor**
+  (inline w/o executor in tests) — an aux LLM call **MERGES** the existing rolling summary with the newly dropped
+  turns into ONE updated summary (auto-extract discipline: own provider from merged cfg, non-owning capture, one in
+  flight via `busy_.exchange`, AUX_SPENT_USD delta). **ALWAYS-terminal** (tool-offload BG_DONE lesson): posts
+  `SESSION_SUMMARY` on success, `COMPACT_FAILED` on any throw / blank-or-whitespace reply / busy-skip — so the
+  Arbiter's `pending_compact_` can never wedge. Controller hardening (`b67767b`): whitespace-only reply fails,
+  type-guarded json reads (`value()` throws on present-but-non-string, and it runs after the busy claim), the
+  request-construction/enqueue path is try-wrapped to clear busy + post terminal, and busy-skip itself posts a
+  terminal `COMPACT_FAILED` (a fresh session racing an in-flight worker after `/new` would otherwise latch the flag).
+- **Apply + persist (Arbiter `on_session_summary`):** guards — session id must match the CURRENT session (a late
+  worker from before a `/new` must not contaminate the fresh one), `upto` advances monotonically within loaded
+  history (`upto <= summarized_upto_ || upto > history_.size()` → drop), text non-blank (defense-in-depth with the
+  module's own gate; a blank summary would advance `summarized_upto_` and drop real turns behind it). Adopts
+  `summary_text_`, writes **atomic tmp+rename** sidecar **`.hades/sessions/<id>.summary.md`** (first line `upto: N`,
+  blank line, markdown; best-effort — an IO failure loses persistence, never the in-memory summary), posts
+  `COMPACTED {upto, chars}`.
+- **Fold:** the summary goes into the **leading** system message **after core memory, BEFORE the skills roster**,
+  labeled "Earlier in this session (compacted from turns no longer shown; may be stale — re-verify files/live state
+  before relying on a past action's result):". Conversational context outranks tooling.
+- **Resume:** `load_history` reloads the sidecar with the session (tolerant — missing/garbage file or `upto >
+  history_.size()` → no summary, next drop regenerates); `NEW_SESSION` clears `summary_text_`/`summarized_upto_`/
+  `pending_compact_` so a stale summary can't leak into a fresh session. `COMPACT_FAILED` just re-arms
+  `pending_compact_=false` → next start_turn re-fires with the grown span.
+- **Config = merged cfg (`wire_agent` 2g, the 2f auto-extract pattern):** `Compactor` block — `model` (default
+  `Session.model`), `summary_char_limit` (default **4000**, `>0` guard, UTF-8-safe truncation of the aux reply),
+  `timeout_s` (60); inherits `endpoint`/`api_key_env`/`price_per_mtok` from Session. **Spend metered** via
+  AUX_SPENT_USD → `BUDGET_SPENT_USD` (the one-metered-aux-path pattern; `0` when `price_per_mtok` unset).
+- **Member order (load-bearing):** `Agent::compactor` declared directly after `auto_extract`, BEFORE `executor`
+  (its worker captures `&busy_`, a module member → the Executor must join the worker before the module dies).
+- **New bus keys:** `COMPACT_REQUEST`, `SESSION_SUMMARY`, `COMPACT_FAILED`, `COMPACTED`. **v1 edges:** the summary
+  **lags one turn behind a drop** (detection fires this turn; the summary applies on a later turn); the window and
+  the summarized span can briefly **overlap** (a turn may appear in both the tail window and the summary — benign);
+  compaction runs for **ALL** turn origins (human/peer/heartbeat); a `/new` racing an in-flight worker is handled
+  by the session-id guard + busy-skip re-arm. Pieces: `src/apps/compactor/compactor.cpp`, `src/core/compact.cpp`
+  (`digest_span`/sidecar codec/`sidecar_path_for`/`session_stem`), `include/hades/{compact/compact.h,module/compactor_module.h}`,
+  `src/apps/arbiter/arbiter.cpp` (detect/apply/persist/resume), `app/agent_wiring.{h,cpp}` (member + factory + 2g merged cfg),
+  `tests/test_{compact,compactor_module,compactor_wiring,arbiter}.cpp`. Docs: manifest-reference §21 + §2 roster row.
+  Spec/plan: `docs/superpowers/{specs/2026-07-20-session-compaction-design.md,plans/2026-07-20-session-compaction.md}`.
+  **Live-smoke pending** (Vaios: `Module = compactor` + `history_budget_chars = 4000`, 15+ turn convo → sidecar grows,
+  "what did we discuss at the start?" answered from the summary, `--resume` keeps it folded).
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -1135,19 +1188,20 @@ Ranked gaps to add:
 5. **Send files/photos to user** — Telegram sendDocument/sendPhoto (out-bound; only text+voice today).
 6. **Vision input** — Telegram photo → image in turn (STT-pattern seam; model-dependent).
 7. **Ephemeral subagent fork** — fresh-context child turn, result back, main history clean (peers partially cover).
-8. **Compact-and-continue** — = the context-full backlog item below.
+8. ~~**Compact-and-continue**~~ — **SHIPPED 2026-07-20** (`feat/compactor`): `Module = compactor` summarizes
+   dropped-window turns into a `.summary.md` sidecar folded back into context (the context-full decision below).
+   See the Session compaction subsection under Current state.
 Non-gaps (deliberate): AskUserQuestion (confirm y/N + text suffices) · ToolSearch-style deferred schemas
 (only matters if MCP rosters blow up the announce) · Artifact/plan-mode/IDE (not hades's shape).
 
 ### Noted 2026-07-10 (Vaios) — three new future items
-1. **Context-full behavior — DECIDE.** Today when a session grows past `history_budget_chars` (default
-   120000 chars ≈ ~30k tokens) the Arbiter silently sends only the most-recent tool-pairing-safe suffix
-   per request; full history stays on disk. Nothing is summarized, the user is never told, and the dropped
-   prefix is only recoverable via embeddings recall (if rostered). Decide the deliberate behavior:
-   compact-and-continue (LLM-summarize the dropped prefix into a standing context block, CC `/compact`
-   analogue — natural memory-v2 tie-in: auto-extract facts BEFORE they fall off), auto-rotate to a fresh
-   session (`/new` + carry-summary), a warning to the user, or a manifest-tunable mix. Brainstorm-first;
-   overlaps memory v2's auto-extract work-list item.
+1. **Context-full behavior — DECIDED + SHIPPED 2026-07-20 (`feat/compactor`): compact-and-continue.** When a
+   session grows past `history_budget_chars` (default 120000) the dropped-window turns get LLM-summarized into a
+   rolling summary folded back into every turn's context (the CC `/compact` analogue), persisted to a
+   `.hades/sessions/<id>.summary.md` sidecar. Opt-in via `Module = compactor`; without it the old silent-truncation
+   behavior is unchanged. See the **Session compaction** subsection under Current state. (The other options
+   considered — auto-rotate to a fresh session, a user warning — were not built; the memory-v2 auto-extract tie-in
+   "harvest facts before they fall off" remains a separate work-list item.)
 2. **Mongoose for HTTP — RESEARCHED 2026-07-13, verdict REJECT** (opus web-verified;
    `docs/research/2026-07-13-mongoose-http-research.md`, commit `434be9e`). Three independent kills:
    (1) **license** — GPLv2-only/commercial dual; linking makes every distributed BINARY GPLv2 regardless

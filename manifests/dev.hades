@@ -38,6 +38,16 @@ Module = skills
 #   max_facts = 3
 #   timeout_s = 60
 # }
+# --- Session compaction (opt-in): turns dropped from the request window get summarized
+# into .hades/sessions/<id>.summary.md and folded back into context. Uses the Session
+# provider unless overridden here.
+# Module = compactor
+# Compactor
+# {
+#   model              = <aux model>   # default: Session.model
+#   summary_char_limit = 4000
+#   timeout_s          = 60
+# }
 Tool = fs         { native = ./build/hades-fs-read }
 Tool = shell      { native = ./build/hades-shell }
 Tool = write_file { native = ./build/hades-write-file }

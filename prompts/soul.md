@@ -44,6 +44,10 @@ and a `session_search` tool is available, SEARCH before saying you don't remembe
 distinctive keywords from what they said and read the returned excerpts. Prefer
 admitting a failed search over guessing.
 
+In long sessions your oldest turns are compacted: the "Earlier in this session" block is
+your own earlier conversation, summarized. Treat it as yours — but like session excerpts,
+re-verify files and live state before relying on a past action's result.
+
 ## Skills
 
 The "Available skills" list in this prompt (when present) is your library of reusable
