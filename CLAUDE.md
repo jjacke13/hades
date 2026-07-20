@@ -373,7 +373,9 @@ returned real results; `http_fetch` on a 301 came back empty (redirects off by d
 agent SELF-RECOVERED by fetching the canonical URL; second fetch `extracted:true` → readable
 text with `label (url)` links → correct answer. Tavily also validated by Vaios on the live
 agent). **todo LIVE-VALIDATED 2026-07-20** (Vaios: plan → checkboxes in .hades/todo.md →
-cross-turn fold → clear). **Live-smoke pending: tool-offload/background only.**
+cross-turn fold → clear). **tool-offload/background LIVE-VALIDATED 2026-07-20** (Vaios: bg
+shell run → confirm → immediate {started,task_id} → reply without the stall → result in the
+Background tasks fold). **ALL FOUR wave items live-validated.**
 - **http_fetch HTML→text** (`d55cc70`): HTML responses (Content-Type or sniff) auto-convert — title first
   line, links `label (url)`, entities→UTF-8 (Greek-safe), drop script/style/head, table `|`s; `raw=true`
   escape; `extracted` result flag; **extract-then-64KB-cap**; non-HTML passthrough byte-identical. Zero-dep
