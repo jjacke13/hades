@@ -8,10 +8,12 @@
 
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
+#include "hades/compact/compact.h"   // digest_span, sidecar codec, session_stem/path (compaction)
 #include "hades/prompt.h"   // read_memory_layer
 #include "hades/session_id.h"   // make_session_id + unique_fresh_path (NEW_SESSION rotation)
 #include "hades/session_history.h"   // read_session_jsonl (shared tolerant parse)
 #include <algorithm>   // std::find (merge_memory_blocks dedup)
+#include <cstdio>   // std::remove (sidecar tmp cleanup)
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -69,6 +71,22 @@ void Arbiter::load_history() {
          history_.back().value("role", "") == "assistant" &&
          history_.back().contains("tool_calls"))
     history_.pop_back();
+  // Compaction sidecar: the same-id summary reloads with the session. Tolerant — missing/
+  // garbage file or an upto beyond the loaded history (corrupt pairing) -> no summary; the
+  // next window drop regenerates it.
+  const std::string sc = sidecar_path_for(session_path_);
+  if (!sc.empty()) {
+    std::ifstream f(sc);
+    if (f) {
+      std::stringstream ss;
+      ss << f.rdbuf();
+      const SidecarSummary s = parse_summary_sidecar(ss.str());
+      if (!s.text.empty() && s.upto <= history_.size()) {
+        summary_text_ = s.text;
+        summarized_upto_ = s.upto;
+      }
+    }
+  }
 }
 
 void Arbiter::on_attach(Blackboard& bb) {
@@ -85,6 +103,15 @@ void Arbiter::on_attach(Blackboard& bb) {
   });
   bb.subscribe("LLM_RESPONSE", [this](const Entry& e) { on_llm_response(e); });
   bb.subscribe("TOOL_RESULT", [this](const Entry& e) { on_tool_result(e); });
+  // Compaction replies (opt-in Module = compactor). SESSION_SUMMARY applies the rolling summary
+  // (guarded in on_session_summary); COMPACT_FAILED just re-arms detection so the next start_turn
+  // re-fires with the grown span. Both no-op without the module (nothing posts them).
+  bb.subscribe("SESSION_SUMMARY", [this](const Entry& e) { on_session_summary(e); });
+  bb.subscribe("COMPACT_FAILED", [this](const Entry& e) {
+    if (!e.value.is_object()) return;
+    if (e.value.value("session", "") != session_stem(session_path_)) return;
+    pending_compact_ = false;   // re-arm: next start_turn re-fires with the grown span
+  });
   // Bridge peer state: PEER.<peer>.card (capabilities) and PEER.<peer>.fact.<k> (reports). Kept
   // in a local latest-value map and folded into the leading system message at turn start (the
   // SKILLS_ANNOUNCE pattern). Harmless when no bridge exists (nothing posts PEER.*).
@@ -118,6 +145,10 @@ void Arbiter::on_attach(Blackboard& bb) {
   bb.subscribe("NEW_SESSION", [this](const Entry&) {
     history_.clear();
     clear_pending();
+    // Fresh session: drop the rolling summary state so a stale summary can't leak into it.
+    summary_text_.clear();
+    summarized_upto_ = 0;
+    pending_compact_ = false;
     const std::string id = id_gen_ ? id_gen_() : make_session_id();
     // Collision-safe rotation (same as the initial resolve_session_path): if dir/<id>.jsonl already
     // exists — e.g. two `/new` within one wall-clock second — take the first free `-N` suffix so the
@@ -146,9 +177,9 @@ void Arbiter::clear_pending() {
 // is invalid to most providers) — advance past any leading tool message(s) onto a user/assistant
 // boundary. Sizing uses the same fail-soft dump as append_history so a bad-UTF-8 message can't
 // throw here.
-std::vector<nlohmann::json> Arbiter::windowed_history_() const {
+std::size_t Arbiter::window_start_() const {
   const std::size_t n = history_.size();
-  if (n == 0) return {};
+  if (n == 0) return 0;
   // Walk newest -> oldest, accumulating dump sizes; include while within budget. s is the window
   // start; it stays at n (the sentinel) until the first message is included, which guarantees the
   // most-recent message is always kept even if it alone exceeds the budget.
@@ -169,6 +200,11 @@ std::vector<nlohmann::json> Arbiter::windowed_history_() const {
     s = n - 1;
     while (s > 0 && history_[s].value("role", "") == "tool") --s;
   }
+  return s;
+}
+
+std::vector<nlohmann::json> Arbiter::windowed_history_() const {
+  const std::size_t s = window_start_();
   return std::vector<nlohmann::json>(history_.begin() + static_cast<std::ptrdiff_t>(s),
                                      history_.end());
 }
@@ -208,6 +244,14 @@ void Arbiter::start_turn() {
       if (!sys.empty()) sys += "\n\n";
       sys += core;
     }
+  }
+  // Rolling session summary (compaction): the agent's own earlier conversation, compacted.
+  // Conversational context outranks tooling -> it sits right after core memory.
+  if (!summary_text_.empty()) {
+    if (!sys.empty()) sys += "\n\n";
+    sys += "Earlier in this session (compacted from turns no longer shown; may be stale — "
+           "re-verify files/live state before relying on a past action's result):\n" +
+           summary_text_;
   }
   // Skills roster: fold the SkillsModule's SKILLS_ANNOUNCE (latest-value; posted at attach,
   // refreshed after a successful save_skill) into the same leading system message. Key absent,
@@ -287,7 +331,23 @@ void Arbiter::start_turn() {
   }
   if (!sys.empty())
     messages.push_back({{"role", "system"}, {"content", sys}});
-  for (const auto& m : windowed_history_()) messages.push_back(m);
+  // Compaction detect: messages before the window start fall out of THIS request. Post at
+  // most one in-flight COMPACT_REQUEST (the CompactorModule, if rostered, ALWAYS answers
+  // with SESSION_SUMMARY or COMPACT_FAILED). Without the module nothing subscribes and the
+  // single post is inert — today's behavior exactly.
+  const std::size_t ws = window_start_();
+  if (ws > summarized_upto_ && !pending_compact_) {
+    std::vector<nlohmann::json> span(history_.begin() + static_cast<std::ptrdiff_t>(summarized_upto_),
+                                     history_.begin() + static_cast<std::ptrdiff_t>(ws));
+    bb_->post("COMPACT_REQUEST",
+              {{"session", session_stem(session_path_)},
+               {"upto", ws},
+               {"span", digest_span(span)},
+               {"current_summary", summary_text_}},
+              "arbiter");
+    pending_compact_ = true;
+  }
+  for (std::size_t i = ws; i < history_.size(); ++i) messages.push_back(history_[i]);
 
   // Inject retrieved memory as an ephemeral {role:system} block before the last user message, in TWO
   // labeled sub-blocks so the LLM treats it as its OWN recall: saved FACTS (reliable) vs past-SESSION
@@ -485,6 +545,45 @@ void Arbiter::on_confirm(const Entry& e) {
     bb_->post("ASSISTANT_MESSAGE", "[declined by user]", "arbiter");
   }
   clear_pending();
+}
+
+// Apply a compactor reply. Guards: the session id must match the CURRENT session (a late
+// worker from before a /new rotation must not contaminate the fresh session) and upto must
+// advance monotonically within the loaded history. The sidecar write is atomic tmp+rename,
+// best-effort (an IO failure loses persistence, never the in-memory summary).
+void Arbiter::on_session_summary(const Entry& e) {
+  const auto& v = e.value;
+  if (!v.is_object()) return;
+  if (v.value("session", "") != session_stem(session_path_)) return;
+  pending_compact_ = false;
+  const std::size_t upto =
+      static_cast<std::size_t>(v.value("upto", static_cast<std::uint64_t>(0)));
+  if (upto <= summarized_upto_ || upto > history_.size()) return;
+  if (!v.contains("text") || !v["text"].is_string()) return;
+  const std::string text = v["text"].get<std::string>();
+  if (text.empty()) return;
+  summary_text_ = text;
+  summarized_upto_ = upto;
+  const std::string sc = sidecar_path_for(session_path_);
+  if (!sc.empty()) {
+    const std::string tmp = sc + ".tmp";
+    std::ofstream f(tmp, std::ios::trunc);
+    if (f) {
+      f << serialize_summary_sidecar(summarized_upto_, summary_text_);
+      f.close();
+    }
+    if (f) {
+      std::error_code ec;
+      std::filesystem::rename(tmp, sc, ec);
+      if (ec) std::remove(tmp.c_str());
+    } else {
+      std::remove(tmp.c_str());
+    }
+  }
+  bb_->post("COMPACTED",
+            {{"upto", static_cast<std::uint64_t>(summarized_upto_)},
+             {"chars", static_cast<std::uint64_t>(summary_text_.size())}},
+            "arbiter");
 }
 
 }  // namespace hades

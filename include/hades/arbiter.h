@@ -62,6 +62,10 @@ private:
   // {role:tool}) boundary. Built fresh each turn; the leading system/memory messages are added by
   // start_turn() OUTSIDE this budget (they are not part of history_).
   std::vector<nlohmann::json> windowed_history_() const;
+  // First history_ index the budget window includes (the budget walk + orphan adjustment
+  // previously inline in windowed_history_). Everything before it is compaction's span.
+  std::size_t window_start_() const;
+  void on_session_summary(const Entry&);
   void on_llm_response(const Entry&);
   void on_tool_result(const Entry&);
   void on_confirm(const Entry&);
@@ -99,5 +103,14 @@ private:
   // stamped onto every LLM_REQUEST, and matched on LLM_RESPONSE so a timed-out turn's late
   // response is dropped instead of answering the next prompt.
   std::uint64_t turn_epoch_ = 0;
+  // Session compaction (opt-in Module = compactor; inert without it). summarized_upto_ =
+  // leading history_ messages the rolling summary covers; pending_compact_ = one
+  // COMPACT_REQUEST in flight (cleared by SESSION_SUMMARY or COMPACT_FAILED — the module's
+  // worker ALWAYS posts a terminal reply, so this cannot wedge); summary_text_ is folded
+  // into the leading system message (the sidecar file is persistence + human inspection,
+  // NOT a live edit surface — the Arbiter is its single writer).
+  std::size_t summarized_upto_ = 0;
+  bool pending_compact_ = false;
+  std::string summary_text_;
 };
 }  // namespace hades

@@ -9,12 +9,14 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 #include <unistd.h>   // ::getpid (todo-fold temp filenames)
 #include <gtest/gtest.h>
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
+#include "hades/compact/compact.h"   // serialize/parse_summary_sidecar, SidecarSummary (compaction tests)
 #include "hades/objective/avoid_destructive.h"
 using namespace hades;
 
@@ -1226,4 +1228,141 @@ TEST(Arbiter, EmptyOrMissingBgTasksInjectsNothing) {
   bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
   bb.post("USER_MESSAGE","hi","chat"); bb.pump();
   EXPECT_EQ(req["messages"][0]["content"], "SOUL");
+}
+TEST(Arbiter, WindowDropFiresOneCompactRequest) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_history_budget_chars(400.0);               // tiny window: old turns fall out fast
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("COMPACT_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  const std::string big(150, 'x');
+  for (int i = 0; i < 4; ++i) {                    // 4 user+assistant pairs >> 400 chars
+    bb.post("USER_MESSAGE", big + std::to_string(i), "chat"); bb.pump();
+    bb.post("LLM_RESPONSE", {{"text","ok" + std::to_string(i)},{"epoch",(std::uint64_t)(i+1)}}, "llm");
+    bb.pump();
+  }
+  ASSERT_GE(reqs.size(), 1u);
+  const auto& r = reqs[0];
+  EXPECT_GT(r.value("upto", 0), 0);
+  EXPECT_TRUE(r["span"].is_array());
+  EXPECT_FALSE(r["span"].empty());
+  EXPECT_EQ(r.value("current_summary", "x"), "");  // first compaction: empty summary
+  // While pending (no SESSION_SUMMARY/COMPACT_FAILED), further turns fire NO new request.
+  const std::size_t before = reqs.size();
+  bb.post("USER_MESSAGE", big + "again", "chat"); bb.pump();
+  EXPECT_EQ(reqs.size(), before);
+}
+
+TEST(Arbiter, SessionSummaryAppliedFoldedAndCompactedPosted) {
+  Blackboard bb; Arbiter a; a.set_system_prompt("SOUL"); a.on_attach(bb);
+  nlohmann::json req, compacted;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.subscribe("COMPACTED",[&](const Entry& e){ compacted=e.value; });
+  bb.post("USER_MESSAGE","one","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","a1"},{"epoch",1}}, "llm"); bb.pump();
+  // session_path_ unset -> session_stem("") == "" matches the posted "".
+  bb.post("SESSION_SUMMARY", {{"session",""},{"upto",2},{"text","WE DISCUSSED X"}}, "compactor");
+  bb.pump();
+  EXPECT_EQ(compacted.value("upto", 0), 2);
+  bb.post("USER_MESSAGE","two","chat"); bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_NE(sys.find("Earlier in this session (compacted"), std::string::npos);
+  EXPECT_NE(sys.find("WE DISCUSSED X"), std::string::npos);
+  EXPECT_LT(sys.find("SOUL"), sys.find("Earlier in this session"));
+}
+
+TEST(Arbiter, SummaryGuardsRejectWrongSessionStaleAndOversizedUpto) {
+  Blackboard bb; Arbiter a; a.set_system_prompt("SOUL"); a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","one","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","a1"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("SESSION_SUMMARY", {{"session","other-session"},{"upto",2},{"text","WRONG"}}, "compactor");
+  bb.post("SESSION_SUMMARY", {{"session",""},{"upto",99},{"text","OVERSIZED"}}, "compactor");
+  bb.post("SESSION_SUMMARY", {{"session",""},{"upto",0},{"text","ZERO"}}, "compactor");
+  bb.pump();
+  bb.post("USER_MESSAGE","two","chat"); bb.pump();
+  const std::string sys = req["messages"][0]["content"].get<std::string>();
+  EXPECT_EQ(sys, "SOUL");                          // none applied
+}
+
+TEST(Arbiter, CompactFailedRearmsDetection) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_history_budget_chars(400.0);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("COMPACT_REQUEST",[&](const Entry& e){ reqs.push_back(e.value); });
+  const std::string big(150, 'x');
+  for (int i = 0; i < 4; ++i) {
+    bb.post("USER_MESSAGE", big, "chat"); bb.pump();
+    bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",(std::uint64_t)(i+1)}}, "llm"); bb.pump();
+  }
+  ASSERT_GE(reqs.size(), 1u);
+  const std::size_t before = reqs.size();
+  bb.post("COMPACT_FAILED", {{"session",""},{"upto",reqs.back().value("upto",0)}}, "compactor");
+  bb.pump();
+  bb.post("USER_MESSAGE", big, "chat"); bb.pump(); // next turn re-fires
+  EXPECT_GT(reqs.size(), before);
+}
+
+TEST(Arbiter, NewSessionResetsCompactionState) {
+  Blackboard bb; Arbiter a; a.set_system_prompt("SOUL"); a.on_attach(bb);
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","one","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","a1"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("SESSION_SUMMARY", {{"session",""},{"upto",2},{"text","OLD SESSION"}}, "compactor");
+  bb.pump();
+  bb.post("NEW_SESSION", true, "chat"); bb.pump();
+  bb.post("USER_MESSAGE","fresh","chat"); bb.pump();
+  EXPECT_EQ(req["messages"][0]["content"].get<std::string>().find("OLD SESSION"),
+            std::string::npos);
+}
+
+TEST(Arbiter, ResumeLoadsSidecarAndClampsCorruptPairing) {
+  const std::string dir = ::testing::TempDir() + "/compact_resume_" + std::to_string(::getpid());
+  std::filesystem::create_directories(dir);
+  const std::string sp = dir + "/s1.jsonl";
+  { std::ofstream f(sp);
+    f << nlohmann::json{{"role","user"},{"content","q"}}.dump() << "\n"
+      << nlohmann::json{{"role","assistant"},{"content","a"}}.dump() << "\n"; }
+  { std::ofstream f(dir + "/s1.summary.md");
+    f << serialize_summary_sidecar(2, "RESUMED SUMMARY"); }
+  Blackboard bb; Arbiter a; a.set_system_prompt("SOUL");
+  a.set_session_path(sp);
+  a.on_attach(bb);
+  a.load_history();
+  nlohmann::json req;
+  bb.subscribe("LLM_REQUEST",[&](const Entry& e){ req=e.value; });
+  bb.post("USER_MESSAGE","hi","chat"); bb.pump();
+  EXPECT_NE(req["messages"][0]["content"].get<std::string>().find("RESUMED SUMMARY"),
+            std::string::npos);
+  // Corrupt pairing: upto beyond history -> ignored entirely.
+  const std::string sp2 = dir + "/s2.jsonl";
+  { std::ofstream f(sp2); f << nlohmann::json{{"role","user"},{"content","q"}}.dump() << "\n"; }
+  { std::ofstream f(dir + "/s2.summary.md"); f << serialize_summary_sidecar(50, "CORRUPT"); }
+  Blackboard bb2; Arbiter a2; a2.set_system_prompt("SOUL");
+  a2.set_session_path(sp2);
+  a2.on_attach(bb2);
+  a2.load_history();
+  nlohmann::json req2;
+  bb2.subscribe("LLM_REQUEST",[&](const Entry& e){ req2=e.value; });
+  bb2.post("USER_MESSAGE","hi","chat"); bb2.pump();
+  EXPECT_EQ(req2["messages"][0]["content"].get<std::string>(), "SOUL");
+}
+
+TEST(Arbiter, SidecarWrittenAtomicallyOnApply) {
+  const std::string dir = ::testing::TempDir() + "/compact_write_" + std::to_string(::getpid());
+  std::filesystem::create_directories(dir);
+  const std::string sp = dir + "/w1.jsonl";
+  Blackboard bb; Arbiter a; a.set_session_path(sp); a.on_attach(bb);
+  bb.post("USER_MESSAGE","one","chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","a1"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("SESSION_SUMMARY", {{"session","w1"},{"upto",2},{"text","PERSISTED"}}, "compactor");
+  bb.pump();
+  std::ifstream f(dir + "/w1.summary.md");
+  ASSERT_TRUE(f.good());
+  std::stringstream ss; ss << f.rdbuf();
+  const SidecarSummary s = parse_summary_sidecar(ss.str());
+  EXPECT_EQ(s.upto, 2u);
+  EXPECT_EQ(s.text, "PERSISTED");
+  EXPECT_FALSE(std::filesystem::exists(dir + "/w1.summary.md.tmp"));
 }
