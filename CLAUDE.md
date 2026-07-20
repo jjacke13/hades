@@ -1047,7 +1047,14 @@ Two directions set after the aarch64/Pi + voice batch. BOTH brainstorm-first (no
    gates still apply to self-turns; a runaway-loop cap; `TURN_ORIGIN = heartbeat`); interaction with idle-timeout +
    the offload model. This is the "autonomy" leg — turns hades from reactive assistant into a standing agent.
 
-### Email skill (shipped 2026-07-10, `feat/email-tools`) — mailbox access via himalaya, NO code
+### Email skill (shipped 2026-07-10, `feat/email-tools`) — mailbox access via himalaya, NO code — LIVE-VALIDATED 2026-07-20
+**LIVE-VALIDATED 2026-07-20 (Vaios: agent-driven Yahoo mail works).** Setup that day: himalaya
+v1.2 (devShell) → Yahoo over IMAP/SMTP with an app password (`~/.config/himalaya/config.toml`,
+password in `~/.config/himalaya/yahoo.pass` 600 via `auth.cmd`, never in config); reads
+allowlisted in dev.local.hades `exec_allow` (`himalaya envelope list, himalaya message read`);
+sends stay shell/confirm. Yahoo gotchas: app password REQUIRED (normal password rejected over
+IMAP), folders are `Inbox`/`Sent`/`Bulk`/`Trash`, benign `imap_codec` WARN on list (himalaya
+rectifies).
 Read/send the user's mail. Decided as a **skill, not a module/tools** (Vaios ladder: front-end→tools→skill;
 himalaya is known/tested/Rust/lightweight/OAuth2-capable, and the skills system exists for exactly this):
 `skills/email/SKILL.md` teaches the agent to drive the **himalaya** CLI through the EXISTING tools —
