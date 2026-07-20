@@ -372,7 +372,8 @@ generic `http` provider — POST `{"query"}` + Bearer, `snippet_key=content` the
 returned real results; `http_fetch` on a 301 came back empty (redirects off by design) and the
 agent SELF-RECOVERED by fetching the canonical URL; second fetch `extracted:true` → readable
 text with `label (url)` links → correct answer. Tavily also validated by Vaios on the live
-agent). **Live-smoke pending: todo + tool-offload/background.**
+agent). **todo LIVE-VALIDATED 2026-07-20** (Vaios: plan → checkboxes in .hades/todo.md →
+cross-turn fold → clear). **Live-smoke pending: tool-offload/background only.**
 - **http_fetch HTML→text** (`d55cc70`): HTML responses (Content-Type or sniff) auto-convert — title first
   line, links `label (url)`, entities→UTF-8 (Greek-safe), drop script/style/head, table `|`s; `raw=true`
   escape; `extracted` result flag; **extract-then-64KB-cap**; non-HTML passthrough byte-identical. Zero-dep
