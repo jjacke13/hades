@@ -45,7 +45,7 @@ both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML
 **`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold),
 **tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold),
 **session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor branch commits ahead since). **797/797 tests** (ASan+UBSan AND
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor branch commits ahead since). **798/798 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -429,7 +429,7 @@ Today when a session grows past `history_budget_chars` (default 120000) the Arbi
 window and the older turns are **silently truncated** from the request (still on disk). With **`Module = compactor`**
 rostered those dropped turns get **summarized** into a rolling summary folded into every turn's context — compact
 memory of the start of a long session. **Opt-in** (omit → `Agent.compactor==nullptr`, zero coupling, silent-truncation
-floor unchanged; test `build_agent` overload never builds it). **797/797 both lanes** (ASan+UBSan AND TSan).
+floor unchanged; test `build_agent` overload never builds it). **798/798 both lanes** (ASan+UBSan AND TSan; the cross-thread compactor e2e test is the TSan-relevant one).
 - **Split: Arbiter detects/applies (pump thread), CompactorModule summarizes (background).** At each `start_turn`
   the Arbiter computes `window_start_()`; not-yet-summarized turns before it are the *span*. It posts **one**
   in-flight `COMPACT_REQUEST` `{session, upto, span:digest_span(...), current_summary}` (guarded `ws > summarized_upto_

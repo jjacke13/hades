@@ -562,6 +562,12 @@ void Arbiter::on_session_summary(const Entry& e) {
   summarized_upto_ = upto;
   const std::string sc = sidecar_path_for(session_path_);
   if (!sc.empty()) {
+    // Parent dir created best-effort (spec; in practice append_history made it long ago).
+    const std::filesystem::path scp(sc);
+    if (scp.has_parent_path()) {
+      std::error_code dec;
+      std::filesystem::create_directories(scp.parent_path(), dec);
+    }
     const std::string tmp = sc + ".tmp";
     std::ofstream f(tmp, std::ios::trunc);
     if (f) {

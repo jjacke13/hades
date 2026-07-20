@@ -3,10 +3,13 @@
 // FakeProvider + no executor -> the whole flow runs inline on pump(); the final test wires
 // a REAL Arbiter and the module on one bus for the full detect->summarize->apply->fold loop.
 #include <gtest/gtest.h>
+#include <chrono>
+#include <thread>
 #include <string>
 #include <vector>
 #include "hades/blackboard.h"
 #include "hades/config.h"
+#include "hades/executor.h"
 #include "hades/module/compactor_module.h"
 #include "hades/arbiter.h"
 using namespace hades;
@@ -167,4 +170,36 @@ TEST(CompactorModule, NonStringFieldsNeverWedgeTheSlot) {
   r.bb.post("COMPACT_REQUEST", request(), "arbiter");
   r.bb.pump();
   EXPECT_EQ(terminals, 2);                         // next request served — no wedge
+}
+
+TEST(CompactorModule, ExecutorPathCompactsCrossThread) {
+  // The production shape (final review M1): the worker runs on a REAL Executor thread and
+  // posts the terminal back to the pump — the one path the inline tests structurally miss.
+  // Slow provider forces genuine cross-thread overlap; the Executor is declared AFTER the
+  // module — destroyed first, joins the worker while module + bus are alive (live teardown
+  // order). This is the TSan-relevant compactor test.
+  struct SlowProvider : Provider {
+    LlmResponse complete(const LlmRequest&) override {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      LlmResponse r;
+      r.text = "CROSS-THREAD SUMMARY";
+      r.prompt_tokens = 10;
+      r.completion_tokens = 5;
+      return r;
+    }
+  };
+  Blackboard bb;
+  CompactorModule m(std::make_unique<SlowProvider>());
+  m.on_start(Block{}, bb);
+  m.on_attach(bb);
+  nlohmann::json out;
+  bb.subscribe("SESSION_SUMMARY", [&](const Entry& e) { out = e.value; });
+  Executor ex(2);
+  m.set_executor(&ex);
+  bb.post("COMPACT_REQUEST", request(), "arbiter");
+  bb.pump();                                       // handler submits; worker still sleeping
+  EXPECT_TRUE(out.is_null());
+  ASSERT_TRUE(bb.run_until([&] { return !out.is_null(); }, 5.0));
+  EXPECT_EQ(out.value("text", ""), "CROSS-THREAD SUMMARY");
+  EXPECT_EQ(out.value("upto", 0), 3);
 }
