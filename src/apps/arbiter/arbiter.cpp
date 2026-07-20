@@ -51,7 +51,7 @@ void Arbiter::append_history(const nlohmann::json& msg) {
 
 // Reload a session jsonl into history_ on resume. Tolerant like load_memories: a blank or
 // corrupt line (e.g. a truncated trailing line from a mid-append crash) is skipped, never thrown.
-// windowed_history_() assumes well-formed history; load_history therefore sanitizes BOTH boundary
+// window_start_() assumes well-formed history; load_history therefore sanitizes BOTH boundary
 // orphans from a mid-pair crash (invalid to providers): a LEADING {role:tool} (a tool result whose
 // owning assistant tool_calls was lost) and a TRAILING {role:assistant, tool_calls} (an assistant
 // tool-call whose following tool result was lost) — so history_ opens AND closes on a clean
@@ -201,12 +201,6 @@ std::size_t Arbiter::window_start_() const {
     while (s > 0 && history_[s].value("role", "") == "tool") --s;
   }
   return s;
-}
-
-std::vector<nlohmann::json> Arbiter::windowed_history_() const {
-  const std::size_t s = window_start_();
-  return std::vector<nlohmann::json>(history_.begin() + static_cast<std::ptrdiff_t>(s),
-                                     history_.end());
 }
 
 // Merge two "- bullet\n" lists into one, de-duplicating identical lines, keyword order first.

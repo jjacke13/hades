@@ -58,12 +58,10 @@ public:
 
 private:
   void start_turn();
-  // Most-recent suffix of history_ within history_budget_chars_, beginning on a valid (non-orphan
-  // {role:tool}) boundary. Built fresh each turn; the leading system/memory messages are added by
-  // start_turn() OUTSIDE this budget (they are not part of history_).
-  std::vector<nlohmann::json> windowed_history_() const;
-  // First history_ index the budget window includes (the budget walk + orphan adjustment
-  // previously inline in windowed_history_). Everything before it is compaction's span.
+  // First history_ index the budget window includes: the most-recent suffix within
+  // history_budget_chars_, beginning on a valid (non-orphan {role:tool}) boundary.
+  // start_turn() sends history_[window_start_()..); everything before it is compaction's
+  // span. The leading system/memory messages are OUTSIDE this budget (not part of history_).
   std::size_t window_start_() const;
   void on_session_summary(const Entry&);
   void on_llm_response(const Entry&);
