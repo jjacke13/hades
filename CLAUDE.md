@@ -269,7 +269,17 @@ scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps
   `packages.x86_64-linux.simplex-chat-cli` (official v6.5.6 release binary, autoPatchelf'd: zlib/openssl/gmp/
   glibc) on the devShell PATH (`build: bfbfe8a`); the Pi uses the official aarch64 release binary directly.
 
-### MCP discovery + remote transport (shipped 2026-07-12, `feat/mcp-discovery`)
+### MCP discovery + remote transport (shipped 2026-07-12, `feat/mcp-discovery`) — stdio LIVE-VALIDATED 2026-07-20
+**LIVE-VALIDATED 2026-07-20 (stdio, full E2E on the real binary):** `Tool = gmap { mcp = npx -y
+@cablate/mcp-google-map --stdio }` (+ `GOOGLE_MAPS_API_KEY` via `Session.env_file`) — discovery
+announced all 18 tools as `gmap__maps_*` (every name passed the charset gate), the LLM called
+`gmap__maps_search_nearby` unprompted, the **McpTool confirm gate fired** (`mcp tool outside
+mcp_allow: … [y/N]`), approval ran the call, and real Google data came back (server-side geocode
+of "Syntagma Square" + real Places results) → correct synthesized answer. Google-side gotcha hit
+first: key returned "API key invalid or required API not enabled" until Places API (New) +
+Geocoding + Routes were enabled in the Cloud console (error text names the fix). Vaios's live
+config carries the block in dev.local.hades. **Still unsmoked: the `mcp_url` Streamable-HTTP
+transport** (the same server supports `--port`, an easy future probe).
 MCP servers rostered as `Tool = <block> { mcp = <cmd> }` (stdio) or `{ mcp_url = <url>
 api_key_env = <ENV> }` (Streamable HTTP, Bearer-only; OAuth servers → `npx -y mcp-remote <url>`
 bridge on the stdio path) get their tools DISCOVERED at registry warm (`tools/list`, one
