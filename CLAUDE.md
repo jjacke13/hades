@@ -366,7 +366,13 @@ Opt-in via `Module = auto_extract` (omit → `Agent.auto_extract==nullptr`, zero
 ### CC tool-gap wave (shipped 2026-07-18/20) — http_fetch extraction · web_search · todo · tool-offload
 Items 1–4 of the CC tool-gap analysis (see that section for the ranked list), four SDD branches, all
 merged ff; **752/752 both lanes** for items 1–3, **774/774 both lanes** after tool-offload (item 4), zero
-blocking findings at any final review. **Live-smoke pending all four.**
+blocking findings at any final review. **http_fetch extraction + web_search LIVE-VALIDATED
+2026-07-20** (one compose smoke on the real binary: `web_search` via **Tavily** through the
+generic `http` provider — POST `{"query"}` + Bearer, `snippet_key=content` the only override —
+returned real results; `http_fetch` on a 301 came back empty (redirects off by design) and the
+agent SELF-RECOVERED by fetching the canonical URL; second fetch `extracted:true` → readable
+text with `label (url)` links → correct answer. Tavily also validated by Vaios on the live
+agent). **Live-smoke pending: todo + tool-offload/background.**
 - **http_fetch HTML→text** (`d55cc70`): HTML responses (Content-Type or sniff) auto-convert — title first
   line, links `label (url)`, entities→UTF-8 (Greek-safe), drop script/style/head, table `|`s; `raw=true`
   escape; `extracted` result flag; **extract-then-64KB-cap**; non-HTML passthrough byte-identical. Zero-dep
