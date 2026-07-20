@@ -555,7 +555,9 @@ void Arbiter::on_session_summary(const Entry& e) {
   if (upto <= summarized_upto_ || upto > history_.size()) return;
   if (!v.contains("text") || !v["text"].is_string()) return;
   const std::string text = v["text"].get<std::string>();
-  if (text.empty()) return;
+  // Blank includes whitespace-only (review I1 defense-in-depth with the module's own gate):
+  // adopting a blank summary would advance summarized_upto_ and drop real turns behind it.
+  if (text.find_first_not_of(" \t\r\n") == std::string::npos) return;
   summary_text_ = text;
   summarized_upto_ = upto;
   const std::string sc = sidecar_path_for(session_path_);

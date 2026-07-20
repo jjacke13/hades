@@ -24,7 +24,13 @@ std::string build_merge_input(const std::string& current, const nlohmann::json& 
   std::string in = "Existing summary (may be empty):\n" + current + "\n\nNewly dropped turns:\n";
   for (const auto& m : span) {
     if (!m.is_object()) continue;
-    in += m.value("role", "") + ": " + m.value("content", "") + "\n";
+    // Type-guarded reads (review I2): value() THROWS on a present-but-non-string field, and
+    // this runs after the busy slot is claimed — a throw here would wedge compaction.
+    const std::string role =
+        m.contains("role") && m["role"].is_string() ? m["role"].get<std::string>() : "";
+    const std::string content =
+        m.contains("content") && m["content"].is_string() ? m["content"].get<std::string>() : "";
+    in += role + ": " + content + "\n";
   }
   in += "\nUpdated summary (under " + std::to_string(char_limit) + " characters):";
   return in;
@@ -62,7 +68,16 @@ void CompactorModule::on_attach(Blackboard& bb) {
         static_cast<std::size_t>(v.value("upto", static_cast<std::uint64_t>(0)));
     if (upto == 0) return;
     if (!v.contains("span") || !v["span"].is_array() || v["span"].empty()) return;
-    if (busy_.exchange(true)) return;   // one in flight (the Arbiter never double-sends)
+    if (busy_.exchange(true)) {
+      // Busy-skip is still a TERMINAL outcome for a well-formed request (review M3): without
+      // this reply, a request racing an in-flight compaction (e.g. a fresh session right
+      // after /new while the old session's worker still runs) would leave the sender's
+      // pending flag latched forever. The failure re-arms it; a later turn re-fires.
+      bb_->post("COMPACT_FAILED",
+                {{"session", session}, {"upto", static_cast<std::uint64_t>(upto)}},
+                "compactor");
+      return;
+    }
     // Capture discipline (LLMModule/auto-extract precedent): non-owning provider/bus
     // pointers + plain values + the atomic busy flag. No pump-mutated field off-thread.
     Provider* prov = provider_.get();
@@ -70,22 +85,17 @@ void CompactorModule::on_attach(Blackboard& bb) {
     std::atomic<bool>* busy = &busy_;
     const double price = price_per_mtok_;
     const std::size_t limit = summary_char_limit_;
-    LlmRequest req;
-    req.model = model_;
-    req.messages = {
-        nlohmann::json{{"role", "system"}, {"content", kSystemPrompt}},
-        nlohmann::json{{"role", "user"},
-                       {"content", build_merge_input(v.value("current_summary", ""),
-                                                     v["span"], limit)}}};
     // ALWAYS-terminal worker (tool-offload BG_DONE lesson): success -> SESSION_SUMMARY,
-    // any throw/empty reply -> COMPACT_FAILED. The Arbiter's pending flag depends on it.
+    // any throw / blank reply -> COMPACT_FAILED. The Arbiter's pending flag depends on it.
     auto run = [prov, bus, busy, session, upto, limit, price](const LlmRequest& r) {
       bool ok = false;
       std::string text;
       try {
         const LlmResponse resp = prov->complete(r);
         text = trunc_utf8_bytes(resp.text, limit);
-        ok = !text.empty();
+        // Whitespace-only counts as failure (review I1): the Arbiter would otherwise adopt
+        // a blank summary and drop the real turns behind it.
+        ok = text.find_first_not_of(" \t\r\n") != std::string::npos;
         const double delta =
             (static_cast<double>(resp.prompt_tokens) + resp.completion_tokens) / 1e6 * price;
         if (delta > 0.0) bus->post("AUX_SPENT_USD", delta, "compactor");
@@ -103,19 +113,27 @@ void CompactorModule::on_attach(Blackboard& bb) {
                   "compactor");
       busy->store(false);
     };
-    if (executor_) {
-      // Enqueue-throw would leak busy_=true AND leave the Arbiter pending — post the
-      // terminal failure inline (we are on the pump thread; post() is safe).
-      try {
-        executor_->submit([req = std::move(req), run] { run(req); });
-      } catch (...) {
-        busy_.store(false);
-        bb_->post("COMPACT_FAILED",
-                  {{"session", session}, {"upto", static_cast<std::uint64_t>(upto)}},
-                  "compactor");
-      }
-    } else {
-      run(req);
+    // The always-terminal contract must hold BEFORE the worker exists too (review I2): a
+    // throw during request construction or enqueue (after the busy claim) clears the slot
+    // and posts the terminal failure instead of escaping pump().
+    try {
+      LlmRequest req;
+      req.model = model_;
+      req.messages = {
+          nlohmann::json{{"role", "system"}, {"content", kSystemPrompt}},
+          nlohmann::json{{"role", "user"},
+                         {"content", build_merge_input(
+                              v.contains("current_summary") && v["current_summary"].is_string()
+                                  ? v["current_summary"].get<std::string>()
+                                  : std::string{},
+                              v["span"], limit)}}};
+      if (executor_) executor_->submit([req = std::move(req), run] { run(req); });
+      else run(req);
+    } catch (...) {
+      busy_.store(false);
+      bb_->post("COMPACT_FAILED",
+                {{"session", session}, {"upto", static_cast<std::uint64_t>(upto)}},
+                "compactor");
     }
   });
 }

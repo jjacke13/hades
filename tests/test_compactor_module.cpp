@@ -135,3 +135,36 @@ TEST(CompactorModule, FullLoopDetectSummarizeApplyFold) {
   EXPECT_NE(sys.find("Earlier in this session (compacted"), std::string::npos);
   EXPECT_NE(sys.find("MERGED SUMMARY"), std::string::npos);
 }
+
+TEST(CompactorModule, WhitespaceReplyPostsCompactFailed) {
+  Rig r;
+  r.prov->reply = "  \n\n  ";
+  r.start();
+  nlohmann::json failed, out;
+  r.bb.subscribe("COMPACT_FAILED", [&](const Entry& e) { failed = e.value; });
+  r.bb.subscribe("SESSION_SUMMARY", [&](const Entry& e) { out = e.value; });
+  r.bb.post("COMPACT_REQUEST", request(), "arbiter");
+  r.bb.pump();
+  EXPECT_TRUE(out.is_null());                      // blank is NOT a summary (review I1)
+  ASSERT_FALSE(failed.is_null());
+  EXPECT_EQ(failed.value("upto", 0), 3);
+}
+
+TEST(CompactorModule, NonStringFieldsNeverWedgeTheSlot) {
+  // review I2: object span elements with non-string role/content (and a non-string
+  // current_summary) must neither throw out of pump() nor leak the busy slot.
+  Rig r;
+  r.start();
+  int terminals = 0;
+  r.bb.subscribe("SESSION_SUMMARY", [&](const Entry&) { ++terminals; });
+  r.bb.subscribe("COMPACT_FAILED", [&](const Entry&) { ++terminals; });
+  nlohmann::json bad = {{"session", "s1"}, {"upto", 3},
+                        {"span", nlohmann::json::array({{{"role", 7}, {"content", 9}}})},
+                        {"current_summary", 42}};
+  r.bb.post("COMPACT_REQUEST", bad, "arbiter");
+  r.bb.pump();                                     // must not throw
+  EXPECT_EQ(terminals, 1);                         // terminal posted, slot released
+  r.bb.post("COMPACT_REQUEST", request(), "arbiter");
+  r.bb.pump();
+  EXPECT_EQ(terminals, 2);                         // next request served — no wedge
+}
