@@ -22,6 +22,7 @@
 #include "hades/module/skills_module.h"
 #include "hades/module/status_module.h"
 #include "hades/module/auto_extract_module.h"
+#include "hades/module/compactor_module.h"
 #include "hades/module/telegram_module.h"
 #include "hades/module/simplex_module.h"
 #include "hades/module/bridge_module.h"
@@ -58,6 +59,11 @@ struct Agent {
   // (declared later) is destroyed first and joins while this module is still alive. Same
   // load-bearing rule as the LLMModule/executor pairing below. Do NOT move below `executor`.
   std::unique_ptr<AutoExtractModule> auto_extract;
+  // Optional background session summarizer (compaction). Declared directly after auto_extract
+  // and BEFORE `executor` for the same load-bearing reason: its worker captures `&busy_` (a
+  // member of THIS module), so the Executor (destroyed first) must join that worker while the
+  // module is still alive. Do NOT move below `executor`.
+  std::unique_ptr<CompactorModule> compactor;  // optional session summarizer (compaction)
   std::unique_ptr<ChatModule>   chat;
   // Optional HTTP front-end; always built/attached, but only drives the agent when
   // the binary runs in `--serve` mode (otherwise the stdin REPL drives it).

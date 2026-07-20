@@ -184,7 +184,8 @@ void wire_agent(Agent& a,
                 const std::vector<Block>& heartbeat_blocks = {},
                 const Block& auto_extract_cfg = Block{},
                 const Block& search_cfg = Block{},
-                const Block& tools_cfg = Block{}) {
+                const Block& tools_cfg = Block{},
+                const Block& compactor_cfg = Block{}) {
   // Single source of truth: each memory tool writes the same file its reader uses.
   //   save_memory -> archival store (Memory block `store`), read by MemoryModule.
   //   core_memory -> core file (Session `memory_file`),     read live by the Arbiter.
@@ -435,6 +436,24 @@ void wire_agent(Agent& a,
     if (a.executor) a.auto_extract->set_executor(a.executor.get());
     a.auto_extract->on_start(merged, bb);
     a.auto_extract->on_attach(bb);
+  }
+
+  // 2g) CompactorModule: merged cfg = Session transport values + Compactor overrides (the
+  //     2f auto-extract pattern; aux default model = the main model). Executor set BEFORE
+  //     on_attach; the Executor joins the worker before this module dies (member order).
+  if (a.compactor) {
+    Block cmerged = compactor_cfg;                 // model / summary_char_limit / timeout_s
+    auto cinherit = [&](const char* k) {
+      if (!cmerged.kv.count(k) && session.kv.count(k)) cmerged.kv[k] = session.kv.at(k);
+    };
+    cinherit("endpoint");
+    cinherit("api_key_env");
+    cinherit("price_per_mtok");
+    if (!cmerged.kv.count("model") && session.kv.count("model"))
+      cmerged.kv["model"] = session.kv.at("model");
+    if (a.executor) a.compactor->set_executor(a.executor.get());
+    a.compactor->on_start(cmerged, bb);
+    a.compactor->on_attach(bb);
   }
 
   // 3) Arbiter: now that the registry is warm, hand it the tool specs (empty when the
@@ -706,6 +725,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
                             []{ return std::make_unique<EmbeddingMemoryModule>(); });
   launcher.register_factory("skills",      []{ return std::make_unique<SkillsModule>(); });
   launcher.register_factory("status",      []{ return std::make_unique<StatusModule>(); });
+  launcher.register_factory("compactor",   []{ return std::make_unique<CompactorModule>(); });
   launcher.register_factory("auto_extract",
                             []{ return std::make_unique<AutoExtractModule>(); });
   launcher.register_factory("arbiter",     []{ return std::make_unique<Arbiter>(); });
@@ -725,6 +745,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   a.skills  = take_as<SkillsModule>(launcher, "skills");
   a.status  = take_as<StatusModule>(launcher, "status");
   a.auto_extract = take_as<AutoExtractModule>(launcher, "auto_extract");
+  a.compactor = take_as<CompactorModule>(launcher, "compactor");
   a.arbiter = take_as<Arbiter>(launcher, "arbiter");
   a.chat    = take_as<ChatModule>(launcher, "chat");
   a.serve   = take_as<HttpServerModule>(launcher, "serve");
@@ -743,6 +764,8 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   const Block search_cfg = search_blocks.empty() ? Block{} : search_blocks.front();
   const auto ae_blocks = m.of("AutoExtract");
   const Block ae_cfg = ae_blocks.empty() ? Block{} : ae_blocks.front();
+  const auto compactor_blocks = m.of("Compactor");
+  const Block compactor_cfg = compactor_blocks.empty() ? Block{} : compactor_blocks.front();
   const auto tg_blocks = m.of("Telegram");
   const Block telegram_cfg = tg_blocks.empty() ? Block{} : tg_blocks.front();
   const auto sx_blocks = m.of("Simplex");
@@ -776,7 +799,7 @@ Agent build_agent(Blackboard& bb, const Manifest& m, const std::string& session_
   // BEFORE on_attach submits the index worker (race-free exclusion — see wire_agent's 2c block).
   wire_agent(a, bb, s, m.of("Tool"), m.of("Objective"), memory, model, embedding, session_path,
              skills_cfg, telegram_cfg, simplex_cfg, bridge_cfg, peer_blocks, stt_cfg, tts_cfg,
-             heartbeat_blocks, ae_cfg, search_cfg, tools_cfg);
+             heartbeat_blocks, ae_cfg, search_cfg, tools_cfg, compactor_cfg);
 
   // Apply the resolved idle ceiling to whichever front-end(s) the roster built (the LLM
   // resolved its own llm_timeout_s from the same Session block in on_start). Null-guarded:
