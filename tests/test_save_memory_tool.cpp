@@ -131,3 +131,63 @@ TEST(SaveMemoryTool, DescribeAdvertisesOptionalTopic) {
   EXPECT_EQ(std::find(req.begin(), req.end(), "topic"), req.end());   // optional
   EXPECT_NE(std::find(req.begin(), req.end(), "text"), req.end());    // text still required
 }
+
+// ── Task 2 review findings (2026-08-22) ───────────────────────────────────────
+TEST(SaveMemoryTool, TopicIsTrimmedAndLowercasedIntoOneBucket) {
+  // I1: the supersession bucket is matched by EXACT string, so " Seat-Pref " and "seat-pref"
+  // must normalize to the same key or the supersession the model asked for silently fails.
+  const std::string store = ::testing::TempDir() + "/save_norm_" +
+                            std::to_string(::getpid()) + ".jsonl";
+  std::filesystem::remove(store);
+  for (const char* t : {" Seat-Pref ", "seat-pref", "SEAT-PREF"}) {
+    nlohmann::json call{{"call", "save_memory"},
+                        {"args", {{"text", "prefers window seats"}, {"topic", t}}}};
+    ProcResult r = run_subprocess({SAVE_MEMORY_BIN, store}, call.dump(), 30.0);
+    ASSERT_TRUE(nlohmann::json::parse(r.out, nullptr, false).value("ok", false)) << r.out;
+  }
+  std::ifstream f(store);
+  std::string line;
+  int lines = 0;
+  while (std::getline(f, line)) {
+    auto rec = nlohmann::json::parse(line, nullptr, false);
+    ASSERT_TRUE(rec.is_object());
+    EXPECT_EQ(rec.value("topic", ""), "seat-pref");   // one bucket, not three
+    ++lines;
+  }
+  EXPECT_EQ(lines, 3);
+}
+
+TEST(SaveMemoryTool, WhitespaceOnlyTopicCountsAsAbsent) {
+  // A whitespace-only topic must NOT become a real bucket (it would swallow unrelated facts:
+  // only the newest record in a bucket is ever recalled). Weak models fill every field.
+  const std::string store = ::testing::TempDir() + "/save_wstopic_" +
+                            std::to_string(::getpid()) + ".jsonl";
+  std::filesystem::remove(store);
+  nlohmann::json call{{"call", "save_memory"},
+                      {"args", {{"text", "user is allergic to peanuts"}, {"topic", "   "}}}};
+  ProcResult r = run_subprocess({SAVE_MEMORY_BIN, store}, call.dump(), 30.0);
+  ASSERT_TRUE(nlohmann::json::parse(r.out, nullptr, false).value("ok", false)) << r.out;
+  std::ifstream f(store);
+  std::string line;
+  ASSERT_TRUE(std::getline(f, line));
+  auto rec = nlohmann::json::parse(line, nullptr, false);
+  EXPECT_FALSE(rec.contains("topic"));   // absent, exactly like an omitted topic
+}
+
+TEST(SaveMemoryTool, NonStringTopicAppendsNothingToAnExistingStore) {
+  // M3: the original test only proved no file was CREATED. Seed a real store first so this
+  // also fails if a refactor ever opens the stream before validating.
+  const std::string store = ::testing::TempDir() + "/save_seeded_" +
+                            std::to_string(::getpid()) + ".jsonl";
+  std::filesystem::remove(store);
+  { std::ofstream seed(store); seed << R"({"text":"pre-existing","ts":1.0})" << "\n"; }
+  nlohmann::json call{{"call", "save_memory"},
+                      {"args", {{"text", "x"}, {"topic", 42}}}};
+  ProcResult r = run_subprocess({SAVE_MEMORY_BIN, store}, call.dump(), 30.0);
+  EXPECT_FALSE(nlohmann::json::parse(r.out, nullptr, false).value("ok", true));
+  std::ifstream f(store);
+  std::string line;
+  int lines = 0;
+  while (std::getline(f, line)) ++lines;
+  EXPECT_EQ(lines, 1);   // nothing appended on the failure path
+}

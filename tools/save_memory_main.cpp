@@ -11,6 +11,7 @@
 #include <iostream>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "hades/memory/record.h"   // normalize_topic (header-only; no hades_core link)
 
 int main(int argc, char** argv) {
   const std::string store = argc > 1 ? argv[1] : ".hades/memory.jsonl";
@@ -29,9 +30,11 @@ int main(int argc, char** argv) {
             {{"name", "save_memory"},
              {"description",
               "Persist a fact or observation to long-term memory. Pass `topic` (a short "
-              "stable slug) when this fact REPLACES something you saved before — the newest "
-              "record for a topic is the one that gets recalled, so the stale value stops "
-              "surfacing. Leave `topic` out for standalone observations."},
+              "stable slug) when this fact REPLACES something you saved before — keyword "
+              "recall then returns only the newest record for that topic, so the stale "
+              "value stops surfacing. Reuse the SAME slug for the same subject, and make "
+              "the new text self-contained (it replaces the old one, so it must stand on "
+              "its own). Leave `topic` out for standalone observations."},
              {"schema",
               {{"type", "object"},
                {"properties",
@@ -50,8 +53,12 @@ int main(int argc, char** argv) {
     std::string text = has_text ? args["text"].get<std::string>() : "";
     // Non-string topic fails the WHOLE call (house rule; an empty string counts as absent).
     const bool bad_topic = args.contains("topic") && !args["topic"].is_string();
+    // normalize_topic trims + lowercases: "Seat-Pref " and "seat-pref" must land in the SAME
+    // supersession bucket, and a whitespace-only topic must count as absent rather than
+    // becoming a real bucket that swallows unrelated facts.
     std::string topic;
-    if (!bad_topic && args.contains("topic")) topic = args["topic"].get<std::string>();
+    if (!bad_topic && args.contains("topic"))
+      topic = hades::normalize_topic(args["topic"].get<std::string>());
     if (bad_topic) {
       out = {{"ok", false}, {"result", {{"error", "topic must be a string"}}}};
     } else if (!has_text || text.empty()) {

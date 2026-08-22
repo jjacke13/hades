@@ -1,6 +1,6 @@
 // include/hades/memory/store.h — append-only JSONL memory store reader
 //
-// load_memories: parse one JSON object per line ({"text","ts"}). Missing file ->
+// load_memories: parse one JSON object per line ({"text","ts","topic"?}). Missing file ->
 // empty (a fresh agent). Malformed or text-less lines are skipped, never thrown.
 #pragma once
 #include <string>

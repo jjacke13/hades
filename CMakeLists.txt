@@ -92,6 +92,9 @@ target_link_libraries(hades-web-search PRIVATE cpr::cpr nlohmann_json::nlohmann_
 target_include_directories(hades-web-search PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(hades-save-memory tools/save_memory_main.cpp)
 target_link_libraries(hades-save-memory PRIVATE nlohmann_json::nlohmann_json)
+# include/ for the header-only normalize_topic (hades/memory/record.h) — headers only,
+# the tool stays a standalone binary that links no hades_core.
+target_include_directories(hades-save-memory PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(hades-core-memory tools/core_memory_main.cpp)
 target_link_libraries(hades-core-memory PRIVATE nlohmann_json::nlohmann_json)
 target_include_directories(hades-core-memory PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
