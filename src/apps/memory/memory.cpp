@@ -156,7 +156,11 @@ std::vector<MemoryRecord> load_memories(const std::string& path) {
       continue;  // skip malformed / text-less records
     double ts = (j.contains("ts") && j["ts"].is_number()) ? j["ts"].get<double>() : 0.0;
     std::string topic;   // absent or non-string -> "" (legacy line / junk): never throws
-    if (j.contains("topic") && j["topic"].is_string()) topic = j["topic"].get<std::string>();
+    // Normalize on READ too, not only in the writer: bucketing happens here, so canonicalizing
+    // at this boundary means a hand-edited line ("Seat-Pref") or a future second writer cannot
+    // land in a different bucket than save_memory's records for the same subject.
+    if (j.contains("topic") && j["topic"].is_string())
+      topic = normalize_topic(j["topic"].get<std::string>());
     out.push_back({j["text"].get<std::string>(), ts, topic});
   }
   return out;

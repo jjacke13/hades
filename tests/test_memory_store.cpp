@@ -53,3 +53,20 @@ TEST(MemoryStore, TopicRoundTripsAndDefaultsEmpty) {
   EXPECT_EQ(v[2].topic, "");        // tolerated, not thrown
   EXPECT_EQ(v[2].text, "bad topic");
 }
+
+TEST(MemoryStore, TopicIsNormalizedOnRead) {
+  // Bucketing happens at rank time over what THIS loader returns, so a hand-edited or
+  // legacy-cased topic must canonicalize here or it would form its own bucket.
+  const std::string path = ::testing::TempDir() + "/store_topicnorm.jsonl";
+  {
+    std::ofstream f(path);
+    f << R"({"text":"a","ts":1.0,"topic":" Seat-Pref "})" << "\n";
+    f << R"({"text":"b","ts":2.0,"topic":"seat-pref"})" << "\n";
+    f << R"({"text":"c","ts":3.0,"topic":"   "})" << "\n";   // whitespace-only -> absent
+  }
+  auto v = load_memories(path);
+  ASSERT_EQ(v.size(), 3u);
+  EXPECT_EQ(v[0].topic, "seat-pref");
+  EXPECT_EQ(v[1].topic, "seat-pref");   // same bucket as the padded/cased one
+  EXPECT_EQ(v[2].topic, "");
+}

@@ -46,7 +46,7 @@ both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML
 **tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold),
 **session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below),
 **archival memory supersession** (`save_memory` optional `topic` → newest-per-topic wins + relevance×recency×reinforcement ranking, see below). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor + memory-supersession branch commits ahead since). **818/818 tests** (ASan+UBSan AND
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor + memory-supersession branch commits ahead since). **819/819 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -480,7 +480,7 @@ floor unchanged; test `build_agent` overload never builds it). **798/798 both la
 A corrected fact now **replaces** the one it corrects in archival recall instead of sitting next to it, and
 retrieval orders by more than raw keyword overlap. **Idea source: the mnem review** (github.com/JustVugg/mnem —
 a small memory layer whose supersession-by-topic + recency/reinforcement blend we liked; the implementation
-here is our own, rank-time not write-time). **818/818 both lanes** (ASan+UBSan AND TSan; no new test files —
+here is our own, rank-time not write-time). **819/819 both lanes** (ASan+UBSan AND TSan; no new test files —
 `tests/test_{memory_rank,memory_store,save_memory_tool}.cpp` extended).
 - **Two-stage `rank_memories`** (`src/apps/memory/memory.cpp`, decls+doc in `include/hades/memory/rank.h`).
   **(1) Admission:** a record must share ≥1 token with the query, AND among records sharing a non-empty
@@ -499,7 +499,7 @@ here is our own, rank-time not write-time). **818/818 both lanes** (ASan+UBSan A
   +0.3 bonus outweighs a whole extra matched token as soon as |query| ≥ 3 — one incidental fresh match beats
   four substantive old matches. Multiplied, the boosts are scale-invariant in |query| and bounded: a record
   can only be overtaken by one worth more than ~0.733 of its relevance (the multiplier lives in [1.1, 1.5) —
-  reinforcement is ≥0.5 for any record — so the worst-case ratio is 1.1/1.5). Reviewer brute-forced 845
+  reinforcement is ≥0.5 for any record — so the worst-case ratio is 1.1/1.5). Reviewer brute-forced
   pairs, zero out-of-band flips. **Lesson: any "blend" formula mixing a normalized ratio with absolute
   bonuses must be checked at the caller's REAL input size, not at the 2-token unit-test size.**
 - **REVIEW FIX 2 — topic normalization (`904ca9b`).** Buckets are matched by EXACT string, so `normalize_topic`
