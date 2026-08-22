@@ -37,3 +37,19 @@ TEST(MemoryStore, NonNumericTsDoesNotThrow) {
   EXPECT_EQ(v[0].text, "keep");
   EXPECT_DOUBLE_EQ(v[0].ts, 0.0);
 }
+
+TEST(MemoryStore, TopicRoundTripsAndDefaultsEmpty) {
+  const std::string path = ::testing::TempDir() + "/store_topic.jsonl";
+  {
+    std::ofstream f(path);
+    f << R"({"text":"with topic","ts":1.0,"topic":"seat-pref"})" << "\n";
+    f << R"({"text":"no topic","ts":2.0})" << "\n";              // legacy line
+    f << R"({"text":"bad topic","ts":3.0,"topic":42})" << "\n";  // non-string -> ""
+  }
+  auto v = load_memories(path);
+  ASSERT_EQ(v.size(), 3u);
+  EXPECT_EQ(v[0].topic, "seat-pref");
+  EXPECT_EQ(v[1].topic, "");
+  EXPECT_EQ(v[2].topic, "");        // tolerated, not thrown
+  EXPECT_EQ(v[2].text, "bad topic");
+}
