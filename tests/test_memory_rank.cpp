@@ -174,3 +174,14 @@ TEST(MemoryRank, NonFiniteNowDoesNotPoisonTheSort) {
   auto top = rank_memories(all, "cat", 5, std::numeric_limits<double>::quiet_NaN());
   EXPECT_EQ(top.size(), 3u);   // degrades to no-recency-information, never UB
 }
+
+TEST(MemoryRank, NonFiniteRecordTsDoesNotPoisonTheSort) {
+  // Mirror of NonFiniteNowDoesNotPoisonTheSort on the other operand: a caller-built record
+  // with NaN/inf ts must not make the comparator a non-strict-weak-ordering (UB in std::sort).
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<MemoryRecord> all = {
+      {"cat nan", nan}, {"cat inf", inf}, {"cat neginf", -inf}, {"cat sane", kNow - kDay}};
+  auto top = rank_memories(all, "cat", 10, kNow);
+  EXPECT_EQ(top.size(), 4u);   // all admitted, deterministic order, no UB
+}

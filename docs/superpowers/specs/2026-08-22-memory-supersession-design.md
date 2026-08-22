@@ -83,8 +83,12 @@ for deterministic tests. Every existing caller compiles unchanged.
 ## Backward compatibility (a hard requirement)
 
 - Old store lines have no `topic` → parsed as `""` → never superseded → today's behavior.
-- Old records typically carry small/epoch-era `ts` → recency ≈ 0 uniformly → no reordering among
-  them; ordering falls back to relevance then `ts`, i.e. today's behavior.
+- Old records keep their `ts`, so recency applies to them too. Untopiced legacy records are never
+  suppressed, but their relative ORDER can shift where the blend says it should (a recent record
+  can outrank an older, slightly-more-relevant one — bounded by the 1.36× ratio). Parsing and the
+  written line shape are unchanged; ordering is deliberately not frozen. (An earlier draft of this
+  spec claimed legacy ordering never changes, reasoning that old records are epoch-era and score
+  recency ≈ 0 — wrong: a real store carries live epoch seconds.)
 - **The existing `tests/test_memory_rank.cpp` and `tests/test_memory_store.cpp` assertions MUST
   pass UNCHANGED.** They encode intended behavior; needing to weaken one is a signal the design
   is wrong, not permission to edit the test.

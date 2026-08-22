@@ -46,7 +46,7 @@ both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML
 **tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold),
 **session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below),
 **archival memory supersession** (`save_memory` optional `topic` → newest-per-topic wins + relevance×recency×reinforcement ranking, see below). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor + memory-supersession branch commits ahead since). **819/819 tests** (ASan+UBSan AND
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor + memory-supersession branch commits ahead since). **820/820 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -480,7 +480,7 @@ floor unchanged; test `build_agent` overload never builds it). **798/798 both la
 A corrected fact now **replaces** the one it corrects in archival recall instead of sitting next to it, and
 retrieval orders by more than raw keyword overlap. **Idea source: the mnem review** (github.com/JustVugg/mnem —
 a small memory layer whose supersession-by-topic + recency/reinforcement blend we liked; the implementation
-here is our own, rank-time not write-time). **819/819 both lanes** (ASan+UBSan AND TSan; no new test files —
+here is our own, rank-time not write-time). **820/820 both lanes** (ASan+UBSan AND TSan; no new test files —
 `tests/test_{memory_rank,memory_store,save_memory_tool}.cpp` extended).
 - **Two-stage `rank_memories`** (`src/apps/memory/memory.cpp`, decls+doc in `include/hades/memory/rank.h`).
   **(1) Admission:** a record must share ≥1 token with the query, AND among records sharing a non-empty
@@ -518,8 +518,12 @@ here is our own, rank-time not write-time). **819/819 both lanes** (ASan+UBSan A
   (house fail-closed rule), an empty/whitespace one counts as absent, and the key is written only when non-empty
   → an untopiced save keeps the **legacy line shape** byte-for-byte. `CMakeLists.txt` adds `include/` to the
   tool target (headers only; still links no core).
-- **Backward compatible:** `load_memories` reads `topic` only when present AND a string (absent/junk → `""`), so
-  every pre-2026-08-22 line behaves exactly as before; `MemoryRecord{"text", ts}` still compiles (aggregate kept).
+- **Backward compatible (precisely):** `load_memories` reads `topic` only when present AND a string (absent/junk →
+  `""`), so every pre-2026-08-22 line PARSES exactly as before and is never superseded; `MemoryRecord{"text", ts}`
+  still compiles (aggregate kept). Their relative ORDER can still shift, though — recency now applies to every
+  record, so a week-old legacy record can outrank a year-old one it used to lose to (bounded by the 1.36× ratio;
+  final review measured 4 genuine flips in a 576-pair legacy grid). That is the feature working, not drift — but
+  don't chase it as a regression.
 - **v1 edges (documented, not bugs):** a topic-tagged replacement that is TERSE ("window") can make the whole
   topic unretrievable for a query the older record would have matched — the old one is suppressed and the new
   one shares no token; that is why `prompts/soul.md` + the describe text both demand a self-contained

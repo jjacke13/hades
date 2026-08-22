@@ -101,7 +101,12 @@ std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
     if (matched == 0) continue;
 
     const double relevance = static_cast<double>(matched) / static_cast<double>(q.size());
-    const double age_days = (now - all[i].ts) / 86400.0;
+    // Same NaN defence as the `now` guard above, on the other operand: a non-finite ts would
+    // make this record's score NaN, and a NaN score makes the comparator a non-strict-weak
+    // ordering -> UB in std::sort. Unreachable from disk (the JSON parser discards non-finite
+    // numbers) but the 4-arg overload is public and takes caller-built records.
+    const double rec_ts = std::isfinite(all[i].ts) ? all[i].ts : 0.0;
+    const double age_days = (now - rec_ts) / 86400.0;
     // Future/unknown timestamps clamp to full freshness / no boost rather than exploding.
     const double recency = age_days <= 0.0
                                ? 1.0
