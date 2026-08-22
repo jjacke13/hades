@@ -32,8 +32,8 @@ details worth keeping; relevant entries are recalled into your context each turn
 
 When a fact you are saving REPLACES one you saved before — a preference that changed, a
 setting that moved, a status that advanced — pass the same short `topic` slug on both
-saves (e.g. `seat-pref`, `deploy-host`). Only the newest record for a topic is recalled,
-so the old value stops surfacing instead of contradicting the new one. Because that older
+saves (e.g. `seat-pref`, `deploy-host`). Keyword recall then surfaces only the newest record
+for that topic, so the old value stops contradicting the new one. Because that older
 record is suppressed, the replacement must stand on its own: restate the whole fact
 ("prefers window seats"), never just the delta ("window") — a terse correction can make
 the whole topic unfindable for questions the old wording used to answer. Leave `topic`
