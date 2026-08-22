@@ -87,7 +87,9 @@ std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
     if (it == newest.end() || all[i].ts >= all[it->second].ts) newest[all[i].topic] = i;
   }
 
-  struct Scored { std::size_t idx; double score; };
+  // `ts` is the SANITIZED timestamp (non-finite -> 0), carried so the sort's tie-break never
+  // touches a raw NaN — see the comparator note below.
+  struct Scored { std::size_t idx; double score; double ts; };
   std::vector<Scored> scored;
   for (std::size_t i = 0; i < all.size(); ++i) {
     // Admission 1: superseded records never surface. .at() not operator[]: the key is always
@@ -120,15 +122,21 @@ std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
     // tokens), where one incidental fresh match would beat four substantive old ones. As a
     // multiplier the boosts are scale-invariant in |query|: they reorder records WITHIN a
     // relevance band and can never overturn a record worth more than (1+0.3+0.2)x another.
-    scored.push_back({i, kRelevanceWeight * relevance *
-                             (1.0 + kRecencyWeight * recency +
-                              kReinforcementWeight * reinforcement)});
+    scored.push_back({i,
+                      kRelevanceWeight * relevance *
+                          (1.0 + kRecencyWeight * recency +
+                           kReinforcementWeight * reinforcement),
+                      rec_ts});
   }
 
   // Fully ordered: score desc, then ts desc, then text asc — no ties left to chance.
+  // NOTE both numeric terms are the SANITIZED values (see rec_ts): comparing the raw
+  // all[i].ts here would let a NaN back into the tie-break, where NaN != NaN makes it
+  // "equivalent" to every record while real values stay ordered among themselves — a
+  // non-transitive equivalence, i.e. not a strict weak ordering, i.e. UB in std::sort.
   std::sort(scored.begin(), scored.end(), [&all](const Scored& a, const Scored& b) {
     if (a.score != b.score) return a.score > b.score;
-    if (all[a.idx].ts != all[b.idx].ts) return all[a.idx].ts > all[b.idx].ts;
+    if (a.ts != b.ts) return a.ts > b.ts;
     return all[a.idx].text < all[b.idx].text;
   });
   std::vector<MemoryRecord> out;

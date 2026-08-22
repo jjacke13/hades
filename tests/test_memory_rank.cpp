@@ -182,6 +182,11 @@ TEST(MemoryRank, NonFiniteRecordTsDoesNotPoisonTheSort) {
   const double inf = std::numeric_limits<double>::infinity();
   std::vector<MemoryRecord> all = {
       {"cat nan", nan}, {"cat inf", inf}, {"cat neginf", -inf}, {"cat sane", kNow - kDay}};
-  auto top = rank_memories(all, "cat", 10, kNow);
-  EXPECT_EQ(top.size(), 4u);   // all admitted, deterministic order, no UB
+  auto a = rank_memories(all, "cat", 10, kNow);
+  auto b = rank_memories(all, "cat", 10, kNow);
+  ASSERT_EQ(a.size(), 4u);   // all admitted, no UB
+  // The three non-finite ts records all score 1.1, so the sort FALLS THROUGH to the ts
+  // tie-break — exactly where a raw NaN would break strict weak ordering. Same input must
+  // give the same order every time.
+  for (std::size_t i = 0; i < a.size(); ++i) EXPECT_EQ(a[i].text, b[i].text);
 }
