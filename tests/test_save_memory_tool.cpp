@@ -1,6 +1,8 @@
 // tests/test_save_memory_tool.cpp — drive the hades-save-memory binary over the native protocol
 #include <gtest/gtest.h>
+#include <unistd.h>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <algorithm>
@@ -66,4 +68,66 @@ TEST(SaveMemoryTool, AppendDoesNotTruncate) {
   EXPECT_FALSE(l1.empty());   // first record present
   EXPECT_FALSE(l2.empty());   // second record present — not overwritten
   EXPECT_TRUE(l3.empty());    // exactly 2 lines
+}
+
+TEST(SaveMemoryTool, WritesTopicWhenGiven) {
+  const std::string store = ::testing::TempDir() + "/save_topic_" +
+                            std::to_string(::getpid()) + ".jsonl";
+  std::filesystem::remove(store);
+  nlohmann::json call{{"call", "save_memory"},
+                      {"args", {{"text", "prefers window seats"}, {"topic", "seat-pref"}}}};
+  ProcResult r = run_subprocess({SAVE_MEMORY_BIN, store}, call.dump(), 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_TRUE(j.value("ok", false)) << r.out;
+  std::ifstream f(store);
+  std::string line;
+  ASSERT_TRUE(std::getline(f, line));
+  auto rec = nlohmann::json::parse(line, nullptr, false);
+  ASSERT_TRUE(rec.is_object());
+  EXPECT_EQ(rec.value("text", ""), "prefers window seats");
+  EXPECT_EQ(rec.value("topic", ""), "seat-pref");
+}
+
+TEST(SaveMemoryTool, OmitsTopicWhenAbsentOrEmpty) {
+  const std::string store = ::testing::TempDir() + "/save_notopic_" +
+                            std::to_string(::getpid()) + ".jsonl";
+  std::filesystem::remove(store);
+  for (const auto& args : {nlohmann::json{{"text", "standalone note"}},
+                           nlohmann::json{{"text", "standalone note"}, {"topic", ""}}}) {
+    nlohmann::json call{{"call", "save_memory"}, {"args", args}};
+    ProcResult r = run_subprocess({SAVE_MEMORY_BIN, store}, call.dump(), 30.0);
+    auto j = nlohmann::json::parse(r.out, nullptr, false);
+    ASSERT_TRUE(j.value("ok", false)) << r.out;
+  }
+  std::ifstream f(store);
+  std::string line;
+  while (std::getline(f, line)) {
+    auto rec = nlohmann::json::parse(line, nullptr, false);
+    ASSERT_TRUE(rec.is_object());
+    EXPECT_FALSE(rec.contains("topic"));   // legacy-identical line shape
+  }
+}
+
+TEST(SaveMemoryTool, NonStringTopicFailsClosed) {
+  const std::string store = ::testing::TempDir() + "/save_badtopic_" +
+                            std::to_string(::getpid()) + ".jsonl";
+  std::filesystem::remove(store);
+  nlohmann::json call{{"call", "save_memory"},
+                      {"args", {{"text", "x"}, {"topic", 42}}}};
+  ProcResult r = run_subprocess({SAVE_MEMORY_BIN, store}, call.dump(), 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_FALSE(j.is_discarded());
+  EXPECT_FALSE(j.value("ok", true));                    // house rule: non-string fails closed
+  EXPECT_FALSE(std::filesystem::exists(store));         // and nothing was written
+}
+
+TEST(SaveMemoryTool, DescribeAdvertisesOptionalTopic) {
+  ProcResult r = run_subprocess({SAVE_MEMORY_BIN}, R"({"call":"describe"})", 30.0);
+  auto j = nlohmann::json::parse(r.out, nullptr, false);
+  ASSERT_TRUE(j.value("ok", false));
+  const auto& schema = j["result"]["schema"];
+  EXPECT_TRUE(schema["properties"].contains("topic"));
+  const auto req = schema.value("required", nlohmann::json::array());
+  EXPECT_EQ(std::find(req.begin(), req.end(), "topic"), req.end());   // optional
+  EXPECT_NE(std::find(req.begin(), req.end(), "text"), req.end());    // text still required
 }
