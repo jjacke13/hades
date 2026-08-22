@@ -44,8 +44,9 @@ Streamable HTTP, `<block>__<tool>`, `mcp_allow`)**, save_skill patch mode, Statu
 both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML→text extraction** (default-on, raw=true escape),
 **`web_search`** (SearXNG/brave/http), **`todo`** (whole-list task list + every-turn fold),
 **tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold),
-**session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor branch commits ahead since). **798/798 tests** (ASan+UBSan AND
+**session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below),
+**archival memory supersession** (`save_memory` optional `topic` → newest-per-topic wins + relevance×recency×reinforcement ranking, see below). Pushed
+through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor + memory-supersession branch commits ahead since). **818/818 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
@@ -474,6 +475,64 @@ floor unchanged; test `build_agent` overload never builds it). **798/798 both la
   Spec/plan: `docs/superpowers/{specs/2026-07-20-session-compaction-design.md,plans/2026-07-20-session-compaction.md}`.
   **Live-smoke pending** (Vaios: `Module = compactor` + `history_budget_chars = 4000`, 15+ turn convo → sidecar grows,
   "what did we discuss at the start?" answered from the summary, `--resume` keeps it folded).
+
+### Archival memory supersession + blended ranking (shipped 2026-08-22, `feat/memory-supersession`)
+A corrected fact now **replaces** the one it corrects in archival recall instead of sitting next to it, and
+retrieval orders by more than raw keyword overlap. **Idea source: the mnem review** (github.com/JustVugg/mnem —
+a small memory layer whose supersession-by-topic + recency/reinforcement blend we liked; the implementation
+here is our own, rank-time not write-time). **818/818 both lanes** (ASan+UBSan AND TSan; no new test files —
+`tests/test_{memory_rank,memory_store,save_memory_tool}.cpp` extended).
+- **Two-stage `rank_memories`** (`src/apps/memory/memory.cpp`, decls+doc in `include/hades/memory/rank.h`).
+  **(1) Admission:** a record must share ≥1 token with the query, AND among records sharing a non-empty
+  `topic` only the **newest ts** is eligible (index breaks a ts tie — later line in an append-only store =
+  later write). **(2) Scoring:** survivors ordered by
+  **`relevance * (1 + kRecencyWeight*recency + kReinforcementWeight*reinforcement)`** —
+  `relevance = matched/|query|`, `recency = 0.5^(age_days/30)` (future/unknown ts clamps to 1.0),
+  `reinforcement = 1 - 1/(1+n)` where `n` = how many records restate that topic **across the whole store**
+  (an untopiced record uses n=1). Constants in `rank.h`: `kRelevanceWeight 1.0 · kRecencyWeight 0.3 ·
+  kReinforcementWeight 0.2 · kRecencyHalfLifeDays 30.0` — a tuning seam, deliberately **no manifest key**.
+  Sort is fully ordered (score desc → ts desc → text asc); non-finite `now` falls back to 0.0 (a NaN
+  comparator is not a strict weak ordering → UB in `std::sort`).
+- **REVIEW FIX 1 — additive → MULTIPLICATIVE (`86f3ca6`).** The spec/plan/brief all said
+  `score = w_r*relevance + w_t*recency + w_f*reinforcement`. That is a **design error**: relevance is a
+  RATIO (matched/|query|) and the live MemoryModule passes the WHOLE user message as the query, so a fixed
+  +0.3 bonus outweighs a whole extra matched token as soon as |query| ≥ 3 — one incidental fresh match beats
+  four substantive old matches. Multiplied, the boosts are scale-invariant in |query| and bounded: a record
+  can only be overtaken by one worth more than ~0.733 of its relevance (the multiplier lives in [1.1, 1.5) —
+  reinforcement is ≥0.5 for any record — so the worst-case ratio is 1.1/1.5). Reviewer brute-forced 845
+  pairs, zero out-of-band flips. **Lesson: any "blend" formula mixing a normalized ratio with absolute
+  bonuses must be checked at the caller's REAL input size, not at the 2-token unit-test size.**
+- **REVIEW FIX 2 — topic normalization (`904ca9b`).** Buckets are matched by EXACT string, so `normalize_topic`
+  (`include/hades/memory/record.h`, **header-inline** so the standalone tool shares it without linking
+  `hades_core` — the `valid_skill_name` pattern) **trims + ASCII-lowercases** at WRITE time: `"Seat-Pref "`
+  and `"seat-pref"` are ONE bucket, and a whitespace-only topic normalizes to `""` = **absent** (house
+  empty-is-absent rule; weak models fill every schema field — the schedule_task exactly-one-of gotcha) rather
+  than becoming a real bucket that swallows unrelated facts. **Lesson: an exact-string grouping key needs a
+  canonicalizer, or the feature silently no-ops on the variants a model actually emits.**
+- **Rank-time, not write-time** (the load-bearing design call): the store stays **append-only** — nothing is
+  ever rewritten or deleted, superseded values remain on disk for audit/replay, and supersession lives in a
+  **pure function** (no files/Blackboard/clock; the 4-arg overload takes `now`) that stays the seam a v2
+  embeddings scorer slots behind. A write-time tombstone would have bought nothing and cost the audit trail.
+- **`save_memory` gained an optional `topic`** (`tools/save_memory_main.cpp`): describe text tells the model to
+  reuse the SAME slug and make the replacement **self-contained**; a **non-string `topic` fails the WHOLE call**
+  (house fail-closed rule), an empty/whitespace one counts as absent, and the key is written only when non-empty
+  → an untopiced save keeps the **legacy line shape** byte-for-byte. `CMakeLists.txt` adds `include/` to the
+  tool target (headers only; still links no core).
+- **Backward compatible:** `load_memories` reads `topic` only when present AND a string (absent/junk → `""`), so
+  every pre-2026-08-22 line behaves exactly as before; `MemoryRecord{"text", ts}` still compiles (aggregate kept).
+- **v1 edges (documented, not bugs):** a topic-tagged replacement that is TERSE ("window") can make the whole
+  topic unretrievable for a query the older record would have matched — the old one is suppressed and the new
+  one shares no token; that is why `prompts/soul.md` + the describe text both demand a self-contained
+  replacement · **auto-extract still writes untopiced facts** (`{"text","ts","src":"auto"}`) so it can never
+  supersede · the opt-in **`embedding_memory` semantic path has no topic data**, so a superseded fact CAN still
+  surface there (only the keyword path supersedes) · nothing is ever deleted (by design).
+  Pieces: `include/hades/memory/{rank.h,record.h,store.h}`, `src/apps/memory/memory.cpp`,
+  `tools/save_memory_main.cpp`, `CMakeLists.txt`, `tests/test_{memory_rank,memory_store,save_memory_tool}.cpp`.
+  Docs: manifest-reference §6 "Retrieval (archival)"; `prompts/soul.md` ## Memory. Spec/plan:
+  `docs/superpowers/{specs/2026-08-22-memory-supersession-design.md,plans/2026-08-22-memory-supersession.md}`.
+  **Live-smoke pending** (Vaios: `save_memory {text:"prefers aisle seats", topic:"seat-pref"}` then
+  `{text:"prefers window seats", topic:"seat-pref"}` → ask about seats → only the window record is injected,
+  both lines still in `.hades/memory.jsonl`).
 
 ### Voice STT (shipped 2026-07-05, `feat/voice-stt`) — a voice message becomes an ordinary turn
 **LIVE-VALIDATED 2026-07-05** (Vaios: Telegram voice note → PPQ `nova-3` transcription → normal turn worked end-to-end).
@@ -919,7 +978,11 @@ inside `nix develop` before commit. Reviews via the `cpp-reviewer` agent.
 
 ## NEXT possible memory work (v2)
 **Archival:** embeddings/vector retrieval (drop in behind `rank_memories` — the seam is built) ·
-auto-extract per turn (LLM-summarized, vs explicit `save_memory`) · dedup/decay/importance · sqlite.
+auto-extract per turn (LLM-summarized, vs explicit `save_memory`) · **dedup/decay/importance — the archival
+half SHIPPED 2026-08-22** (`feat/memory-supersession`: topic supersession = dedup-by-replacement, 30-day-half-life
+recency = decay, topic restatement count = importance/reinforcement — see the Archival memory supersession
+subsection under Current state; still open: semantic (non-exact) dedup, decay for the CORE layer, and importance
+signals beyond restatement count) · sqlite.
 **Core:** `core_memory_replace`/edit/forget tools (only append today) · size cap / eviction · provenance/audit.
 
 ## NEXT possible web work

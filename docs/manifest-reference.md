@@ -350,6 +350,27 @@ symlink path-deny bypass (lexical, not realpath), no positive net egress allowli
 `store` is also appended to the `save_memory` tool's argv (single source of truth) — keep it
 whitespace-free.
 
+**Retrieval (archival).** Two stages. **Admission:** a record must share at least one token with
+the query, and among records sharing a non-empty `topic` only the **newest** is eligible — that is
+supersession, so a corrected fact replaces the one it corrects instead of contradicting it in the
+same memory block. **Scoring:** survivors are ordered by
+`relevance * (1 + 0.3*recency + 0.2*reinforcement)` — relevance = fraction of query tokens the
+record matches, recency = 30-day half-life on the save timestamp, reinforcement = how often that
+topic was restated. The boosts **multiply** rather than add: relevance is a ratio and the module
+passes the whole user message as the query, so a fixed additive bonus would let one incidental
+match in a fresh record outrank four substantive matches in an old one; as a multiplier they are
+scale-invariant in query length and bounded (at most 1.5x), so they reorder within a relevance band
+and never overturn a clearly more relevant record. `save_memory`'s optional `topic` is the
+supersession key and is normalized at write time (`normalize_topic`: trim + ASCII-lowercase, so
+`Seat-Pref ` and `seat-pref` are ONE bucket, and a whitespace-only topic counts as absent). Records
+without a topic are never superseded and never supersede. The store itself stays **append-only** —
+superseded values remain on disk for audit. Weights live in `include/hades/memory/rank.h` (a
+tuning seam, no manifest key). Two edges worth knowing: a topic-tagged replacement must be
+**self-contained** (the old record is suppressed, so a terse correction can make the topic
+unretrievable for a query the old text would have matched — `prompts/soul.md` tells the agent this),
+and the opt-in `embedding_memory` semantic path has **no topic data**, so a superseded fact can
+still surface there.
+
 ---
 
 ## 7. `Embedding` block
