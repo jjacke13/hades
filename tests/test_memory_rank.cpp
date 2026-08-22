@@ -1,4 +1,5 @@
 // tests/test_memory_rank.cpp — pure keyword ranker: overlap scoring, recency tie, top_n cap
+#include <limits>
 #include <gtest/gtest.h>
 #include "hades/memory/rank.h"
 using namespace hades;
@@ -131,4 +132,45 @@ TEST(MemoryRank, ThreeArgOverloadStillWorks) {
   auto top = rank_memories(all, "cat", 5);
   ASSERT_EQ(top.size(), 1u);
   EXPECT_EQ(top[0].text, "cat sat");
+}
+
+// ── review findings I1 + I2 (2026-08-22) ──────────────────────────────────────
+TEST(MemoryRank, SubstantiveOldBeatsIncidentalFreshOnLongQuery) {
+  // I1 regression. The live MemoryModule passes the WHOLE user message as the query, so
+  // |q| is large and each matched token is worth only 1/|q| of relevance. Under an ADDITIVE
+  // blend a fixed +0.3 recency bonus swamped that: one incidental fresh match outranked four
+  // substantive old ones. The multiplier form must keep the substantive record first.
+  std::vector<MemoryRecord> all = {
+      {"user deploys with nix flakes on nixos and pins nixpkgs release", kNow - 365 * kDay},
+      {"today the weather is nice", kNow},
+  };
+  auto top = rank_memories(all, "how do I deploy my nixos config with nix flakes today", 5, kNow);
+  ASSERT_EQ(top.size(), 2u);
+  EXPECT_EQ(top[0].text, "user deploys with nix flakes on nixos and pins nixpkgs release");
+}
+
+TEST(MemoryRank, TerseCorrectionCanHideTheWholeTopic) {
+  // I2: documented, deliberate behavior — NOT a bug to "fix" by resurrecting the old record.
+  // The superseded value must never come back (that is the whole point of supersession), so a
+  // terse replacement that shares no token with the query yields nothing for that topic.
+  // The mitigation is behavioral: soul.md tells the agent to keep corrections self-contained.
+  std::vector<MemoryRecord> all = {
+      {"prefers aisle seats on flights", kNow - 30 * kDay, "seat-pref"},
+      {"window", kNow - 1 * kDay, "seat-pref"},
+  };
+  auto top = rank_memories(all, "what seat do I prefer on flights", 5, kNow);
+  EXPECT_TRUE(top.empty());   // stale suppressed; terse survivor does not match the query
+  // A self-contained correction is retrievable, same query:
+  all[1].text = "prefers window seats on flights";
+  auto top2 = rank_memories(all, "what seat do I prefer on flights", 5, kNow);
+  ASSERT_EQ(top2.size(), 1u);
+  EXPECT_EQ(top2[0].text, "prefers window seats on flights");
+}
+
+TEST(MemoryRank, NonFiniteNowDoesNotPoisonTheSort) {
+  // A NaN score makes the comparator a non-strict-weak-ordering -> UB in std::sort.
+  std::vector<MemoryRecord> all = {
+      {"cat alpha", kNow}, {"cat beta", kNow - kDay}, {"cat gamma", kNow - 2 * kDay}};
+  auto top = rank_memories(all, "cat", 5, std::numeric_limits<double>::quiet_NaN());
+  EXPECT_EQ(top.size(), 3u);   // degrades to no-recency-information, never UB
 }

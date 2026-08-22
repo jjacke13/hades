@@ -54,7 +54,16 @@ criteria — otherwise a recent irrelevant fact would flood the block.
 | recency | `0.5 ^ (age_days / kRecencyHalfLifeDays)` | [0, 1] |
 | reinforcement | `1 - 1/(1 + bucket_size)`, `bucket_size` = records sharing this non-empty topic (untopiced → 1) | [0.5, 1) |
 
-`score = kRelevanceWeight*relevance + kRecencyWeight*recency + kReinforcementWeight*reinforcement`
+`score = kRelevanceWeight * relevance * (1 + kRecencyWeight*recency + kReinforcementWeight*reinforcement)`
+
+**The boosts multiply, they do not add** (corrected during Task 1 review — the first draft of this
+spec had them additive, which was wrong). Relevance is a *ratio*, `matched/|query|`, and the live
+`MemoryModule` passes the entire user message as the query, so `|query|` is typically 10–40 tokens
+and one matched token is worth only `1/|query|`. Against a fixed additive `+0.3` recency bonus, a
+single incidental match in a fresh record would outrank four substantive matches in an old one for
+any query of ≥3 distinct tokens — the exact "recall surfaces chit-chat" failure this feature is
+supposed to reduce. As a multiplier the boosts are scale-invariant in `|query|` and bounded: a
+record can never be overtaken by one worth less than `1/(1+0.3+0.2)` of its relevance.
 
 Constants (`include/hades/memory/rank.h`, the tuning seam — **no new manifest keys in v1**):
 `kRelevanceWeight = 1.0`, `kRecencyWeight = 0.3`, `kReinforcementWeight = 0.2`,

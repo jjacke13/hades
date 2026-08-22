@@ -67,6 +67,9 @@ std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
                                         double now) {
   const auto q = tokenize(query);
   if (q.empty()) return {};   // no query tokens -> nothing is relevant
+  // A non-finite `now` would make every score NaN, and a NaN-comparing predicate is not a
+  // strict weak ordering -> UB inside std::sort. Fall back to "no recency information".
+  if (!std::isfinite(now)) now = 0.0;
 
   // Reinforcement input: how many records restate each non-empty topic. Counted over the
   // WHOLE store (not just relevant records) — restating a fact reinforces it regardless of
@@ -87,8 +90,10 @@ std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
   struct Scored { std::size_t idx; double score; };
   std::vector<Scored> scored;
   for (std::size_t i = 0; i < all.size(); ++i) {
-    // Admission 1: superseded records never surface.
-    if (!all[i].topic.empty() && newest[all[i].topic] != i) continue;
+    // Admission 1: superseded records never surface. .at() not operator[]: the key is always
+    // present (both maps are built over `all`), and a future refactor that filtered the map
+    // would silently insert 0 here and crown record 0 as the survivor.
+    if (!all[i].topic.empty() && newest.at(all[i].topic) != i) continue;
     // Admission 2: must be relevant to the query.
     const auto t = tokenize(all[i].text);
     std::size_t matched = 0;
@@ -101,11 +106,18 @@ std::vector<MemoryRecord> rank_memories(const std::vector<MemoryRecord>& all,
     const double recency = age_days <= 0.0
                                ? 1.0
                                : std::pow(0.5, age_days / kRecencyHalfLifeDays);
-    const std::size_t n = all[i].topic.empty() ? 1u : bucket[all[i].topic];
+    const std::size_t n = all[i].topic.empty() ? 1u : bucket.at(all[i].topic);
     const double reinforcement = 1.0 - 1.0 / (1.0 + static_cast<double>(n));
 
-    scored.push_back({i, kRelevanceWeight * relevance + kRecencyWeight * recency +
-                             kReinforcementWeight * reinforcement});
+    // MULTIPLICATIVE, not additive. Relevance is a RATIO (matched/|query|), so an additive
+    // bonus of a fixed 0.3 would outweigh a whole extra matched token as soon as the query
+    // has >=3 distinct tokens — and the live caller passes the entire user message (10-40
+    // tokens), where one incidental fresh match would beat four substantive old ones. As a
+    // multiplier the boosts are scale-invariant in |query|: they reorder records WITHIN a
+    // relevance band and can never overturn a record worth more than (1+0.3+0.2)x another.
+    scored.push_back({i, kRelevanceWeight * relevance *
+                             (1.0 + kRecencyWeight * recency +
+                              kReinforcementWeight * reinforcement)});
   }
 
   // Fully ordered: score desc, then ts desc, then text asc — no ties left to chance.
