@@ -563,11 +563,10 @@ AFTER it — the telegram dtor joins the poll thread, which may be mid-`transcri
 §11); dev.hades ships it **COMMENTED** (text-only default runnable without a whisper backend). Pieces:
 `src/stt/stt_providers.cpp`, `include/hades/stt/*`, `app/agent_wiring.cpp` (`resolve_stt` + inject), `src/apps/telegram/telegram.cpp`
 (`handle_voice_`/`set_stt`), `tools/whisper_reference.sh`, `tests/test_stt_{providers,wiring}.cpp`. Spec/plan:
-`docs/superpowers/{specs/2026-07-05-stt-voice-input-design.md,plans/2026-07-05-voice-stt.md}`. **TTS is the next voice half**
-(agent reply → speech → Telegram `sendVoice`, separate later spec; provider TBD piper/API behind a seam like STT).
-**Live-smoke pending** (Vaios: send a voice note to the bot with an uncommented `Stt` block + `HADES_API_KEY`).
+`docs/superpowers/{specs/2026-07-05-stt-voice-input-design.md,plans/2026-07-05-voice-stt.md}`. **TTS shipped the same day**
+(agent reply → speech → Telegram `sendVoice` — see the Voice TTS subsection below).
 
-### Voice TTS (shipped 2026-07-05, `feat/voice-tts`) — a voice-origin reply is spoken back
+### Voice TTS (shipped 2026-07-05, `feat/voice-tts`) — a voice-origin reply is spoken back — LIVE-VALIDATED (reported 2026-08-24)
 The other voice half: a Telegram **voice** message gets its reply spoken back as a voice note. **Mirror
 modality** — only a **voice-origin** turn speaks (`speak_reply_` set in `handle_voice_`); a typed turn stays
 text-only. **Source-agnostic provider seam**, EXACTLY the STT/embedding-provider precedent: one `TtsProvider`
@@ -589,7 +588,11 @@ provider (do NOT reorder). `Tts { provider endpoint model voice api_key_env max_
 without a TTS backend). Pieces: `src/tts/tts_providers.cpp`, `include/hades/tts/*`, `app/agent_wiring.cpp`
 (`resolve_tts` + inject), `src/apps/telegram/telegram.cpp` (`handle_voice_`/`set_tts`/speak path + `send_voice`),
 `include/hades/telegram/api.h` (`send_voice`), `tools/piper_reference.sh`, `tests/test_tts_{providers,wiring}.cpp`.
-**Live-smoke pending** (Vaios: voice note to the bot with uncommented `Stt` + `Tts` blocks + a TTS-capable endpoint).
+**LIVE-VALIDATED** (Vaios, reported 2026-08-24: Telegram voice note in -> spoken voice-note reply back, the full
+STT->turn->TTS->`sendVoice` round-trip). **The mp3-vs-opus risk did NOT bite** — his live `Tts` block runs PPQ with
+**ElevenLabs `eleven_flash_v2_5`** (`max_chars = 2000`) and Telegram accepted the returned audio. An ElevenLabs model
+needs an **ElevenLabs voice id** (the 20-char catalog id), NOT an `aura-2-*-en` name — mixing a Deepgram voice with an
+ElevenLabs model is the setup trap. The `resolve_tts` defaults (`deepgram_aura_2` + `aura-2-arcas-en`) stay UNPROVEN live.
 
 ### Bridge protocol (card discovery + typed share) — shipped 2026-07-05, `feat/bridge-protocol`, 450/450 (TSan 132/132)
 **LIVE-VALIDATED 2026-07-06 (Vaios, CROSS-MACHINE: desktop `hades1` 192.168.0.107 ↔ Pi Zero 2 W `pi0`
@@ -1484,9 +1487,11 @@ in this doc, not the tree):
   `aura-2-{arcas,thalia,andromeda,helena,apollo,aries}-en`) — `resolve_tts` defaults are `deepgram_aura_2`/
   `aura-2-arcas-en`. **PPQ char limits: 2000 (Deepgram) / 5000 (ElevenLabs)** → set `max_chars` ≤ that (over → 422
   → fail-soft skip). **Telegram `sendVoice` requires OGG/Opus, so the provider MUST yield it** — the http provider
-  sends `response_format=opus`; **but PPQ's `/audio/speech` docs DON'T list `response_format`** → if PPQ ignores it
-  and returns mp3, `sendVoice` rejects → silent skip (text stands); #1 TTS smoke risk, v2 fix = module mp3→opus
-  transcode. The `command` wrapper must emit ogg-opus on stdout (`tools/piper_reference.sh` = piper → `ffmpeg -c:a libopus -f ogg`).
+  sends `response_format=opus`; **but PPQ's `/audio/speech` docs DON'T list `response_format`** → if a backend ignores
+  it and returns mp3, `sendVoice` rejects → silent skip (text stands). **This did NOT bite in practice** (LIVE-VALIDATED
+  reported 2026-08-24 on PPQ + ElevenLabs `eleven_flash_v2_5`, `max_chars = 2000` — Telegram accepted the audio), so the
+  mp3→opus transcode stays a v2 fix, not a known bug. **Voice id must match the model family:** an ElevenLabs model needs
+  an ElevenLabs voice id, an `aura-2-*-en` name only works with `deepgram_aura_2` (still unproven live). The `command` wrapper must emit ogg-opus on stdout (`tools/piper_reference.sh` = piper → `ffmpeg -c:a libopus -f ogg`).
   TTS is opt-in (no `Tts` block → `Agent.tts==nullptr`, never speaks), **mirror modality** (only voice-origin turns
   speak; typed stays text), text-anchored + best-effort + fail-soft, `max_chars` (default 4000) caps spoken length,
   and injected into user-facing front-ends ONLY — the **Bridge is never given one** (a peer never gets audio).
