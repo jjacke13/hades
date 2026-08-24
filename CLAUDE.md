@@ -46,7 +46,7 @@ both live-validated), **`Simplex.command`** daemon auto-start, **http_fetch HTML
 **tool-offload** (tools run off the pump thread + `background:true` → immediate `{started,task_id}`, `BG_TASKS` fold),
 **session compaction** (`Module = compactor` — dropped-window turns summarized into a sidecar + folded back into context, see below),
 **archival memory supersession** (`save_memory` optional `topic` → newest-per-topic wins + relevance×recency×reinforcement ranking, see below). Pushed
-through `433b92e` 2026-07-19 (main = origin at that point; todo + tool-offload + compactor + memory-supersession branch commits ahead since). **820/820 tests** (ASan+UBSan AND
+through `a3756f1` 2026-08-22 (main = origin; everything below is public). **820/820 tests** (ASan+UBSan AND
 TSan; sanitized suite ~110s — build/ sanitizer flags RESTORED 2026-07-18 after a silent reconfigure loss), ~9 MB RSS, **live** against PPQ (`gpt-5.5` + `openai/text-embedding-3-small`).
 Built: Blackboard+Eventlog · Arbiter v1 (veto/confirm gate, max-steps guard) · **21 tools**
 (`fs_read shell write_file list_dir http_fetch save_memory core_memory use_skill save_skill ask_agent session_search web_search todo` + **dev tools**
