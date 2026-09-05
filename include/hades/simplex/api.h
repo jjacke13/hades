@@ -20,6 +20,11 @@ struct SxEvent {
   long long file_id = 0;        // Voice / FileDone / FileFailed
   long long file_size = 0;      // Voice (from the offer, before any bytes move)
   int duration = 0;             // Voice (seconds; informational in v1)
+  // Voice: the SENDER's file name, straight off the offer. Attacker-controlled — the module
+  // takes only a charset-checked EXTENSION from it and never lets it near a path. It exists
+  // because OpenAI-compatible /audio/transcriptions validates the audio format by the uploaded
+  // file's NAME, so the temp file's suffix decides whether the default STT transport works.
+  std::string file_name;
 };
 
 enum class SxStatus { Event, Timeout, Closed, Error };
@@ -40,7 +45,8 @@ class SimplexApi {
 // Pure, tolerant event parse for one daemon frame: {"resp":{...}} (an optional {"Right":...}
 // Either-wrapper is unwrapped). Yields Text / Voice (direct+directRcv+rcvMsgContent only; a voice
 // item must carry a `file` object), ContactRequest, Connected, FileDone (rcvFileComplete) and
-// FileFailed (rcvFileError / rcvFileSndCancelled); everything else -> {}. Never throws.
+// FileFailed (rcvFileError / rcvFileSndCancelled / rcvFileAcceptedSndCancelled); everything
+// else -> {}. Never throws.
 std::vector<SxEvent> parse_simplex_events(const std::string& frame_json);
 
 // The real seam impl (WsSimplexApi over WsClient) is file-local in simplex.cpp; this factory

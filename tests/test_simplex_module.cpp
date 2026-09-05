@@ -81,9 +81,10 @@ struct Rig {
   void pump_events() { while (mod->step_once()) {} }   // drains the script; ends on Closed
 };
 
-SxEvent voice_ev(long long cid, const std::string& name, long long fid, long long size) {
+SxEvent voice_ev(long long cid, const std::string& name, long long fid, long long size,
+                 const std::string& fname = "") {
   SxEvent e; e.kind = SxEvent::Kind::Voice; e.contact_id = cid; e.display_name = name;
-  e.file_id = fid; e.file_size = size; e.duration = 3;
+  e.file_id = fid; e.file_size = size; e.duration = 3; e.file_name = fname;
   return e;
 }
 SxEvent file_ev(SxEvent::Kind k, long long fid) {
@@ -513,6 +514,85 @@ TEST(SimplexModuleVoice, VoiceDuringAnOutstandingConfirmIsRefusedAndLeavesItArme
   r.api->events.push_back(text_ev(2, "V", "y"));          // still armed: TEXT answers it
   r.pump_events();
   EXPECT_TRUE(confirm_answered);
+}
+
+// The temp file's EXTENSION is load-bearing: HttpSttProvider (the default, live-validated STT
+// transport) uploads it through cpr::File, libcurl names the multipart part after the local
+// basename, and an OpenAI-compatible /audio/transcriptions validates the format by that name.
+// A ".bin" would 400 every voice message.
+TEST(SimplexModuleVoice, OfferedNameGivesTheTempFileItsExtension) {
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(voice_ev(2, "V", 51, 4096, "voice.m4a"));
+  r.api->events.push_back(voice_ev(2, "V", 52, 4096, "clip.OGG"));   // lowercased for the backend
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 2u);
+  EXPECT_EQ(std::filesystem::path(r.api->received[0].second).extension(), ".m4a");
+  EXPECT_EQ(std::filesystem::path(r.api->received[1].second).extension(), ".ogg");
+  EXPECT_NE(r.api->received[0].second.find("hades-sx-voice-51"), std::string::npos);
+}
+
+TEST(SimplexModuleVoice, HostileOfferedNamesFallBackAndNeverEscapeTheTempDir) {
+  // The offered name is attacker-controlled and never touches the path — only a charset-checked
+  // extension is taken from it, and the stem stays our own file id.
+  const std::filesystem::path tmp = std::filesystem::temp_directory_path();  // start() not called
+  long long fid = 60;
+  for (const std::string& name : {std::string("evil/../../x.sh"), std::string("..\\..\\x.wav"),
+                                  std::string("no-extension"), std::string("x.toolongext"),
+                                  std::string("trailing."), std::string("sp ce.m 4a"),
+                                  std::string("")}) {
+    Rig r;
+    FakeStt stt;
+    r.mod->set_stt(&stt);
+    r.api->events.push_back(voice_ev(2, "V", ++fid, 4096, name));
+    r.pump_events();
+    ASSERT_EQ(r.api->received.size(), 1u) << name;
+    const std::filesystem::path dest = r.api->received[0].second;
+    EXPECT_EQ(dest.extension(), ".m4a") << name;             // SimpleX's own voice format
+    EXPECT_EQ(dest.parent_path(), tmp) << name;              // never escapes the temp dir
+    EXPECT_EQ(dest.filename().string(), "hades-sx-voice-" + std::to_string(fid) + ".m4a") << name;
+  }
+}
+
+// The confused-deputy door handle_voice_'s guard does not cover: the confirm can be armed AFTER
+// the offer was accepted (no reply is sent then, so the sender has no reason to wait) and BEFORE
+// the bytes land. Driving a turn there would leave confirm A armed while the voice turn asks its
+// own question — the sender's "y" would then approve A, not what they were just asked.
+TEST(SimplexModuleVoice, FileDoneDuringAnOutstandingConfirmDrivesNoTurnAndLeavesItArmed) {
+  Rig r(false);
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  int user_msgs = 0;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) {
+    ++user_msgs;
+    r.bb.post("CONFIRM_REQUEST", {{"id", "cA"}, {"prompt", "delete everything?"}}, "arbiter");
+  });
+  std::string approved_id;
+  r.bb.subscribe("CONFIRM_RESPONSE", [&](const Entry& e) {
+    approved_id = e.value.value("id", "");
+    r.bb.post("ASSISTANT_MESSAGE", "done", "t");
+  });
+  r.api->events.push_back(voice_ev(2, "V", 41, 4096, "voice.m4a"));   // accepted, bytes pending
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 1u);
+  const std::string dest = r.api->received[0].second;
+  touch_file(dest);
+  r.api->events.push_back(text_ev(2, "V", "rm -rf"));                 // arms confirm A meanwhile
+  r.pump_events();
+  ASSERT_EQ(user_msgs, 1);
+  ASSERT_EQ(r.api->sent.size(), 1u);                                  // the y/N prompt
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 41));      // the bytes land
+  r.pump_events();
+  EXPECT_EQ(user_msgs, 1);                                            // NO turn from the voice
+  EXPECT_TRUE(stt.paths.empty());                                     // not even transcribed
+  EXPECT_TRUE(approved_id.empty());                                   // A untouched
+  ASSERT_EQ(r.api->sent.size(), 2u);
+  EXPECT_NE(r.api->sent[1].second.find("y/n"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dest));                        // audio reclaimed, no leak
+  r.api->events.push_back(text_ev(2, "V", "y"));                      // still armed: TEXT answers
+  r.pump_events();
+  EXPECT_EQ(approved_id, "cA");
 }
 
 TEST(SimplexModuleVoice, DestructorRemovesThePerProcessVoiceTempDir) {

@@ -327,11 +327,25 @@ as text-only as it was; the module refuses a voice message with a text reply and
   transfer in flight at shutdown, a `/freceive` the daemon took before `receive_file` reported failure, an
   evicted partial). A boot-time glob sweep of `hades-sx-voice-*` was **rejected**: several hades instances
   share a machine here and a starting one would delete another's live downloads — so **a hard crash leaves
-  one directory behind** · `rcvFileAcceptedSndCancelled` is reported to the sender as a generic "didn't come
+  one directory behind** · **events are LOST across a reconnect** — `WsSimplexApi::reconnect()` clears its
+  queue and the daemon does not replay, so a `FileDone`/`FileFailed` delivered while the socket was down is
+  gone: the pending entry lingers until eviction and the sender gets no reply for that voice note. Reconnect
+  is routine (a daemon restart via `Simplex.command`), so this sits right beside the crash-leaves-a-directory
+  edge · **the pending TABLE is bounded, the DISK is not** — eviction unlinks the path, but if the daemon has
+  not yet opened it the daemon recreates and completes into an orphan only the dtor collects, so an
+  allowlisted contact looping voice offers can accumulate orphans at up to `voice_max_bytes` each for the
+  process lifetime · `rcvFileAcceptedSndCancelled` is reported to the sender as a generic "didn't come
   through", not as a distinct cause · pending transfers are capped at 8, oldest evicted (temp file deleted) ·
   **we send no `approved_relays=on`, so a file sitting on an unapproved XFTP relay may be refused by the
-  daemon (`FileNotApproved`) — UNTESTED, the live-smoke risk to watch first** · group voice, images/general
-  files, and `duration`-based gating are deliberately not opened (the `duration` field is parsed and logged).
+  daemon (`FileNotApproved`) — UNTESTED, the live-smoke risk to watch first** · **we never read
+  `fileSource.filePath`** — we assume the daemon honoured the destination path we gave `/freceive`; if it
+  relocates the file or suffix-renames on a collision, `transcribe` gets a missing path and the sender sees
+  "didn't catch that" (same untested-protocol class as `approved_relays` and the `rcvFileAccepted`
+  response-type assumption — **watch for it in the live smoke**) · group voice, images/general files, and
+  `duration`-based gating are deliberately not opened (`duration` is parsed but deliberately neither logged
+  nor acted on) · the temp file's extension comes from the offer's `fileName` (validated `[A-Za-z0-9]{1,5}`,
+  lowercased, else `m4a`) because the http STT backend format-checks the uploaded basename; the offered name
+  itself never reaches the path.
 - **Live-smoke pending** (Vaios: `Stt` block + `Module = simplex`, send a voice note from the phone → the
   transcript drives a turn and a TEXT reply comes back; then an oversize note → refusal without a download).
 

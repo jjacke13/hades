@@ -117,6 +117,22 @@ TEST(SimplexParse, VoiceMessageWithFileYieldsVoiceEvent) {
   EXPECT_EQ(evs[0].file_id, 42);
   EXPECT_EQ(evs[0].file_size, 1234);
   EXPECT_EQ(evs[0].duration, 5);
+  // The offered name travels so the module can give the temp file a real audio extension: the
+  // default http STT backend validates the format by the uploaded file's NAME.
+  EXPECT_EQ(evs[0].file_name, "voice.m4a");
+}
+
+// An absent/mistyped fileName is not an error — the module falls back to a default extension.
+TEST(SimplexParse, VoiceMessageWithoutFileNameYieldsEmptyName) {
+  const std::string frame = R"({"resp":{"type":"newChatItems","chatItems":[{
+    "chatInfo":{"type":"direct","contact":{"contactId":7,"localDisplayName":"vaios"}},
+    "chatItem":{"chatDir":{"type":"directRcv"},
+      "content":{"type":"rcvMsgContent","msgContent":{"type":"voice","text":"","duration":5}},
+      "file":{"fileId":42,"fileName":17,"fileSize":1234}}}]}})";
+  const auto evs = parse_simplex_events(frame);
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].file_id, 42);
+  EXPECT_TRUE(evs[0].file_name.empty());
 }
 
 TEST(SimplexParse, VoiceMessageWithoutFileIsDropped) {
@@ -149,6 +165,18 @@ TEST(SimplexParse, RcvFileErrorWithoutChatItemStillYieldsFileFailed) {
   ASSERT_EQ(evs.size(), 1u);
   EXPECT_EQ(evs[0].kind, SxEvent::Kind::FileFailed);
   EXPECT_EQ(evs[0].file_id, 42);
+}
+
+// The sender cancelled AFTER we accepted: terminal too. Without it the transfer would sit in
+// the pending table until eviction and the sender would get no reply at all.
+TEST(SimplexParse, RcvFileAcceptedSndCancelledYieldsFileFailed) {
+  const std::string frame = R"({"resp":{"type":"rcvFileAcceptedSndCancelled",
+    "rcvFileTransfer":{"fileId":11,"senderDisplayName":"vaios"}}})";
+  const auto evs = parse_simplex_events(frame);
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].kind, SxEvent::Kind::FileFailed);
+  EXPECT_EQ(evs[0].file_id, 11);
+  EXPECT_EQ(evs[0].display_name, "vaios");
 }
 
 TEST(SimplexParse, RcvFileSndCancelledYieldsFileFailed) {

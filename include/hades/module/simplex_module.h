@@ -105,7 +105,15 @@ class SimplexModule : public Module {
   // (start() never called — tests drive step_once directly) -> the system temp dir is used
   // directly and the dtor removes nothing. A hard crash leaves one directory behind: accepted.
   std::filesystem::path voice_tmp_dir_;
-  std::string voice_temp_path_(long long file_id) const;
+  // Is voice storage usable? Set by start() — false first, true ONLY on a created directory —
+  // so BOTH of its failure modes refuse voice with a reply: a create_directories error (dir set
+  // but unusable) and a throwing temp_directory_path() (dir left EMPTY, which no path-based
+  // check can tell apart from "start() never called"). Defaults true for that never-called
+  // case: tests drive step_once() directly and fall back to the system temp dir, as before.
+  bool voice_dir_ok_ = true;
+  // file_id names the file; the offered name contributes ONLY a validated extension (the http
+  // STT backend format-checks the uploaded basename). See voice_ext_from_name in the .cpp.
+  std::string voice_temp_path_(long long file_id, const std::string& offered_name) const;
   SttProvider* stt_ = nullptr;                   // non-owning; null = voice input disabled
   long long voice_max_bytes_ = 10 * 1024 * 1024;
 

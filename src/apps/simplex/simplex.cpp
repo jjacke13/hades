@@ -83,6 +83,7 @@ std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
         ev.display_name = str(contact, "localDisplayName");
         ev.file_id = num(*f, "fileId");
         ev.file_size = num(*f, "fileSize");
+        ev.file_name = str(*f, "fileName");   // extension only, validated at use — see api.h
         const auto d = mc.find("duration");
         ev.duration = (d != mc.end() && d->is_number_integer()) ? d->get<int>() : 0;
         if (ev.contact_id != 0 && ev.file_id != 0) out.push_back(std::move(ev));
@@ -111,8 +112,12 @@ std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
     ev.kind = SxEvent::Kind::FileDone;
     ev.file_id = num(file, "fileId");
     if (ev.file_id != 0) out.push_back(std::move(ev));
-  } else if (type == "rcvFileError" || type == "rcvFileSndCancelled") {
+  } else if (type == "rcvFileError" || type == "rcvFileSndCancelled" ||
+             type == "rcvFileAcceptedSndCancelled") {
     // chatItem_ is OPTIONAL on rcvFileError, so rcvFileTransfer is the only reliable id source.
+    // rcvFileAcceptedSndCancelled has the same shape (the sender cancelled after we accepted)
+    // and is terminal too: without it that transfer would sit in the pending table until it was
+    // evicted, and the sender would get no reply at all.
     // rcvFileWarning has the same shape but is NOT terminal (it fires when CLI settings block a
     // file server), so it is deliberately not handled here.
     const auto& rft = resp.value("rcvFileTransfer", nlohmann::json::object());
@@ -520,8 +525,13 @@ void SimplexModule::handle_voice_(const SxEvent& ev) {
     send_reply_(ev.contact_id, "That voice message is too large for me to process.");
     return;
   }
-  // No directory to put the bytes in (start() could not create it, or it went away): refuse
-  // rather than hand the daemon a path that cannot be written.
+  // No directory to put the bytes in: start() could not make one (either failure mode — see the
+  // flag's comment), or ours went away since. Refuse rather than hand the daemon a path that
+  // cannot be written, or let voice_temp_path_ throw into step_once's catch (logged, no reply).
+  if (!voice_dir_ok_) {
+    send_reply_(ev.contact_id, "I can't store voice messages right now.");
+    return;
+  }
   if (!voice_tmp_dir_.empty()) {
     std::error_code ec;
     if (!std::filesystem::is_directory(voice_tmp_dir_, ec)) {
@@ -537,7 +547,7 @@ void SimplexModule::handle_voice_(const SxEvent& ev) {
     std::filesystem::remove(oldest->second.path, ec);
     pending_voice_.erase(oldest);
   }
-  const std::string dest = voice_temp_path_(ev.file_id);
+  const std::string dest = voice_temp_path_(ev.file_id, ev.file_name);
   if (!api_->receive_file(ev.file_id, dest)) {
     // No pending entry, so nothing will reclaim `dest` by path — but the daemon may have taken
     // the /freceive before the reply timed out and may still write the file. That orphan is
@@ -556,6 +566,23 @@ void SimplexModule::handle_file_done_(const SxEvent& ev) {
   if (it == pending_voice_.end()) return;        // not ours (or already reclaimed) — ignore
   const PendingVoice pv = it->second;
   pending_voice_.erase(it);
+  // The SAME security boundary handle_voice_ guards, entered through the other door: a confirm
+  // can be armed AFTER the offer was accepted but BEFORE the bytes land, which is the normal
+  // case for a transfer taking seconds — and accepting an offer sends no reply, so the contact
+  // has no reason to wait. Without this guard: voice offer accepted -> contact types something
+  // that arms confirm A -> the bytes arrive, this drives a fresh USER_MESSAGE (the Arbiter's
+  // USER_MESSAGE handler does NOT clear_pending(), so A stays armed on both sides) -> the voice
+  // turn asks its own question -> the contact answers "y" -> handle_text_ routes that y to the
+  // OUTSTANDING confirm and action A is dispatched. They approved one thing and got another.
+  // So: reclaim the audio, tell them what is blocking, and drive no turn.
+  if (!outstanding_confirm_id_.empty() && pv.contact_id == outstanding_contact_id_) {
+    std::error_code ec;
+    std::filesystem::remove(pv.path, ec);
+    send_reply_(pv.contact_id,
+                "I'm still waiting on the y/n above — please answer that first, then send the "
+                "voice message again.");
+    return;
+  }
   std::string transcript;
   if (!stt_) {
     // Unreachable today — an entry only exists because handle_voice_ saw a provider. Kept as
@@ -664,31 +691,73 @@ void SimplexModule::run_loop_() {
 void SimplexModule::start() {
   if (ev_thread_.joinable()) return;   // idempotent
   // Own temp directory for voice audio, set BEFORE the thread exists (the event thread only
-  // ever reads it). Fail-soft: on failure it stays empty and handle_voice_ refuses voice —
-  // an unwritable temp dir must not take the whole front-end down.
+  // ever reads it). Fail-soft: on EITHER failure voice_dir_ok_ stays false and handle_voice_
+  // refuses voice with a reply — an unwritable temp dir must not take the front-end down, and
+  // must not leave the sender with silence either. Both failures need the flag: a
+  // create_directories error leaves voice_tmp_dir_ SET (so an is_directory check would catch
+  // it), but a throwing temp_directory_path() leaves it EMPTY, which is indistinguishable from
+  // "start() was never called" and would sail past a path-based check into a second throw.
+  voice_dir_ok_ = false;
   try {
     voice_tmp_dir_ =
         std::filesystem::temp_directory_path() / ("hades-sx-voice-" + std::to_string(::getpid()));
     std::error_code ec;
     std::filesystem::create_directories(voice_tmp_dir_, ec);
-    // Kept set even on failure: handle_voice_ then finds no directory and refuses voice with a
-    // reply (the same check catches the dir being removed underneath us later).
+    // Kept set even on failure so the dtor still reclaims anything the daemon wrote there.
     if (ec) std::cerr << "hades: simplex: cannot create voice temp dir " << voice_tmp_dir_ << " ("
                       << ec.message() << "); voice input will be refused\n";
+    else voice_dir_ok_ = true;
   } catch (const std::exception& e) {
-    std::cerr << "hades: simplex: no usable temp dir for voice (" << e.what() << ")\n";
+    std::cerr << "hades: simplex: no usable temp dir for voice (" << e.what()
+              << "); voice input will be refused\n";
   }
   spawn_daemon_();                     // before the thread; reconnect backoff absorbs its boot
   ev_thread_ = std::thread([this] { run_loop_(); });
 }
 
+namespace {
+// The extension to give the temp file, taken from the SENDER's offered name.
+//
+// It matters because of the DEFAULT STT transport: HttpSttProvider hands the path to
+// cpr::File, libcurl sets the multipart part's remote filename to the local BASENAME, and an
+// OpenAI-compatible /audio/transcriptions validates the audio format by that name's extension
+// (flac,m4a,mp3,mp4,mpeg,mpga,oga,ogg,wav,webm). A ".bin" is rejected with a 400 — every voice
+// message would fail. TelegramModule names its temp file ".oga" for exactly this reason.
+//
+// The offered name is attacker-controlled and must NEVER reach the path: only a validated
+// extension is taken, and the stem stays our own file-id string. A name carrying a path
+// separator, "..", or a NUL is not used at all — those cannot appear in a real voice offer, so
+// falling back costs nothing and keeps the traversal question from arising twice.
+std::string voice_ext_from_name(const std::string& name) {
+  const std::string fallback = "m4a";                     // SimpleX's own voice format
+  if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
+      name.find("..") != std::string::npos || name.find('\0') != std::string::npos)
+    return fallback;
+  const auto dot = name.rfind('.');
+  if (dot == std::string::npos) return fallback;
+  std::string ext = name.substr(dot + 1);
+  if (ext.empty() || ext.size() > 5) return fallback;
+  for (char& c : ext) {
+    if (!std::isalnum(static_cast<unsigned char>(c))) return fallback;
+    // Lowercased because the backend's format list is lowercase and we do not know whether it
+    // matches case-insensitively — ".M4A" from some client must not reintroduce the 400.
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return ext;
+}
+}  // namespace
+
 // Where the daemon should drop file_id's bytes. Inside our per-pid directory once start() has
 // made one; otherwise straight in the system temp dir (start() not called — tests). The file
-// name carries the id in BOTH forms so a stray temp is traceable to its transfer.
-std::string SimplexModule::voice_temp_path_(long long file_id) const {
+// name carries the id in BOTH forms so a stray temp is traceable to its transfer; the suffix
+// comes from the offer because the http STT backend format-checks it (see above).
+std::string SimplexModule::voice_temp_path_(long long file_id,
+                                            const std::string& offered_name) const {
   const std::filesystem::path dir =
       voice_tmp_dir_.empty() ? std::filesystem::temp_directory_path() : voice_tmp_dir_;
-  return (dir / ("hades-sx-voice-" + std::to_string(file_id) + ".bin")).string();
+  return (dir / ("hades-sx-voice-" + std::to_string(file_id) + "." +
+                 voice_ext_from_name(offered_name)))
+      .string();
 }
 
 void SimplexModule::wait() {
