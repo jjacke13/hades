@@ -57,6 +57,10 @@ class SimplexModule : public Module {
   int daemon_pid() const { return daemon_pid_; }   // 0 = no daemon spawned (test seam)
   // One next_event dispatch (the loop body; public as the test seam). Returns false on
   // Closed/Error — the loop then backs off and reconnects.
+  // LOAD-BEARING: this must stay a TEST seam. voice_dir_ok_ defaults true and voice_tmp_dir_
+  // defaults empty, which is safe only because production always reaches step_once() through
+  // start() (which sets both). Drive this loop without start() from real code and voice temp
+  // files escape the per-process directory and outlive the process.
   bool step_once();
 
  private:
