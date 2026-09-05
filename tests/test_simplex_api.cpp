@@ -198,3 +198,17 @@ TEST(WsSimplexApi, ReceiveFileErrorYieldsFalse) {
   ASSERT_TRUE(api->reconnect());
   EXPECT_FALSE(api->receive_file(42, "/tmp/x.m4a"));
 }
+
+// The /freceive command grammar is space-delimited with no quoting (and the caller's dest path
+// comes from temp_directory_path(), which honours TMPDIR): a space must fail, not mis-parse.
+TEST(WsSimplexApi, ReceiveFilePathWithSpaceIsRefusedAndSendsNothing) {
+  nlohmann::json got_cmd = "sentinel";
+  {
+    FakeDaemon d;
+    d.run([&got_cmd](FakeDaemon& s) { got_cmd = s.recv_cmd(); });   // null iff nothing was sent
+    auto api = make_ws_simplex_api("127.0.0.1", d.port, 5.0);
+    ASSERT_TRUE(api->reconnect());
+    EXPECT_FALSE(api->receive_file(42, "/tmp/has space/x.m4a"));
+  }   // ~api closes the socket -> the daemon's read returns 0 -> ~FakeDaemon joins
+  EXPECT_TRUE(got_cmd.is_null());
+}

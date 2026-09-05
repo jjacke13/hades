@@ -31,6 +31,15 @@ std::string str(const nlohmann::json& j, const char* key) {
   auto it = j.find(key);
   return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string{};
 }
+// value(key, default) THROWS type_error.306 when the receiver is not an object, so it is only
+// safe after a type check. This is the tolerant accessor: find() is well-defined on any json,
+// and a non-object member yields the shared empty object rather than an exception. Returns a
+// reference — value() deep-copies.
+const nlohmann::json& obj(const nlohmann::json& j, const char* key) {
+  static const nlohmann::json kEmpty = nlohmann::json::object();
+  auto it = j.find(key);
+  return (it != j.end() && it->is_object()) ? *it : kEmpty;
+}
 }  // namespace
 
 std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
@@ -50,7 +59,7 @@ std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
       const auto& item = it.value("chatItem", nlohmann::json::object());
       if (str(ci, "type") != "direct") continue;                        // v1: DMs only
       const auto& contact = ci.value("contact", nlohmann::json::object());
-      const auto& dir = item.value("chatDir", nlohmann::json::object());
+      const auto& dir = obj(item, "chatDir");
       if (str(dir, "type") != "directRcv") continue;                    // skip our own echoes
       const auto& content = item.value("content", nlohmann::json::object());
       if (str(content, "type") != "rcvMsgContent") continue;
@@ -96,8 +105,8 @@ std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
   } else if (type == "rcvFileComplete") {
     // chatItem is mandatory on this frame; the file id lives on the item's file object.
     const auto& aci = resp.value("chatItem", nlohmann::json::object());
-    const auto& item = aci.value("chatItem", nlohmann::json::object());
-    const auto& file = item.value("file", nlohmann::json::object());
+    const auto& item = obj(aci, "chatItem");
+    const auto& file = obj(item, "file");
     SxEvent ev;
     ev.kind = SxEvent::Kind::FileDone;
     ev.file_id = num(file, "fileId");
@@ -164,6 +173,9 @@ class WsSimplexApi : public SimplexApi {
   bool receive_file(long long file_id, const std::string& dest_path) override {
     // /freceive <fileId>[ encrypt=on|off][ <filePath>] — encrypt=off so the bytes on disk are
     // readable (an encrypted CryptoFile carries cryptoArgs and cannot be POSTed to an STT backend).
+    // The daemon's command grammar is space-delimited with no quoting, so a path containing a
+    // space would silently mis-parse (the caller's temp dir honours TMPDIR): refuse it here.
+    if (dest_path.find(' ') != std::string::npos) return false;
     return command_ok_("/freceive " + std::to_string(file_id) + " encrypt=off " + dest_path,
                        "rcvFileAccepted");
   }

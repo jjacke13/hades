@@ -1,6 +1,7 @@
 // tests/test_simplex_parse.cpp — tolerant daemon-event parsing (canned frames, pure)
 #include <gtest/gtest.h>
 #include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "hades/simplex/api.h"
 using namespace hades;
@@ -164,4 +165,26 @@ TEST(SimplexParse, RcvFileWarningIsIgnored) {
   const std::string frame = R"({"resp":{"type":"rcvFileWarning",
     "rcvFileTransfer":{"fileId":9}}})";
   EXPECT_TRUE(parse_simplex_events(frame).empty());
+}
+
+// value(key, default) throws type_error.306 on a non-object receiver — parse must stay tolerant
+// (it also runs inside WsSimplexApi::command_ok_, where a throw would break fail-soft commands).
+TEST(SimplexParse, MalformedNestedObjectsNeverThrow) {
+  for (const std::string frame : {
+           R"({"resp":{"type":"rcvFileComplete","chatItem":null}})",
+           R"({"resp":{"type":"rcvFileComplete","chatItem":"nope"}})",
+           R"({"resp":{"type":"rcvFileComplete","chatItem":{"chatItem":null}}})",
+           R"({"resp":{"type":"rcvFileComplete","chatItem":{"chatItem":42}}})",
+           R"({"resp":{"type":"rcvFileComplete","chatItem":{"chatItem":{"file":7}}}})",
+           R"({"resp":{"type":"newChatItems","chatItems":[{"chatItem":null}]}})",
+           // pre-existing (predates voice): a DIRECT item whose chatItem is not an object.
+           R"({"resp":{"type":"newChatItems","chatItems":[{"chatInfo":{"type":"direct",
+                "contact":{"contactId":7}},"chatItem":null}]}})",
+           R"({"resp":{"type":"newChatItems","chatItems":[{"chatInfo":{"type":"direct",
+                "contact":{"contactId":7}},"chatItem":"nope"}]}})",
+       }) {
+    std::vector<SxEvent> evs;
+    EXPECT_NO_THROW(evs = parse_simplex_events(frame)) << frame;
+    EXPECT_TRUE(evs.empty()) << frame;
+  }
 }
