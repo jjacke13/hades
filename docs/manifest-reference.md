@@ -952,6 +952,7 @@ run it bound to loopback only.
 | `auto_accept` | Auto-accept incoming contact requests. | `false` | `false` → accept requests manually in the `simplex-chat` CLI. `true` is an explicit opt-in (name-spoof risk below). |
 | `notify_contact` | Contact id-or-name that receives `NOTIFY_USER` messages (heartbeat notifications). | `""` (no delivery) | A numeric id resolves directly; a display name resolves once that contact has been seen in an event (else the notify is skipped with a log line). |
 | `connect_timeout_s` | WS connect timeout; also the reconnect backoff base. | `10` | Positive-double; bad/0/garbage → keeps the default. |
+| `voice_max_bytes` | Largest voice-message file the agent will accept off the daemon, in bytes. Bigger → refused with a text reply, no download. | `10485760` (10 MB) | Garbage or non-positive → the default (a `0` cap would silently refuse every voice message). Only consulted when voice input is enabled (an `Stt` block is present). |
 | `command` | Daemon auto-start: hades spawns this command as a child at `start()` (whitespace-split argv, **no shell**) and SIGTERM+reaps it on shutdown (~2 s grace, then SIGKILL). | none (external daemon) | Command is verbatim — **its `-p` port must match the `port` key yourself** (e.g. `command = simplex-chat -p 5225`). Daemon stdout/stderr → `.hades/simplex-chat.log` (an auto-started daemon must not fail invisibly). **First run stays manual**: profile + `/address` creation is interactive — initialize the DB once in a terminal before enabling auto-start. Spawn failure is fail-soft (logged; the reconnect loop keeps reporting the daemon unreachable). One `daemon unreachable; retrying` line at boot is NORMAL — the daemon boots slower than the first connect; the backoff retry lands. |
 
 **Setup walkthrough.**
@@ -972,6 +973,26 @@ run it bound to loopback only.
 6. Uncomment/activate the `Simplex` block in your manifest with that name (or a numeric id), then run
    hades. Message the bot → a gated turn replies. **LIVE-VALIDATED 2026-07-11** (phone → hades reply,
    allowlist by display name).
+
+**Voice messages.** A SimpleX voice note is transcribed and drives a normal turn, exactly like a
+typed message — same allowlist, same TurnGate, same objectives and capability gates.
+
+- **Voice input requires an `Stt` block** (§11). No block → the agent stays text-only and a voice
+  message is refused with a short text reply, never downloaded.
+- **The reply is TEXT.** Sending a voice note back is **not supported** (it needs an XFTP upload and
+  a duration-carrying send command); unlike Telegram, a voice-origin turn here answers in text.
+- **Files are accepted only from allowlisted contacts, and only for voice content.** A voice offer
+  from a non-allowlisted contact is dropped as silently as their text would be, and image/video/
+  general-file messages are still ignored — this does not open general file receipt.
+- **Size-capped before any bytes move**: the offer's declared size is checked against
+  `voice_max_bytes`, and an oversize (or unknown-size) message is refused without downloading it.
+- **Accepted explicitly, unencrypted:** hades sends `/freceive <fileId> encrypt=off <path>` per file
+  rather than letting the daemon auto-accept. `encrypt=off` is mandatory and not configurable — a
+  file encrypted at rest cannot be read and handed to the STT backend. Temp files live in a
+  per-process directory and are deleted after transcription, success or failure.
+- **Answer an outstanding confirm first.** If a `y/N` confirm is pending for that contact, a voice
+  message is refused with a note asking them to answer the confirm and resend — a mis-heard
+  transcript must never be able to approve a confirm-gated action.
 
 **Gotchas.**
 - **No token, loopback only.** The WS API is unauthenticated by design — bind the daemon to `127.0.0.1`.

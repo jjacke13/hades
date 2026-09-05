@@ -540,6 +540,12 @@ void wire_agent(Agent& a,
     try { cfg_tts_max_chars = static_cast<std::size_t>(std::stoul(tts_cfg.kv.at("max_chars"))); }
     catch (...) { cfg_tts_max_chars = 0; }   // garbage -> keep the default
   }
+  // SimpleX voice size cap: refuse to accept a voice file bigger than this off the daemon.
+  // Garbage or non-positive -> the default (a 0 cap would silently refuse every voice message).
+  long long cfg_voice_max_bytes = 10 * 1024 * 1024;
+  if (simplex_cfg.kv.count("voice_max_bytes"))
+    cfg_voice_max_bytes = parse_ll(simplex_cfg.kv.at("voice_max_bytes"), cfg_voice_max_bytes);
+  if (cfg_voice_max_bytes <= 0) cfg_voice_max_bytes = 10 * 1024 * 1024;
 
   // 6) Telegram front-end: config (MalConfig on missing allow_users / token env) + captures.
   //    The poll thread is NOT started here — hades_main calls start_polling() explicitly, so
@@ -557,9 +563,14 @@ void wire_agent(Agent& a,
 
   // 6b) SimpleX front-end: same shared gate + config (MalConfig on missing allow_contacts). The
   //     event thread is NOT started here — hades_main calls start() after wiring, so tests spawn
-  //     no thread and open no socket. No STT/TTS seam (SimpleX is text; the Bridge is text too).
+  //     no thread and open no socket. set_stt/set_voice_max_bytes write members the event thread
+  //     reads WITHOUT synchronisation, so they must land before that thread exists: here, with
+  //     set_turn_gate, is before both on_attach and hades_main's start(). No TTS seam — a reply
+  //     over SimpleX is text (sending voice back needs an XFTP upload); the Bridge gets neither.
   if (a.simplex) {
     a.simplex->set_turn_gate(a.gate.get());
+    if (a.stt) a.simplex->set_stt(a.stt.get());
+    a.simplex->set_voice_max_bytes(cfg_voice_max_bytes);
     a.simplex->on_start(simplex_cfg, bb);
     a.simplex->on_attach(bb);
   }

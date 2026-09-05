@@ -47,6 +47,10 @@ class SimplexModule : public Module {
   // block; owned by the Agent (declared before simplex, so it outlives the event thread).
   void set_stt(SttProvider* s) { stt_ = s; }
   void set_voice_max_bytes(long long n) { if (n > 0) voice_max_bytes_ = n; }
+  // Read-back seams for the wiring tests: no event thread exists there (start() is never called
+  // in a test, and wire_agent sets both before it could be), so these race with nothing.
+  const SttProvider* stt() const { return stt_; }
+  long long voice_max_bytes() const { return voice_max_bytes_; }
 
   void start();          // spawn the daemon child (if `command` set) + the event loop (hades_main)
   void wait();           // join the event thread (simplex-only roster blocks here)

@@ -271,6 +271,70 @@ scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps
   `packages.x86_64-linux.simplex-chat-cli` (official v6.5.6 release binary, autoPatchelf'd: zlib/openssl/gmp/
   glibc) on the devShell PATH (`build: bfbfe8a`); the Pi uses the official aarch64 release binary directly.
 
+### SimpleX voice input (shipped 2026-09-05, `feat/simplex-voice`) — a voice note becomes an ordinary turn
+The SimpleX half of what Telegram got in `feat/voice-stt`: a voice message from an allowlisted contact is
+downloaded, transcribed through the existing **`SttProvider`** seam and driven as a normal gated turn —
+same TurnGate, same `TURN_ORIGIN=human`, same objectives and capability gates as a typed message. Before
+this, `parse_simplex_events` dropped every non-`text` content type, so a voice note was silently ignored
+(no turn, no reply, no error to the sender). **Receive-only, and the reply stays TEXT** — sending a voice
+note back needs an XFTP upload plus a duration-carrying send command, the same two-feature split STT/TTS
+took for Telegram. **Opt-in via the `Stt` block** (no block → `Agent.stt == nullptr` → SimpleX is exactly
+as text-only as it was; the module refuses a voice message with a text reply and never downloads it).
+- **Protocol ground truth** (verified against upstream `bots/api/{TYPES,EVENTS,COMMANDS}.md` and
+  `simplex-chat --help` v6.5.6.1, not inferred): a voice message arrives as an ordinary **`newChatItems`**
+  frame — the same envelope we already parse, only `msgContent.type == "voice"` — but **the audio is NOT in
+  that frame**. It hangs off `chatItem.file` as a separate file transfer whose `fileStatus` starts at
+  `rcvInvitation`; the bytes are readable only at **`rcvFileComplete`**, which is when `fileSource` is
+  populated. Terminal failures are `rcvFileError` / `rcvFileSndCancelled`, and because `chatItem_` is
+  **optional** on the error frame the file id must be read from `rcvFileTransfer.fileId`. `rcvFileWarning`
+  is deliberately NOT treated as terminal (upstream: it fires when CLI settings block a file server).
+  **`encrypt=off` is mandatory:** a `CryptoFile` with `cryptoArgs` set is encrypted at rest and cannot be
+  read and POSTed to an STT backend without implementing SimpleX's file-decryption scheme.
+- **Explicit `/freceive`, NOT daemon auto-accept** (the load-bearing design call). The daemon can accept
+  files on its own (`--files-folder` + `-a <size>`), which is less code — rejected for three reasons, in
+  weight order: (1) under auto-accept the DAEMON decides encryption, and an encrypted file is unreadable to
+  us, so `encrypt=off` has to be ours to set; (2) auto-accept accepts everything from everyone — a
+  non-allowlisted contact could push files at an agent that silently discards their messages, unbounded
+  disk with nothing ever reading it, whereas we only ever accept a file attached to a **voice** message
+  from an **already-allowlisted** contact under a size cap; (3) it leaves the operator's daemon command
+  line alone (`Simplex.command` owns that — a feature that silently requires two extra daemon flags is a
+  support trap). Cost: one `SimplexApi::receive_file` method and a small pending table between the two events.
+- **Flow, all on the event thread** (the module owns one persistent socket — the branch review's C1 finding
+  was that a cross-thread send corrupts it, hence `drain_notifies_()`; nothing here posts from elsewhere):
+  `newChatItems`(voice) → allowlist → refuse if no `Stt` / size unknown / over `voice_max_bytes` / a `y/N`
+  confirm is outstanding → `/freceive <fileId> encrypt=off <tmp>` → remember `fileId → {contact, path}` →
+  `rcvFileComplete` → transcribe → delete the temp file (always) → `USER_MESSAGE`. **Fail-soft throughout**:
+  every failure is a short text reply to the sender, never a thrown exception out of the event loop.
+- **A voice message never answers a confirm.** With a `y/N` outstanding for that contact the voice note is
+  refused with "answer that first, then send it again" — letting a transcript approve a confirm-gated action
+  would put a security boundary behind a fuzzy channel; silently denying would throw away what was said.
+- **Config: `Simplex.voice_max_bytes`** (default **10485760** = 10 MB; garbage or non-positive → the default,
+  never 0 — a 0 cap silently refuses every voice message). Checked against the offer's declared size **before
+  any bytes move**; an unknown/non-positive size is refused too, since the cap is the reason we accept
+  explicitly at all. **Wiring:** `set_stt`/`set_voice_max_bytes` are called in `wire_agent`'s 6b block
+  alongside `set_turn_gate` — **before `on_start`/`on_attach` and long before `hades_main` calls `start()`**,
+  because both write members the event thread reads WITHOUT synchronisation. **The Bridge is never given an
+  `SttProvider`** (a peer cannot send audio), and there is no TTS seam here at all.
+- **Pieces:** `src/apps/simplex/simplex.cpp` (`handle_voice_`/`handle_file_done_`/`handle_file_failed_` +
+  the three new frames in `parse_simplex_events`), `include/hades/{simplex/api.h,module/simplex_module.h}`
+  (`SxEvent::Kind::{Voice,FileDone,FileFailed}`, `receive_file`, `set_stt`, `set_voice_max_bytes`),
+  `app/agent_wiring.cpp` (6b injection + `voice_max_bytes` parse), `tests/test_simplex_{parse,api,module,
+  wiring}.cpp`. Docs: manifest-reference §16 (key row + "Voice messages"). Spec:
+  `docs/superpowers/specs/2026-09-05-simplex-voice-design.md`.
+- **v1 edges (documented, not bugs):** **receive-only** — the reply is text · temp audio lives in a
+  **per-process directory** `<tmp>/hades-sx-voice-<pid>/`, removed wholesale by the dtor after the event
+  thread joins (the per-path deletes stay the fast path; the directory reclaims what they cannot see — a
+  transfer in flight at shutdown, a `/freceive` the daemon took before `receive_file` reported failure, an
+  evicted partial). A boot-time glob sweep of `hades-sx-voice-*` was **rejected**: several hades instances
+  share a machine here and a starting one would delete another's live downloads — so **a hard crash leaves
+  one directory behind** · `rcvFileAcceptedSndCancelled` is reported to the sender as a generic "didn't come
+  through", not as a distinct cause · pending transfers are capped at 8, oldest evicted (temp file deleted) ·
+  **we send no `approved_relays=on`, so a file sitting on an unapproved XFTP relay may be refused by the
+  daemon (`FileNotApproved`) — UNTESTED, the live-smoke risk to watch first** · group voice, images/general
+  files, and `duration`-based gating are deliberately not opened (the `duration` field is parsed and logged).
+- **Live-smoke pending** (Vaios: `Stt` block + `Module = simplex`, send a voice note from the phone → the
+  transcript drives a turn and a TEXT reply comes back; then an oversize note → refusal without a download).
+
 ### MCP discovery + remote transport (shipped 2026-07-12, `feat/mcp-discovery`) — stdio LIVE-VALIDATED 2026-07-20
 **LIVE-VALIDATED 2026-07-20 (stdio, full E2E on the real binary):** `Tool = gmap { mcp = npx -y
 @cablate/mcp-google-map --stdio }` (+ `GOOGLE_MAPS_API_KEY` via `Session.env_file`) — discovery
@@ -1436,6 +1500,11 @@ in this doc, not the tree):
   roster (no chat/serve) → `hades_main` blocks on `wait()`. `Agent::simplex` sits between `telegram` and
   `heartbeat` (teardown tail telegram → simplex → heartbeat). Docs: manifest-reference §16. Pi runtime dep =
   the official aarch64 `simplex-chat` CLI binary.
+  **Voice is RECEIVE-ONLY and needs an `Stt` block** (shipped 2026-09-05): a voice note from an allowlisted
+  contact is `/freceive`d (`encrypt=off` — an encrypted-at-rest file is unreadable to us), transcribed and
+  driven as a normal turn, but **the reply is TEXT** (no voice back). No `Stt` block → refused with a text
+  reply, never downloaded; `voice_max_bytes` (default 10 MB) caps the accept, and a voice note sent while a
+  `y/N` confirm is outstanding is refused until the confirm is answered.
 - **Bridge** (`Module = bridge`): the `Bridge` block is the agent's **identity** (its `name` is embedded in bus
   keys + the `peer:<name>` TURN_ORIGIN) — it's meaningful even without peers, but `ask_agent` needs both
   `Bridge.name` AND ≥1 `Peer` block to delegate anywhere. The shared **`secret_env`** (default
