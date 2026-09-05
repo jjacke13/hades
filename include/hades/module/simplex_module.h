@@ -15,6 +15,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -91,6 +92,16 @@ class SimplexModule : public Module {
   struct PendingVoice { long long contact_id; std::string path; };
   std::map<long long, PendingVoice> pending_voice_;
   static constexpr std::size_t kMaxPendingVoice = 8;
+  // Per-PROCESS temp directory for the audio (<tmp>/hades-sx-voice-<pid>), created by start()
+  // and removed whole by the dtor. The per-entry remove() calls stay the fast path; the
+  // directory reclaims what they cannot see — a transfer still in flight at shutdown, a
+  // /freceive the daemon accepted before receive_file reported failure, an evicted entry.
+  // Deliberately NOT a boot-time sweep of hades-sx-voice-*: several hades instances share a
+  // machine in this deployment and a starting one would delete another's live downloads. Empty
+  // (start() never called — tests drive step_once directly) -> the system temp dir is used
+  // directly and the dtor removes nothing. A hard crash leaves one directory behind: accepted.
+  std::filesystem::path voice_tmp_dir_;
+  std::string voice_temp_path_(long long file_id) const;
   SttProvider* stt_ = nullptr;                   // non-owning; null = voice input disabled
   long long voice_max_bytes_ = 10 * 1024 * 1024;
 

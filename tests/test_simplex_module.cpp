@@ -10,6 +10,7 @@
 #include "hades/blackboard.h"
 #include "hades/launcher.h"          // MalConfig
 #include <signal.h>
+#include <unistd.h>
 #include "hades/module/simplex_module.h"
 #include "hades/stt/provider.h"
 using namespace hades;
@@ -370,6 +371,10 @@ TEST(SimplexModuleVoice, NonPositiveFileSizeIsRefusedWithoutReceiveFile) {
     r.pump_events();
     EXPECT_TRUE(r.api->received.empty());
     ASSERT_EQ(r.api->sent.size(), 1u);
+    // Refused for the TRUE reason: unknown size, not "too large" (which would send the sender
+    // off shortening a message whose length was never the problem).
+    EXPECT_NE(r.api->sent[0].second.find("couldn't tell how big"), std::string::npos);
+    EXPECT_EQ(r.api->sent[0].second.find("too large"), std::string::npos);
   }
 }
 
@@ -458,4 +463,76 @@ TEST(SimplexModuleVoice, PendingTableIsCappedAndEvictsOldest) {
   r.pump_events();
   ASSERT_EQ(stt.paths.size(), 1u);
   EXPECT_EQ(r.api->sent.size(), 1u);
+}
+
+TEST(SimplexModuleVoice, ReceiveFileFailureRepliesAndLeavesNoPendingEntry) {
+  // /freceive refused (or its reply timed out): the sender is told, no entry is stored, and a
+  // FileDone that arrives anyway — the daemon may have taken the request — is a stranger. The
+  // file that daemon may still write is reclaimed by the per-pid temp dir, not by an entry.
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.api->receive_file_ok = false;
+  bool user_msg = false;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { user_msg = true; });
+  r.api->events.push_back(voice_ev(2, "V", 21, 4096));
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 1u);                  // we did ask
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("couldn't download"), std::string::npos);
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 21));
+  r.pump_events();
+  EXPECT_TRUE(stt.paths.empty());                         // no entry -> nothing transcribed
+  EXPECT_FALSE(user_msg);
+  EXPECT_EQ(r.api->sent.size(), 1u);                      // and no second reply
+}
+
+TEST(SimplexModuleVoice, VoiceDuringAnOutstandingConfirmIsRefusedAndLeavesItArmed) {
+  // Approval is a security boundary: a transcript must never answer a y/N (a mishearing would
+  // become approved:true on a confirm-gated action). Refuse, keep the confirm armed for TEXT.
+  Rig r(false);
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) {
+    r.bb.post("CONFIRM_REQUEST", {{"id", "c9"}, {"prompt", "sure?"}}, "arbiter");
+  });
+  bool confirm_answered = false;
+  r.bb.subscribe("CONFIRM_RESPONSE", [&](const Entry&) {
+    confirm_answered = true;
+    r.bb.post("ASSISTANT_MESSAGE", "done", "t");
+  });
+  r.api->events.push_back(text_ev(2, "V", "risky"));
+  r.pump_events();
+  ASSERT_EQ(r.api->sent.size(), 1u);                      // the y/N prompt
+  r.api->events.push_back(voice_ev(2, "V", 31, 4096));
+  r.pump_events();
+  EXPECT_TRUE(r.api->received.empty());                   // nothing accepted off the daemon
+  EXPECT_FALSE(confirm_answered);                         // the confirm was NOT consumed
+  ASSERT_EQ(r.api->sent.size(), 2u);
+  EXPECT_NE(r.api->sent[1].second.find("y/n"), std::string::npos);
+  r.api->events.push_back(text_ev(2, "V", "y"));          // still armed: TEXT answers it
+  r.pump_events();
+  EXPECT_TRUE(confirm_answered);
+}
+
+TEST(SimplexModuleVoice, DestructorRemovesThePerProcessVoiceTempDir) {
+  // Shutdown reclaim: a transfer still in flight (or a /freceive the daemon took after we gave
+  // up on it) leaves audio no pending entry points at. The per-pid dir is what takes it.
+  struct NoConnectFake : FakeApi {                        // parks the event thread in backoff
+    bool reconnect() override { return false; }
+  };
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / ("hades-sx-voice-" + std::to_string(::getpid()));
+  {
+    Blackboard bb;
+    SimplexModule m(std::make_unique<NoConnectFake>());
+    Block cfg;
+    cfg.kv["allow_contacts"] = "1";
+    m.on_start(cfg, bb);
+    m.on_attach(bb);
+    m.start();                                            // creates the dir before the thread
+    ASSERT_TRUE(std::filesystem::is_directory(dir));
+    touch_file((dir / "hades-sx-voice-42.bin").string()); // an in-flight transfer's partial file
+  }                                                       // dtor: join, reap, remove_all
+  EXPECT_FALSE(std::filesystem::exists(dir));
 }

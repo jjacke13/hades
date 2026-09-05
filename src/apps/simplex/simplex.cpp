@@ -281,6 +281,16 @@ SimplexModule::~SimplexModule() {
   // NOTE: a live next_event can hold the join up to ~poll_timeout_s_ (the WS read deadline).
   if (ev_thread_.joinable()) ev_thread_.join();
   stop_daemon_();   // AFTER the join — the event thread may be mid-socket-op against the daemon
+  // Reclaim any audio the per-entry remove() calls could not: in-flight transfers at shutdown,
+  // a /freceive the daemon completed after receive_file reported failure, evicted partials.
+  // Runs LAST: the event thread is joined (it alone touches pending_voice_) and the daemon is
+  // dead (it alone still writes here). Guarded to our own per-pid directory — never a bare
+  // temp_directory_path(), which an empty voice_tmp_dir_ would otherwise mean.
+  if (!voice_tmp_dir_.empty() &&
+      voice_tmp_dir_.filename().string().rfind("hades-sx-voice-", 0) == 0) {
+    std::error_code ec;
+    std::filesystem::remove_all(voice_tmp_dir_, ec);
+  }
 }
 
 void SimplexModule::spawn_daemon_() {
@@ -481,15 +491,43 @@ void SimplexModule::handle_text_(const SxEvent& ev) {
 // A voice offer: gate it, then ask the daemon to drop the bytes (UNENCRYPTED) at a temp path we
 // name. The audio is NOT here yet — the turn happens later, on the matching FileDone.
 void SimplexModule::handle_voice_(const SxEvent& ev) {
+  // An outstanding y/N confirm blocks voice from this contact. Refusing is the deliberate
+  // choice: letting the transcript ANSWER the confirm would turn a mishearing into
+  // approved:true on a confirm-gated (potentially destructive) action, and approval is a
+  // security boundary that must not sit behind a fuzzy channel; silently denying would throw
+  // away what the user actually said. So we say what is blocking, leave the confirm armed for
+  // the next TEXT, and accept nothing off the daemon.
+  if (!outstanding_confirm_id_.empty() && ev.contact_id == outstanding_contact_id_) {
+    send_reply_(ev.contact_id,
+                "I'm still waiting on the y/n above — please answer that first, then send the "
+                "voice message again.");
+    return;
+  }
   if (!stt_) { send_reply_(ev.contact_id, "Voice messages aren't enabled on this agent."); return; }
   // A non-positive size means we do NOT know how big the file is: the field was absent or
   // mistyped (the parse fails closed to 0), or an out-of-int64 unsigned wrapped negative. The
   // size cap is a load-bearing safety control here — it is the reason we accept files explicitly
   // instead of letting the daemon auto-accept — so an unknown size is refused, not waved through
   // by `0 > cap` being false. Gated here rather than dropped in the parser so the sender is told.
-  if (ev.file_size <= 0 || ev.file_size > voice_max_bytes_) {
+  // Both cases refuse; the reason given is the true one, since "too large" for a size we never
+  // read would send the sender off shortening a message that was never the problem.
+  if (ev.file_size <= 0) {
+    send_reply_(ev.contact_id,
+                "I couldn't tell how big that voice message is, so I didn't download it.");
+    return;
+  }
+  if (ev.file_size > voice_max_bytes_) {
     send_reply_(ev.contact_id, "That voice message is too large for me to process.");
     return;
+  }
+  // No directory to put the bytes in (start() could not create it, or it went away): refuse
+  // rather than hand the daemon a path that cannot be written.
+  if (!voice_tmp_dir_.empty()) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(voice_tmp_dir_, ec)) {
+      send_reply_(ev.contact_id, "I can't store voice messages right now.");
+      return;
+    }
   }
   // Bound the table BEFORE inserting: drop the oldest pending transfer (and its temp file) so a
   // stream of never-completing offers cannot grow it.
@@ -499,10 +537,11 @@ void SimplexModule::handle_voice_(const SxEvent& ev) {
     std::filesystem::remove(oldest->second.path, ec);
     pending_voice_.erase(oldest);
   }
-  const std::string dest =
-      (std::filesystem::temp_directory_path() /
-       ("hades-sx-voice-" + std::to_string(ev.file_id) + ".bin")).string();
+  const std::string dest = voice_temp_path_(ev.file_id);
   if (!api_->receive_file(ev.file_id, dest)) {
+    // No pending entry, so nothing will reclaim `dest` by path — but the daemon may have taken
+    // the /freceive before the reply timed out and may still write the file. That orphan is
+    // what the per-pid directory exists for; the dtor takes it.
     send_reply_(ev.contact_id, "I couldn't download that voice message.");
     return;
   }
@@ -518,11 +557,19 @@ void SimplexModule::handle_file_done_(const SxEvent& ev) {
   const PendingVoice pv = it->second;
   pending_voice_.erase(it);
   std::string transcript;
-  try {
-    SttResult r = stt_ ? stt_->transcribe(pv.path) : SttResult{};
-    if (r.ok) transcript = trim(r.text);
-    else std::cerr << "hades: simplex transcribe failed: " << r.error << "\n";
-  } catch (...) { transcript.clear(); }          // providers promise not to throw; belt+braces
+  if (!stt_) {
+    // Unreachable today — an entry only exists because handle_voice_ saw a provider. Kept as
+    // defence, but with its own line: a default SttResult here would have logged "transcribe
+    // failed: " with nothing after it, which reads like a provider that lost its error text.
+    std::cerr << "hades: simplex: voice file " << ev.file_id
+              << " completed with no STT provider; dropped\n";
+  } else {
+    try {
+      SttResult r = stt_->transcribe(pv.path);
+      if (r.ok) transcript = trim(r.text);
+      else std::cerr << "hades: simplex transcribe failed: " << r.error << "\n";
+    } catch (...) { transcript.clear(); }        // providers promise not to throw; belt+braces
+  }
   std::error_code ec;
   std::filesystem::remove(pv.path, ec);          // always, success or failure
   if (transcript.empty()) {
@@ -616,8 +663,32 @@ void SimplexModule::run_loop_() {
 
 void SimplexModule::start() {
   if (ev_thread_.joinable()) return;   // idempotent
+  // Own temp directory for voice audio, set BEFORE the thread exists (the event thread only
+  // ever reads it). Fail-soft: on failure it stays empty and handle_voice_ refuses voice —
+  // an unwritable temp dir must not take the whole front-end down.
+  try {
+    voice_tmp_dir_ =
+        std::filesystem::temp_directory_path() / ("hades-sx-voice-" + std::to_string(::getpid()));
+    std::error_code ec;
+    std::filesystem::create_directories(voice_tmp_dir_, ec);
+    // Kept set even on failure: handle_voice_ then finds no directory and refuses voice with a
+    // reply (the same check catches the dir being removed underneath us later).
+    if (ec) std::cerr << "hades: simplex: cannot create voice temp dir " << voice_tmp_dir_ << " ("
+                      << ec.message() << "); voice input will be refused\n";
+  } catch (const std::exception& e) {
+    std::cerr << "hades: simplex: no usable temp dir for voice (" << e.what() << ")\n";
+  }
   spawn_daemon_();                     // before the thread; reconnect backoff absorbs its boot
   ev_thread_ = std::thread([this] { run_loop_(); });
+}
+
+// Where the daemon should drop file_id's bytes. Inside our per-pid directory once start() has
+// made one; otherwise straight in the system temp dir (start() not called — tests). The file
+// name carries the id in BOTH forms so a stray temp is traceable to its transfer.
+std::string SimplexModule::voice_temp_path_(long long file_id) const {
+  const std::filesystem::path dir =
+      voice_tmp_dir_.empty() ? std::filesystem::temp_directory_path() : voice_tmp_dir_;
+  return (dir / ("hades-sx-voice-" + std::to_string(file_id) + ".bin")).string();
 }
 
 void SimplexModule::wait() {
