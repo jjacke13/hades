@@ -98,3 +98,70 @@ TEST(SimplexParse, GarbageAndUnknownTypesYieldNothing) {
   EXPECT_TRUE(parse_simplex_events(R"({"resp":{"type":"newChatItems","chatItems":"nope"}})").empty());
   EXPECT_TRUE(parse_simplex_events(R"({"noresp":true})").empty());
 }
+
+// ── voice + file-transfer frames ───────────────────────────────────────────────────────────────
+
+TEST(SimplexParse, VoiceMessageWithFileYieldsVoiceEvent) {
+  const std::string frame = R"({"resp":{"type":"newChatItems","chatItems":[{
+    "chatInfo":{"type":"direct","contact":{"contactId":7,"localDisplayName":"vaios"}},
+    "chatItem":{"chatDir":{"type":"directRcv"},
+      "content":{"type":"rcvMsgContent","msgContent":{"type":"voice","text":"","duration":5}},
+      "file":{"fileId":42,"fileName":"voice.m4a","fileSize":1234,
+              "fileStatus":{"type":"rcvInvitation"}}}}]}})";
+  const auto evs = parse_simplex_events(frame);
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].kind, SxEvent::Kind::Voice);
+  EXPECT_EQ(evs[0].contact_id, 7);
+  EXPECT_EQ(evs[0].display_name, "vaios");
+  EXPECT_EQ(evs[0].file_id, 42);
+  EXPECT_EQ(evs[0].file_size, 1234);
+  EXPECT_EQ(evs[0].duration, 5);
+}
+
+TEST(SimplexParse, VoiceMessageWithoutFileIsDropped) {
+  const std::string frame = R"({"resp":{"type":"newChatItems","chatItems":[{
+    "chatInfo":{"type":"direct","contact":{"contactId":7,"localDisplayName":"vaios"}},
+    "chatItem":{"chatDir":{"type":"directRcv"},
+      "content":{"type":"rcvMsgContent","msgContent":{"type":"voice","text":"","duration":5}}}}]}})";
+  EXPECT_TRUE(parse_simplex_events(frame).empty());
+}
+
+TEST(SimplexParse, RcvFileCompleteYieldsFileDone) {
+  const std::string frame = R"({"resp":{"type":"rcvFileComplete","chatItem":{
+    "chatInfo":{"type":"direct","contact":{"contactId":7,"localDisplayName":"vaios"}},
+    "chatItem":{"chatDir":{"type":"directRcv"},
+      "content":{"type":"rcvMsgContent","msgContent":{"type":"voice","text":"","duration":5}},
+      "file":{"fileId":42,"fileName":"voice.m4a","fileSize":1234,
+              "fileSource":{"filePath":"/tmp/voice.m4a"},
+              "fileStatus":{"type":"rcvComplete"}}}}}})";
+  const auto evs = parse_simplex_events(frame);
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].kind, SxEvent::Kind::FileDone);
+  EXPECT_EQ(evs[0].file_id, 42);
+}
+
+// chatItem_ is OPTIONAL on the error frame, so the id must come from rcvFileTransfer.
+TEST(SimplexParse, RcvFileErrorWithoutChatItemStillYieldsFileFailed) {
+  const std::string frame = R"({"resp":{"type":"rcvFileError",
+    "rcvFileTransfer":{"fileId":42,"senderDisplayName":"vaios"}}})";
+  const auto evs = parse_simplex_events(frame);
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].kind, SxEvent::Kind::FileFailed);
+  EXPECT_EQ(evs[0].file_id, 42);
+}
+
+TEST(SimplexParse, RcvFileSndCancelledYieldsFileFailed) {
+  const std::string frame = R"({"resp":{"type":"rcvFileSndCancelled",
+    "rcvFileTransfer":{"fileId":9}}})";
+  const auto evs = parse_simplex_events(frame);
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].kind, SxEvent::Kind::FileFailed);
+  EXPECT_EQ(evs[0].file_id, 9);
+}
+
+// Non-terminal: a warning must NOT evict a pending transfer.
+TEST(SimplexParse, RcvFileWarningIsIgnored) {
+  const std::string frame = R"({"resp":{"type":"rcvFileWarning",
+    "rcvFileTransfer":{"fileId":9}}})";
+  EXPECT_TRUE(parse_simplex_events(frame).empty());
+}

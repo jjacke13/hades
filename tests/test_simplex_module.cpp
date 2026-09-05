@@ -16,6 +16,8 @@ struct FakeApi : SimplexApi {
   std::deque<SxEvent> events;                                    // popped per next_event
   std::vector<std::pair<long long, std::string>> sent;           // send_text calls
   std::vector<long long> accepted;                               // accept_request calls
+  std::vector<std::pair<long long, std::string>> received;       // receive_file calls
+  bool receive_file_ok = true;                                   // scriptable /freceive outcome
   int reconnects = 0;
   // Empty script -> Closed (NOT Timeout) so the Rig's pump_events loop terminates; it also
   // exercises the loop-ends-on-Closed contract on every test.
@@ -32,6 +34,10 @@ struct FakeApi : SimplexApi {
   bool accept_request(long long rid) override {
     accepted.push_back(rid);
     return true;
+  }
+  bool receive_file(long long fid, const std::string& dest) override {
+    received.push_back({fid, dest});
+    return receive_file_ok;
   }
   bool reconnect() override { ++reconnects; return true; }
 };

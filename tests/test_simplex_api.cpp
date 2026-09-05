@@ -172,3 +172,29 @@ TEST(WsSimplexApi, ClosedConnectionReportsClosed) {
   EXPECT_EQ(api->next_event(5.0, ev), SxStatus::Closed);
   EXPECT_FALSE(api->send_text(1, "x"));                              // not connected -> false
 }
+
+TEST(WsSimplexApi, ReceiveFileSendsFreceiveWithEncryptOff) {
+  FakeDaemon d;
+  nlohmann::json got_cmd;
+  d.run([&got_cmd](FakeDaemon& s) {
+    got_cmd = s.recv_cmd();
+    s.send_json({{"corrId", got_cmd.value("corrId", "")},
+                 {"resp", {{"type", "rcvFileAccepted"}}}});
+  });
+  auto api = make_ws_simplex_api("127.0.0.1", d.port, 5.0);
+  ASSERT_TRUE(api->reconnect());
+  EXPECT_TRUE(api->receive_file(42, "/tmp/x.m4a"));
+  // encrypt=off is hard-coded: an encrypted CryptoFile could not be read back for transcription.
+  EXPECT_EQ(got_cmd.value("cmd", ""), "/freceive 42 encrypt=off /tmp/x.m4a");
+}
+
+TEST(WsSimplexApi, ReceiveFileErrorYieldsFalse) {
+  FakeDaemon d;
+  d.run([](FakeDaemon& s) {
+    auto cmd = s.recv_cmd();
+    s.send_json({{"corrId", cmd.value("corrId", "")}, {"resp", {{"type", "chatCmdError"}}}});
+  });
+  auto api = make_ws_simplex_api("127.0.0.1", d.port, 5.0);
+  ASSERT_TRUE(api->reconnect());
+  EXPECT_FALSE(api->receive_file(42, "/tmp/x.m4a"));
+}

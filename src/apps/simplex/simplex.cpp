@@ -55,13 +55,29 @@ std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
       const auto& content = item.value("content", nlohmann::json::object());
       if (str(content, "type") != "rcvMsgContent") continue;
       const auto& mc = content.value("msgContent", nlohmann::json::object());
-      if (str(mc, "type") != "text") continue;                          // v1: text only
-      SxEvent ev;
-      ev.kind = SxEvent::Kind::Text;
-      ev.contact_id = num(contact, "contactId");
-      ev.display_name = str(contact, "localDisplayName");
-      ev.text = str(mc, "text");
-      if (ev.contact_id != 0 && !ev.text.empty()) out.push_back(std::move(ev));
+      const std::string mct = str(mc, "type");
+      if (mct == "text") {
+        SxEvent ev;
+        ev.kind = SxEvent::Kind::Text;
+        ev.contact_id = num(contact, "contactId");
+        ev.display_name = str(contact, "localDisplayName");
+        ev.text = str(mc, "text");
+        if (ev.contact_id != 0 && !ev.text.empty()) out.push_back(std::move(ev));
+      } else if (mct == "voice") {
+        // The audio is NOT in this frame: it arrives via the file transfer, and the item is only
+        // readable once rcvFileComplete fires. A voice item with no `file` is malformed -> drop.
+        const auto f = item.find("file");
+        if (f == item.end() || !f->is_object()) continue;
+        SxEvent ev;
+        ev.kind = SxEvent::Kind::Voice;
+        ev.contact_id = num(contact, "contactId");
+        ev.display_name = str(contact, "localDisplayName");
+        ev.file_id = num(*f, "fileId");
+        ev.file_size = num(*f, "fileSize");
+        const auto d = mc.find("duration");
+        ev.duration = (d != mc.end() && d->is_number_integer()) ? d->get<int>() : 0;
+        if (ev.contact_id != 0 && ev.file_id != 0) out.push_back(std::move(ev));
+      }                                                                 // other types: ignored
     }
   } else if (type == "receivedContactRequest") {
     const auto& cr = resp.value("contactRequest", nlohmann::json::object());
@@ -77,6 +93,25 @@ std::vector<SxEvent> parse_simplex_events(const std::string& frame_json) {
     ev.contact_id = num(c, "contactId");
     ev.display_name = str(c, "localDisplayName");
     if (ev.contact_id != 0) out.push_back(std::move(ev));
+  } else if (type == "rcvFileComplete") {
+    // chatItem is mandatory on this frame; the file id lives on the item's file object.
+    const auto& aci = resp.value("chatItem", nlohmann::json::object());
+    const auto& item = aci.value("chatItem", nlohmann::json::object());
+    const auto& file = item.value("file", nlohmann::json::object());
+    SxEvent ev;
+    ev.kind = SxEvent::Kind::FileDone;
+    ev.file_id = num(file, "fileId");
+    if (ev.file_id != 0) out.push_back(std::move(ev));
+  } else if (type == "rcvFileError" || type == "rcvFileSndCancelled") {
+    // chatItem_ is OPTIONAL on rcvFileError, so rcvFileTransfer is the only reliable id source.
+    // rcvFileWarning has the same shape but is NOT terminal (it fires when CLI settings block a
+    // file server), so it is deliberately not handled here.
+    const auto& rft = resp.value("rcvFileTransfer", nlohmann::json::object());
+    SxEvent ev;
+    ev.kind = SxEvent::Kind::FileFailed;
+    ev.file_id = num(rft, "fileId");
+    ev.display_name = str(rft, "senderDisplayName");
+    if (ev.file_id != 0) out.push_back(std::move(ev));
   }
   return out;
 }
@@ -124,6 +159,13 @@ class WsSimplexApi : public SimplexApi {
 
   bool accept_request(long long request_id) override {
     return command_ok_("/_accept " + std::to_string(request_id), "acceptingContactRequest");
+  }
+
+  bool receive_file(long long file_id, const std::string& dest_path) override {
+    // /freceive <fileId>[ encrypt=on|off][ <filePath>] — encrypt=off so the bytes on disk are
+    // readable (an encrypted CryptoFile carries cryptoArgs and cannot be POSTed to an STT backend).
+    return command_ok_("/freceive " + std::to_string(file_id) + " encrypt=off " + dest_path,
+                       "rcvFileAccepted");
   }
 
  private:
