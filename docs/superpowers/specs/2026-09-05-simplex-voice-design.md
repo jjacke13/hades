@@ -196,8 +196,16 @@ file is unreadable to us, so making it an option would only let an operator brea
   Event-thread only, so no mutex. **Capped at `kMaxPendingVoice = 8`**; over the cap the oldest is
   dropped with its temp file deleted, so a contact spamming voice notes that never complete cannot
   grow it without bound.
-- Temp files: `<temp_dir>/hades-sx-voice-<fileId>.<ext>`, deleted on every exit path. `temp_dir`
-  comes from `std::filesystem::temp_directory_path()`, the Telegram precedent.
+- Temp files live in a **per-process directory**, `<temp_dir>/hades-sx-voice-<pid>/<fileId>.bin`,
+  created in `start()` and removed wholesale in the destructor after the event thread is joined;
+  the per-path deletes remain the fast path. **Amended 2026-09-06 after the Task 2 review**, which
+  found the audio was reclaimed only via the pending entry and therefore leaked on three paths:
+  shutdown with a transfer in flight, `receive_file` returning false AFTER the daemon had already
+  accepted (a 15 s corrId timeout on an already-sent `/freceive`), and eviction of an incomplete
+  transfer. The review proposed a boot-time glob sweep of `hades-sx-voice-*.bin`; that was
+  **rejected** because several hades instances share a machine in this deployment and a starting
+  instance would delete another live instance's in-flight downloads. Accepted residue: a hard
+  crash leaves one directory behind.
 
 ### 5. Wiring
 
