@@ -299,6 +299,7 @@ Tests to add:
 TEST(SimplexModuleVoice, AllowlistedVoiceIsAcceptedThenTranscribedIntoATurn);
 TEST(SimplexModuleVoice, NonAllowlistedVoiceNeverCallsReceiveFile);
 TEST(SimplexModuleVoice, OversizeVoiceIsRefusedWithoutReceiveFile);
+TEST(SimplexModuleVoice, NonPositiveFileSizeIsRefusedWithoutReceiveFile);   // absent/mistyped/wrapped
 TEST(SimplexModuleVoice, NoSttProviderMeansNoReceiveFile);
 TEST(SimplexModuleVoice, TranscribeFailureRepliesAndPostsNoUserMessage);
 TEST(SimplexModuleVoice, FileDoneForUnknownFileIdIsIgnored);
@@ -342,7 +343,13 @@ Expected: compile failure (`set_stt` does not exist).
 ```cpp
 void SimplexModule::handle_voice_(const SxEvent& ev) {
   if (!stt_) { send_reply_(ev.contact_id, "Voice messages aren't enabled on this agent."); return; }
-  if (ev.file_size > voice_max_bytes_) {
+  // A non-positive size means we do NOT know how big the file is: the field was absent or
+  // mistyped (num() fails closed to 0), or it was an out-of-int64 unsigned that wrapped negative.
+  // The size cap is a load-bearing safety control here — it is the reason we accept files
+  // explicitly instead of letting the daemon auto-accept — so an unknown size must be refused,
+  // not waved through by `0 > cap` being false. Gated in the module rather than dropped in the
+  // parser so the sender still gets told, instead of the message vanishing silently.
+  if (ev.file_size <= 0 || ev.file_size > voice_max_bytes_) {
     send_reply_(ev.contact_id, "That voice message is too large for me to process.");
     return;
   }
