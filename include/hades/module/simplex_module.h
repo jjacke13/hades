@@ -7,11 +7,14 @@
 // outstanding confirm. Security: allow_contacts (ids and/or exact display names) is REQUIRED
 // (MalConfig without it); non-allowed senders are silently dropped; contact requests are only
 // auto-accepted when auto_accept=true (name-spoof risk documented in the manifest reference).
+// A voice message is accepted explicitly (/freceive, size-capped, allowlisted senders only) and
+// transcribed via the optional SttProvider into an ordinary turn; without a provider it is refused.
 // The thread is started EXPLICITLY (start(), from hades_main) — never by on_attach — and is
 // stop+joined in the dtor (telegram precedent).
 #pragma once
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -25,6 +28,7 @@
 #include "hades/turn_gate.h"
 namespace hades {
 class Blackboard;
+class SttProvider;
 
 class SimplexModule : public Module {
  public:
@@ -37,6 +41,11 @@ class SimplexModule : public Module {
 
   void set_turn_gate(TurnGate* g) { gate_ = g; }
   void set_turn_timeout_s(double s) { turn_timeout_override_s_ = s; }
+  // Voice input (opt-in, mirrors TelegramModule): without a provider a voice message is refused
+  // with a text reply and never accepted off the daemon. Injected by wire_agent from the Stt
+  // block; owned by the Agent (declared before simplex, so it outlives the event thread).
+  void set_stt(SttProvider* s) { stt_ = s; }
+  void set_voice_max_bytes(long long n) { if (n > 0) voice_max_bytes_ = n; }
 
   void start();          // spawn the daemon child (if `command` set) + the event loop (hades_main)
   void wait();           // join the event thread (simplex-only roster blocks here)
@@ -49,6 +58,9 @@ class SimplexModule : public Module {
   void run_loop_();
   void handle_event_(const SxEvent& ev);
   void handle_text_(const SxEvent& ev);
+  void handle_voice_(const SxEvent& ev);
+  void handle_file_done_(const SxEvent& ev);
+  void handle_file_failed_(const SxEvent& ev);
   void drive_turn_(long long contact_id, const nlohmann::json& post_value, const char* key);
   void send_reply_(long long contact_id, const std::string& text);
   void drain_notifies_();                        // event thread only (sends over the one socket)
@@ -72,6 +84,15 @@ class SimplexModule : public Module {
   double connect_timeout_s_ = 10.0;
   double poll_timeout_s_ = 25.0;                 // internal next_event wait per loop pass
   double turn_timeout_override_s_ = 0.0;
+  // Voice transfers we accepted and are waiting on: fileId -> where we told the daemon to put
+  // the bytes. EVENT THREAD ONLY (step_once and what it calls) — correct without a mutex
+  // precisely because it never leaves that thread; do not touch it from anywhere else.
+  // Bounded: a sender whose transfers never complete must not grow it without limit.
+  struct PendingVoice { long long contact_id; std::string path; };
+  std::map<long long, PendingVoice> pending_voice_;
+  static constexpr std::size_t kMaxPendingVoice = 8;
+  SttProvider* stt_ = nullptr;                   // non-owning; null = voice input disabled
+  long long voice_max_bytes_ = 10 * 1024 * 1024;
 
   // Turn-capture state (event thread only, under the gate while a turn runs).
   bool my_turn_ = false;

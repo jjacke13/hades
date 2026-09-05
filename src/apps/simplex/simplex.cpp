@@ -221,10 +221,11 @@ std::unique_ptr<SimplexApi> make_ws_simplex_api(std::string host, int port,
 }
 }  // namespace hades
 
-// ── SimplexModule: event loop, allowlist, turn driving, text y/N confirms ─────────────────────
+// ── SimplexModule: event loop, allowlist, turn driving, text y/N confirms, voice input ───────
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <filesystem>
 #include <sstream>
 #include "hades/module/simplex_module.h"
 #include "hades/blackboard.h"
@@ -237,6 +238,7 @@ std::unique_ptr<SimplexApi> make_ws_simplex_api(std::string host, int port,
 #include <thread>
 #include <unistd.h>
 #include "hades/launcher.h"          // MalConfig
+#include "hades/stt/provider.h"       // SttProvider / SttResult
 #include "hades/telegram/parse.h"    // split_message
 #include "hades/timeouts.h"          // kDefaultTurnIdleTimeoutS
 
@@ -476,6 +478,70 @@ void SimplexModule::handle_text_(const SxEvent& ev) {
   drive_turn_(ev.contact_id, nlohmann::json(ev.text), "USER_MESSAGE");
 }
 
+// A voice offer: gate it, then ask the daemon to drop the bytes (UNENCRYPTED) at a temp path we
+// name. The audio is NOT here yet — the turn happens later, on the matching FileDone.
+void SimplexModule::handle_voice_(const SxEvent& ev) {
+  if (!stt_) { send_reply_(ev.contact_id, "Voice messages aren't enabled on this agent."); return; }
+  // A non-positive size means we do NOT know how big the file is: the field was absent or
+  // mistyped (the parse fails closed to 0), or an out-of-int64 unsigned wrapped negative. The
+  // size cap is a load-bearing safety control here — it is the reason we accept files explicitly
+  // instead of letting the daemon auto-accept — so an unknown size is refused, not waved through
+  // by `0 > cap` being false. Gated here rather than dropped in the parser so the sender is told.
+  if (ev.file_size <= 0 || ev.file_size > voice_max_bytes_) {
+    send_reply_(ev.contact_id, "That voice message is too large for me to process.");
+    return;
+  }
+  // Bound the table BEFORE inserting: drop the oldest pending transfer (and its temp file) so a
+  // stream of never-completing offers cannot grow it.
+  while (pending_voice_.size() >= kMaxPendingVoice) {
+    auto oldest = pending_voice_.begin();
+    std::error_code ec;
+    std::filesystem::remove(oldest->second.path, ec);
+    pending_voice_.erase(oldest);
+  }
+  const std::string dest =
+      (std::filesystem::temp_directory_path() /
+       ("hades-sx-voice-" + std::to_string(ev.file_id) + ".bin")).string();
+  if (!api_->receive_file(ev.file_id, dest)) {
+    send_reply_(ev.contact_id, "I couldn't download that voice message.");
+    return;
+  }
+  pending_voice_[ev.file_id] = PendingVoice{ev.contact_id, dest};
+}
+
+// The bytes landed: transcribe and drive a NORMAL turn with the transcript, indistinguishable
+// downstream from a typed message. Fail-soft — every failure is a short reply, no exception
+// escapes the event loop, and the temp file goes on every exit path.
+void SimplexModule::handle_file_done_(const SxEvent& ev) {
+  auto it = pending_voice_.find(ev.file_id);
+  if (it == pending_voice_.end()) return;        // not ours (or already reclaimed) — ignore
+  const PendingVoice pv = it->second;
+  pending_voice_.erase(it);
+  std::string transcript;
+  try {
+    SttResult r = stt_ ? stt_->transcribe(pv.path) : SttResult{};
+    if (r.ok) transcript = trim(r.text);
+    else std::cerr << "hades: simplex transcribe failed: " << r.error << "\n";
+  } catch (...) { transcript.clear(); }          // providers promise not to throw; belt+braces
+  std::error_code ec;
+  std::filesystem::remove(pv.path, ec);          // always, success or failure
+  if (transcript.empty()) {
+    send_reply_(pv.contact_id, "Sorry, I didn't catch that.");
+    return;
+  }
+  drive_turn_(pv.contact_id, nlohmann::json(transcript), "USER_MESSAGE");
+}
+
+void SimplexModule::handle_file_failed_(const SxEvent& ev) {
+  auto it = pending_voice_.find(ev.file_id);
+  if (it == pending_voice_.end()) return;
+  const PendingVoice pv = it->second;
+  pending_voice_.erase(it);
+  std::error_code ec;
+  std::filesystem::remove(pv.path, ec);
+  send_reply_(pv.contact_id, "That voice message didn't come through.");
+}
+
 void SimplexModule::handle_event_(const SxEvent& ev) {
   // Learn name->id from any event carrying both (notify_contact name resolution).
   if (ev.contact_id != 0 && !ev.display_name.empty()) known_ids_[ev.display_name] = ev.contact_id;
@@ -483,6 +549,13 @@ void SimplexModule::handle_event_(const SxEvent& ev) {
     case SxEvent::Kind::Text:
       if (allowed_(ev)) handle_text_(ev);       // non-allowed: silently dropped
       break;
+    case SxEvent::Kind::Voice:
+      if (allowed_(ev)) handle_voice_(ev);      // non-allowed: silently dropped, as for Text
+      break;
+    // FileDone/FileFailed carry no contact, so they cannot be allowlist-gated; the pending-table
+    // lookup IS the gate — a file id we never accepted is ignored.
+    case SxEvent::Kind::FileDone:   handle_file_done_(ev); break;
+    case SxEvent::Kind::FileFailed: handle_file_failed_(ev); break;
     case SxEvent::Kind::ContactRequest:
       if (auto_accept_) {
         if (!api_->accept_request(ev.request_id))

@@ -1,6 +1,8 @@
 // tests/test_simplex_module.cpp — SimplexModule allowlist/turn/confirm/notify over a fake api
 #include <gtest/gtest.h>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -9,6 +11,7 @@
 #include "hades/launcher.h"          // MalConfig
 #include <signal.h>
 #include "hades/module/simplex_module.h"
+#include "hades/stt/provider.h"
 using namespace hades;
 
 namespace {
@@ -76,6 +79,32 @@ struct Rig {
   }
   void pump_events() { while (mod->step_once()) {} }   // drains the script; ends on Closed
 };
+
+SxEvent voice_ev(long long cid, const std::string& name, long long fid, long long size) {
+  SxEvent e; e.kind = SxEvent::Kind::Voice; e.contact_id = cid; e.display_name = name;
+  e.file_id = fid; e.file_size = size; e.duration = 3;
+  return e;
+}
+SxEvent file_ev(SxEvent::Kind k, long long fid) {
+  SxEvent e; e.kind = k; e.file_id = fid;   // FileDone/FileFailed carry no contact
+  return e;
+}
+
+// Scripted STT: records the paths it was handed, returns a canned transcript (no backend needed).
+struct FakeStt : SttProvider {
+  std::string transcript = "hello from voice";
+  bool ok = true;
+  std::vector<std::string> paths;
+  SttResult transcribe(const std::string& audio_path) override {
+    paths.push_back(audio_path);
+    SttResult r;
+    r.ok = ok;
+    if (ok) r.text = transcript; else r.error = "stt down";
+    return r;
+  }
+};
+
+void touch_file(const std::string& p) { std::ofstream f(p, std::ios::binary); f << "audio"; }
 }  // namespace
 
 TEST(SimplexModule, MissingOrEmptyAllowContactsThrows) {
@@ -279,4 +308,154 @@ TEST(SimplexModule, NoCommandMeansNoDaemon) {
   cfg.kv["allow_contacts"] = "1";
   m.on_start(cfg, bb);
   EXPECT_EQ(m.daemon_pid(), 0);
+}
+
+// ── Voice input ───────────────────────────────────────────────────────────────────────────────
+// A voice offer is only ACCEPTED (/freceive) after the allowlist + size gates; the bytes arrive
+// later as FileDone, which is matched back to a contact through the pending table alone.
+
+TEST(SimplexModuleVoice, AllowlistedVoiceIsAcceptedThenTranscribedIntoATurn) {
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  std::string user_msg;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry& e) { user_msg = e.value.get<std::string>(); });
+  r.api->events.push_back(voice_ev(2, "whoever", 11, 4096));
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 1u);                 // accepted before any bytes moved
+  EXPECT_EQ(r.api->received[0].first, 11);
+  const std::string dest = r.api->received[0].second;
+  EXPECT_NE(dest.find("hades-sx-voice-11"), std::string::npos);
+  EXPECT_TRUE(r.api->sent.empty());                      // no turn yet — bytes not on disk
+  touch_file(dest);                                      // the daemon "delivers" the file
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 11));
+  r.pump_events();
+  ASSERT_EQ(stt.paths.size(), 1u);
+  EXPECT_EQ(stt.paths[0], dest);
+  EXPECT_EQ(user_msg, "hello from voice");                // a normal turn, like a typed one
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_EQ(r.api->sent[0].first, 2);
+  EXPECT_EQ(r.api->sent[0].second, "echo:hello from voice");
+  EXPECT_FALSE(std::filesystem::exists(dest));            // temp deleted on the success path
+}
+
+TEST(SimplexModuleVoice, NonAllowlistedVoiceNeverCallsReceiveFile) {
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(voice_ev(666, "stranger", 12, 4096));
+  r.pump_events();
+  EXPECT_TRUE(r.api->received.empty());                   // no /freceive for a stranger
+  EXPECT_TRUE(r.api->sent.empty());                       // silently dropped, as for Text
+}
+
+TEST(SimplexModuleVoice, OversizeVoiceIsRefusedWithoutReceiveFile) {
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(voice_ev(2, "V", 13, 20LL * 1024 * 1024));   // over the 10 MB default
+  r.pump_events();
+  EXPECT_TRUE(r.api->received.empty());
+  ASSERT_EQ(r.api->sent.size(), 1u);                      // the sender is told, not ignored
+  EXPECT_NE(r.api->sent[0].second.find("too large"), std::string::npos);
+}
+
+TEST(SimplexModuleVoice, NonPositiveFileSizeIsRefusedWithoutReceiveFile) {
+  // An absent/mistyped/wrapped size parses to <= 0: unknown size, so the cap cannot be checked.
+  for (long long size : {0LL, -1LL}) {
+    Rig r;
+    FakeStt stt;
+    r.mod->set_stt(&stt);
+    r.api->events.push_back(voice_ev(2, "V", 14, size));
+    r.pump_events();
+    EXPECT_TRUE(r.api->received.empty());
+    ASSERT_EQ(r.api->sent.size(), 1u);
+  }
+}
+
+TEST(SimplexModuleVoice, NoSttProviderMeansNoReceiveFile) {
+  Rig r;                                                  // set_stt never called
+  r.api->events.push_back(voice_ev(2, "V", 15, 4096));
+  r.pump_events();
+  EXPECT_TRUE(r.api->received.empty());
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("aren't enabled"), std::string::npos);
+}
+
+TEST(SimplexModuleVoice, TranscribeFailureRepliesAndPostsNoUserMessage) {
+  Rig r;
+  FakeStt stt;
+  stt.ok = false;
+  r.mod->set_stt(&stt);
+  bool user_msg = false;
+  r.bb.subscribe("USER_MESSAGE", [&](const Entry&) { user_msg = true; });
+  r.api->events.push_back(voice_ev(2, "V", 16, 4096));
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 1u);
+  const std::string dest = r.api->received[0].second;
+  touch_file(dest);
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 16));
+  r.pump_events();
+  EXPECT_FALSE(user_msg);                                 // no turn on a failed transcribe
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("didn't catch that"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dest));            // temp deleted on the failure path too
+}
+
+TEST(SimplexModuleVoice, FileDoneForUnknownFileIdIsIgnored) {
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 999));   // never accepted by us
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileFailed, 998));
+  r.pump_events();
+  EXPECT_TRUE(stt.paths.empty());
+  EXPECT_TRUE(r.api->sent.empty());                       // no contact to reply to — silent
+}
+
+TEST(SimplexModuleVoice, FileFailedDropsThePendingEntry) {
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(voice_ev(2, "V", 17, 4096));
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 1u);
+  const std::string dest = r.api->received[0].second;
+  touch_file(dest);
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileFailed, 17));
+  r.pump_events();
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_NE(r.api->sent[0].second.find("didn't come through"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dest));            // partial temp reclaimed
+  // Entry is gone: a late completion for the same id is now a stranger.
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 17));
+  r.pump_events();
+  EXPECT_TRUE(stt.paths.empty());
+  EXPECT_EQ(r.api->sent.size(), 1u);
+}
+
+TEST(SimplexModuleVoice, PendingTableIsCappedAndEvictsOldest) {
+  // Offers that never complete must not grow the table: inserting the 9th drops the oldest
+  // entry AND its temp file, so a never-completing sender cannot leak state or disk.
+  Rig r;
+  FakeStt stt;
+  r.mod->set_stt(&stt);
+  for (long long fid = 101; fid <= 108; ++fid)            // fill to kMaxPendingVoice (8)
+    r.api->events.push_back(voice_ev(2, "V", fid, 4096));
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 8u);
+  const std::string evicted = r.api->received[0].second;  // fileId 101, the oldest
+  touch_file(evicted);
+  r.api->events.push_back(voice_ev(2, "V", 109, 4096));   // the 9th evicts it
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 9u);
+  EXPECT_FALSE(std::filesystem::exists(evicted));         // its temp file went with it
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 101));   // evicted -> ignored
+  r.pump_events();
+  EXPECT_TRUE(stt.paths.empty());
+  EXPECT_TRUE(r.api->sent.empty());
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 109));   // still pending -> works
+  r.pump_events();
+  ASSERT_EQ(stt.paths.size(), 1u);
+  EXPECT_EQ(r.api->sent.size(), 1u);
 }
