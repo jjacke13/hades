@@ -17,6 +17,7 @@
 #include <vector>
 #include "hades/embedding/defaults.h"
 #include "hades/embedding/provider.h"
+#include "hades/live_session_path.h"
 #include "hades/module.h"
 namespace hades {
 class Blackboard;
@@ -39,12 +40,13 @@ public:
   void set_executor(Executor* ex) { executor_ = ex; }
   double reindex_interval_s() const { return reindex_interval_s_; }  // test seam (0 = off)
   // The live (current) session file to EXCLUDE from the past-session corpus pass — it is mid-write.
-  // Wired (in wire_agent) to the SAME path the Arbiter persists to, and MUST be called BEFORE
-  // on_attach: on_attach is what submits the index worker (which reads live_session_path_), so the
-  // setter's write must happen-before that submit. The Executor queue's synchronization then makes
-  // the write visible to the worker race-free (no data race, and a resumed session is correctly
-  // excluded rather than embedded mid-write). Calling it after on_attach would re-introduce the race.
-  void set_live_session_path(std::string p) { live_session_path_ = std::move(p); }
+  // Wired (in wire_agent) to the SAME path the Arbiter persists to, still BEFORE on_attach so the
+  // very first index already excludes a resumed session. It no longer HAS to be: a session is a
+  // day, so the live path moves at every rollover (and `/new`), and on_attach subscribes
+  // SESSION_ROTATED to follow it. That made this the first member written at runtime from the pump
+  // thread while the index worker reads it — LiveSessionPath owns the mutex that makes it safe (a
+  // plain std::string was safe only while it was written exactly once, before the worker existed).
+  void set_live_session_path(std::string p) { live_session_.set(std::move(p)); }
 private:
   void run_index_();                            // incremental index of the archival + session corpora
   std::unique_ptr<EmbeddingProvider> provider_;
@@ -52,7 +54,7 @@ private:
   std::string cache_dir_ = ".hades/embeddings";
   std::string sessions_dir_ = ".hades/sessions";
   bool index_sessions_ = true;
-  std::string live_session_path_;
+  LiveSessionPath live_session_;   // mutex-guarded: pump thread writes it, the index worker reads it
   std::size_t top_n_ = kDefaultEmbedTopN;
   float min_similarity_ = kDefaultMinSimilarity;
   std::size_t batch_size_ = kDefaultEmbedBatch;

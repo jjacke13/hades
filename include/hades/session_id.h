@@ -20,6 +20,12 @@ namespace hades {
 // calendar midnight. The `Session.day_cutoff_hour` manifest key defaults to this.
 inline constexpr int kDefaultDayCutoffHour = 4;
 
+// Parse a `Session.day_cutoff_hour` value. Anything that is not a whole number in [0,23] —
+// unparseable, trailing junk ("4h"), negative, >23, or an absent key (pass "") — yields
+// kDefaultDayCutoffHour. House rule: garbage never yields 0 (0 is a MEANING here, plain calendar
+// midnight, so silently producing it would move every session boundary four hours).
+int resolve_day_cutoff_hour(const std::string& raw);
+
 // Logical session date for an instant, as "YYYY-MM-DD". A session "day" runs from `cutoff_hour`
 // to the same hour next day, LOCAL time, so anything before the cutoff belongs to the previous day
 // (03:59 with cutoff 4 is still yesterday). cutoff_hour 0 = plain calendar date. Out-of-range
@@ -77,8 +83,33 @@ enum class OnHeld {
 // loading each agent's whole conversation into the other. So: lock it, and when a LIVE process
 // already holds it, either divert to the first free `-N` sibling (saying so on stderr) or throw,
 // per `on_held`. A DEAD process has released its lock, so the point of the feature — a restart
-// rejoins today's file — is untouched. The lock is held by keeping the fd open for the process
-// lifetime (see the .cpp). Throws MalConfig on a held file when `on_held == OnHeld::Fail`.
-std::string lock_session_file(const std::string& path, OnHeld on_held = OnHeld::Divert);
+// rejoins today's file — is untouched. Throws MalConfig on a held file when `on_held == OnHeld::Fail`.
+//
+// An flock lives on the open file description, so "hold the lock" is spelled "keep the fd open"
+// and "release it" is spelled "close the fd". `out` decides which happens: pass one and the fd is
+// stored there (destroying/reassigning the handle releases the lock — how a rotation stops holding
+// yesterday's CLOSED session hostage against someone else's `--resume <yesterday>`); pass nullptr
+// and the fd is deliberately leaked, i.e. held until the process exits.
+class SessionLock {
+public:
+  SessionLock() = default;
+  explicit SessionLock(int fd) : fd_(fd) {}
+  ~SessionLock() { reset(); }
+  SessionLock(SessionLock&& o) noexcept : fd_(o.fd_) { o.fd_ = -1; }
+  SessionLock& operator=(SessionLock&& o) noexcept {
+    if (this != &o) { reset(); fd_ = o.fd_; o.fd_ = -1; }
+    return *this;
+  }
+  SessionLock(const SessionLock&) = delete;
+  SessionLock& operator=(const SessionLock&) = delete;
+  void reset();          // close the held fd (releasing the flock); no-op when empty
+  bool held() const { return fd_ >= 0; }
+
+private:
+  int fd_ = -1;
+};
+
+std::string lock_session_file(const std::string& path, OnHeld on_held = OnHeld::Divert,
+                              SessionLock* out = nullptr);
 
 }  // namespace hades

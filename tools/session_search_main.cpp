@@ -5,8 +5,12 @@
 // <sessions_dir>/*.jsonl into per-turn "U:…\nA:…" units (extract_session_turns, compiled in via
 // src/core/session.cpp — no core link) and ranks them by lowercased token overlap with the
 // query (the rank_memories idiom). argv[1] = sessions dir (wiring-pinned; fallback
-// ".hades/sessions"), argv[2] = live-session FILENAME to exclude (the Arbiter already holds
-// that context in-history). Complements the auto-injected embedding recall: this is the
+// ".hades/sessions"). The live-session FILENAME to exclude (the Arbiter already holds that
+// context in-history) arrives as the `exclude_session` ARG — Arbiter-injected at dispatch and
+// stripped of any LLM-supplied value, the expect_version pattern. It is deliberately NOT in argv
+// any more: a session is a DAY, and a filename pinned at launch is wrong from the first rollover
+// on (it would skip yesterday and rank today's live file).
+// Complements the auto-injected embedding recall: this is the
 // deliberate, exact "did we discuss X?" path. Raw excerpts only — summarizing is the caller's
 // job. Fail-closed on malformed input; no hits is ok:true with an empty list, not an error.
 #include <algorithm>
@@ -45,8 +49,7 @@ struct Hit {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const std::string dir  = argc > 1 ? argv[1] : ".hades/sessions";
-  const std::string live = argc > 2 ? argv[2] : "";
+  const std::string dir = argc > 1 ? argv[1] : ".hades/sessions";
   std::string line;
   std::getline(std::cin, line);
   auto in = nlohmann::json::parse(line, nullptr, false);
@@ -83,6 +86,12 @@ int main(int argc, char** argv) {
     if (query.empty() || qtok.empty()) {                 // empty = absent (house rule)
       out = {{"ok", false}, {"result", {{"error", "missing arg: query (non-empty keywords)"}}}};
     } else {
+      // Arbiter-injected live-session filename (see the header comment). Absent/non-string =
+      // exclude nothing, which is exactly the pre-injection behaviour of an unset live session.
+      const std::string live = (args.contains("exclude_session") &&
+                                args["exclude_session"].is_string())
+                                   ? args["exclude_session"].get<std::string>()
+                                   : "";
       std::size_t max_results = kDefaultResults;
       if (args.contains("max_results") && args["max_results"].is_number_integer()) {
         const long long m = args["max_results"].get<long long>();

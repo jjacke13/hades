@@ -62,6 +62,22 @@ std::string current_session_id(int cutoff_hour) {
   return logical_date(std::time(nullptr), cutoff_hour);
 }
 
+// Strict whole-hour parse: the ENTIRE string must be an integer in [0,23]. Deliberately not bare
+// std::stoi (which takes "4h" as 4 — the Tts.max_chars footgun) and deliberately not
+// set_pos_double_on_string (which rejects 0, but 0 is a MEANING here: plain calendar midnight).
+int resolve_day_cutoff_hour(const std::string& raw) {
+  std::size_t pos = 0;
+  int h = 0;
+  try {
+    h = std::stoi(raw, &pos);
+  } catch (...) {
+    return kDefaultDayCutoffHour;            // empty, or not a number at all
+  }
+  if (pos != raw.size()) return kDefaultDayCutoffHour;   // trailing junk ("4h", "4 5")
+  if (h < 0 || h > 23) return kDefaultDayCutoffHour;
+  return h;
+}
+
 std::string make_session_id() {
   const std::time_t now = std::time(nullptr);
   std::tm tm_buf{};
@@ -123,10 +139,10 @@ namespace {
 constexpr int kHeldByOther = -1;  // flock refused: another LIVE process owns this file
 constexpr int kCannotOpen = -2;   // open() itself failed (perms) — locking is moot, not a conflict
 
-// Open (creating if absent) + exclusively flock `path`, non-blocking. Returns the fd on success —
-// INTENTIONALLY leaked by the caller, because flock is released by the last close of the open file
-// description (and by process exit), so "hold the lock for the process lifetime" is spelled "never
-// close the fd".
+// Open (creating if absent) + exclusively flock `path`, non-blocking. Returns the fd on success.
+// flock is released by the last close of the open file description (and by process exit), so
+// "hold the lock" is spelled "keep the fd open": lock_session_file either hands the fd to a
+// SessionLock (which closes it, releasing the lock) or leaks it for the process lifetime.
 int open_locked(const std::string& path) {
   const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
   if (fd < 0) return kCannotOpen;
@@ -134,17 +150,33 @@ int open_locked(const std::string& path) {
   ::close(fd);
   return kHeldByOther;
 }
+
+// Take ownership of the fd we ended up holding (which may be "none": kCannotOpen, or a shared
+// file we could not lock at all). With no handle to give it to, the fd is leaked on purpose =
+// held until the process exits. Assigning through `out` releases whatever it held before, which
+// is how a rotation stops holding the CLOSED previous session locked.
+void hand_over(hades::SessionLock* out, int fd) {
+  if (out) *out = hades::SessionLock(fd < 0 ? -1 : fd);
+}
 }  // namespace
 
-std::string lock_session_file(const std::string& path, OnHeld on_held) {
+void SessionLock::reset() {
+  if (fd_ >= 0) ::close(fd_);   // last close of this open file description releases the flock
+  fd_ = -1;
+}
+
+std::string lock_session_file(const std::string& path, OnHeld on_held, SessionLock* out) {
   if (path.empty()) return path;
   namespace fs = std::filesystem;
   const fs::path p(path);
   std::error_code ec;
   if (!p.parent_path().empty()) fs::create_directories(p.parent_path(), ec);  // first boot ever
-  // Ours now (fd leaked on purpose), or unopenable — an unwritable sessions_dir is not a conflict
-  // and gets reported by the first append; only a real lock conflict may divert the path.
-  if (open_locked(path) != kHeldByOther) return path;
+  // Ours now, or unopenable — an unwritable sessions_dir is not a conflict and gets reported by
+  // the first append; only a real lock conflict may divert the path.
+  if (const int fd = open_locked(path); fd != kHeldByOther) {
+    hand_over(out, fd);
+    return path;
+  }
 
   // An explicit `--resume <id>` asked for THIS session; quietly handing back a DIFFERENT one is
   // the surprising outcome, and inconsistent with the `--resume <absent-id>` MalConfig right next
@@ -160,14 +192,17 @@ std::string lock_session_file(const std::string& path, OnHeld on_held) {
   // created it, and the loser must take the next one instead of silently sharing.
   const std::string dir = p.parent_path().empty() ? std::string(".") : p.parent_path().string();
   std::string alt = path;
+  int alt_fd = -1;
   for (int tries = 0; tries < 16; ++tries) {
     const std::string cand = unique_fresh_path(dir, p.stem().string());
     if (cand == path) break;  // suffix space exhausted (10k files) — nothing free to divert to
-    if (open_locked(cand) >= 0) {
+    if (const int fd = open_locked(cand); fd >= 0) {
       alt = cand;
+      alt_fd = fd;
       break;
     }
   }
+  hand_over(out, alt_fd);
   // Always say it: a session silently splitting in two is exactly the kind of divergence that is
   // impossible to diagnose after the fact, so name both paths.
   if (alt == path)

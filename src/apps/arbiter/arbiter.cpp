@@ -173,8 +173,10 @@ void Arbiter::rotate_session_(const std::string& id) {
   ++turn_epoch_;
   if (sessions_dir_.empty()) {
     // Nowhere to rotate to (test/no-dir path): clear session_path_ so post-rotation turns are
-    // in-memory-only rather than silently appending to the OLD session file.
+    // in-memory-only rather than silently appending to the OLD session file. Drop the old lock
+    // too — we are no longer on that file, so nothing justifies holding other processes off it.
     session_path_.clear();
+    session_lock_.reset();
   } else {
     // Collision-safe (same as the boot resolve): an existing dir/<id>.jsonl means a session for
     // this id already exists — `/new` twice in a day, or a rollover onto a day some other process
@@ -183,11 +185,13 @@ void Arbiter::rotate_session_(const std::string& id) {
     // boot path takes: OnCollision::Reuse means a path is not ours by construction, and the
     // exclusivity Task 1 established would silently lapse at the first rotation otherwise (after
     // a rollover the process would hold yesterday's lock and none on today's file).
-    // ponytail: the previous file's lock is never released (lock_session_file keeps the fd for the
-    // process lifetime by design), so a rotation leaks one fd and leaves the closed session
-    // locked against an explicit `--resume <that id>` elsewhere. Bounded — one per rollover (a
-    // day) or per `/new` (human-paced). Releasing it needs lock_session_file to hand back the fd.
-    session_path_ = lock_session_file(unique_fresh_path(sessions_dir_, id), OnHeld::Divert);
+    // The new lock goes into session_lock_, and that assignment RELEASES the one before it: we
+    // have moved off that file, and a CLOSED session left locked would fail somebody else's
+    // `--resume <yesterday>` with "open in another running hades" over a session nobody occupies.
+    // Releasing after acquiring is safe in the trivial direction — unique_fresh_path returns a
+    // path that does not exist, so the new file is never the one being let go of.
+    session_path_ =
+        lock_session_file(unique_fresh_path(sessions_dir_, id), OnHeld::Divert, &session_lock_);
   }
   // Both rotation triggers announce themselves on ONE key: the embedding module's live-session
   // exclusion (and any future session-path consumer) re-points from this, and doing it for only
@@ -486,6 +490,17 @@ void Arbiter::dispatch_or_gate(const Action& act_in, const nlohmann::json& assis
       auto it = file_versions_.find(canon_file_key(p->get<std::string>()));
       if (it != file_versions_.end()) act.args["expect_version"] = it->second;
     }
+  }
+  // Same pattern for session_search's live-session exclusion: Arbiter-owned plumbing, stripped
+  // then injected, absent from the tool's describe schema so the LLM never sees it. It CANNOT be
+  // wiring-pinned into the argv (where it started life) because a session is a day: after a
+  // rollover a launch-time filename skips YESTERDAY (which should now be searchable) and ranks
+  // TODAY's live file, handing the running conversation back as "past session" excerpts. The
+  // Arbiter is the one component that always knows which file is live.
+  if (act.kind == Action::Kind::ToolCall && act.tool == "session_search" && act.args.is_object()) {
+    act.args.erase("exclude_session");
+    if (!session_path_.empty())
+      act.args["exclude_session"] = std::filesystem::path(session_path_).filename().string();
   }
   // Objectives are consulted in registration order; the first to demand a
   // confirm (needs_confirm) or hard-veto wins and short-circuits dispatch.

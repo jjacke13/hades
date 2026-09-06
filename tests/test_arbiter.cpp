@@ -1107,6 +1107,104 @@ TEST(Arbiter, RotationClaimsTheNewSessionFileLock) {
   EXPECT_THROW(lock_session_file(dir + "/2026-09-07.jsonl", OnHeld::Fail), MalConfig);
 }
 
+// The other half of that claim: rotating RELEASES the previous day's lock. A closed session left
+// locked would fail somebody else's `--resume <yesterday>` with "open in another running hades"
+// over a session nobody occupies — one stranded fd per rollover, for the process lifetime.
+TEST(Arbiter, RotationReleasesThePreviousSessionFileLock) {
+  const std::string dir = fresh_dir("dayroll_unlock");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  {  // hand over a boot lock the way hades_main does, so the first rotation has one to release
+    SessionLock boot;
+    ASSERT_EQ(lock_session_file(dir + "/2026-09-06.jsonl", OnHeld::Divert, &boot),
+              dir + "/2026-09-06.jsonl");
+    a.adopt_session_lock(std::move(boot));
+  }
+  now = local_at(2026, 9, 7, 4, 0);
+  bb.post("USER_MESSAGE", "morning", "chat"); bb.pump();             // rotate 09-06 -> 09-07
+  // Yesterday is closed AND unlocked: an explicit resume of it succeeds instead of throwing. (The
+  // probe takes the lock itself — deliberately: it is exactly what a second hades would do.)
+  EXPECT_NO_THROW(lock_session_file(dir + "/2026-09-06.jsonl", OnHeld::Fail));
+  EXPECT_THROW(lock_session_file(dir + "/2026-09-07.jsonl", OnHeld::Fail), MalConfig);  // today held
+}
+
+// ── session_search's live-session exclusion is injected at dispatch (daily sessions) ─────────────
+//
+// It used to be pinned into the tool's argv at wiring time, which cannot follow a rollover: the
+// tool would then skip YESTERDAY (which should now be searchable) and rank TODAY's live file,
+// handing the running conversation back as "past session" excerpts. Same shape as the
+// expect_version staleness guard — strip whatever the LLM sent, inject what the Arbiter knows.
+namespace {
+// Drive one tool-call turn; returns the dispatched TOOL_REQUEST's args. Subscribes ONCE, in the
+// constructor — a subscribe-per-call would leave the Blackboard holding a lambda bound to a local
+// that is already gone by the second call.
+struct ToolDispatch {
+  explicit ToolDispatch(Blackboard& bb) : bb_(bb) {
+    bb.subscribe("TOOL_REQUEST", [this](const Entry& e) {
+      args_ = e.value.value("args", nlohmann::json::object());
+    });
+  }
+  nlohmann::json operator()(std::uint64_t epoch, const std::string& tool,
+                            const nlohmann::json& call_args) {
+    args_ = nlohmann::json::object();
+    bb_.post("USER_MESSAGE", "search please", "chat");
+    bb_.pump();
+    bb_.post("LLM_RESPONSE",
+             {{"text", ""}, {"epoch", epoch},
+              {"tool_call", {{"id", "c1"}, {"name", tool}, {"arguments", call_args}}}}, "llm");
+    bb_.pump();
+    return args_;
+  }
+private:
+  Blackboard& bb_;
+  nlohmann::json args_ = nlohmann::json::object();
+};
+}  // namespace
+
+TEST(Arbiter, SessionSearchExclusionIsInjectedAndFollowsRotation) {
+  const std::string dir = fresh_dir("ss_inject");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  ToolDispatch dispatch(bb);
+  auto args = dispatch(1, "session_search", {{"query", "zeta"}});
+  EXPECT_EQ(args.value("exclude_session", ""), "2026-09-06.jsonl");
+  EXPECT_EQ(args.value("query", ""), "zeta");                   // the LLM's own args survive
+  // Roll the day: the injected filename moves with the session instead of staying at launch. The
+  // rotation bumps the epoch (1 -> 2) and the turn itself bumps it again.
+  now = local_at(2026, 9, 7, 4, 0);
+  args = dispatch(3, "session_search", {{"query", "zeta"}});
+  EXPECT_EQ(args.value("exclude_session", ""), "2026-09-07.jsonl");
+}
+
+TEST(Arbiter, SessionSearchExclusionStripsAnLlmSuppliedValue) {
+  const std::string dir = fresh_dir("ss_strip");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  // A model that hallucinated the field cannot redirect the exclusion (nor disable it).
+  ToolDispatch dispatch(bb);
+  auto args = dispatch(1, "session_search",
+                             {{"query", "zeta"}, {"exclude_session", "../secrets.jsonl"}});
+  EXPECT_EQ(args.value("exclude_session", ""), "2026-09-06.jsonl");
+}
+
+TEST(Arbiter, SessionSearchExclusionAbsentWithoutASessionPath) {
+  Blackboard bb; Arbiter a; a.on_attach(bb);                     // no session path at all
+  ToolDispatch dispatch(bb);
+  auto args = dispatch(1, "session_search",
+                             {{"query", "zeta"}, {"exclude_session", "made-up.jsonl"}});
+  EXPECT_FALSE(args.contains("exclude_session"));                // stripped; nothing to inject
+}
+
 TEST(Arbiter, MergesKeywordAndSemanticMemoryDeduped) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   std::vector<nlohmann::json> reqs;

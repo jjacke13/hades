@@ -120,7 +120,8 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
 | `user_file` | USER profile file, appended after SOUL. | none | Optional; unreadable path → `MalConfig`. |
 | `memory_file` | Core "always-on" memory file; the Arbiter re-reads it each turn; `core_memory` edits it. | `""` | **Required if the `core_memory` tool is rostered** (else `MalConfig`). Path must be whitespace-free. |
 | `memory_char_limit` | Char cap on the core-memory file (it is in EVERY turn's prompt). An over-cap `core_memory` write fails with the entry list so the agent consolidates. | `2400` | Bad/`<=0` value → default. |
-| `sessions_dir` | Directory of per-session conversation `.jsonl` files. | `.hades/sessions` | `--resume` reads from here; `/new` rotates within it. |
+| `sessions_dir` | Directory of per-session conversation `.jsonl` files. | `.hades/sessions` | `--resume` reads from here; the daily rollover and `/new` rotate within it. |
+| `day_cutoff_hour` | Local hour a session "day" begins — a session is one logical DAY, not one process launch (see **Session lifetime** below). `4` means 03:59 still belongs to yesterday; `0` = plain calendar midnight. | `4` (`kDefaultDayCutoffHour`) | Whole hour, `0`–`23`. Unparseable, trailing junk (`4h`), or out of range → the default; garbage never yields `0`, which is a real setting here. Machine-**local** time, like cron — set the box's TZ deliberately. |
 | `history_budget_chars` | Max chars of history sent per LLM request (full history still kept on disk). | `120000` (`kDefaultHistoryBudgetChars`) | ~30k tokens. Very high → effectively "send whole session". Turns that fall outside this window are silently truncated from the request unless `Module = compactor` is rostered — see the Compactor section (§21), which summarizes what falls outside this window. |
 | `todo_file` | Task-list file the `todo` tool rewrites and the Arbiter folds into every turn's system message. | `.hades/todo.md` | Only used when the `todo` tool is rostered; path whitespace-free (argv-appended). |
 | `env_file` | Dotenv-style file loaded at launch, **before** anything reads the environment: `KEY=VALUE` lines, `#` full-line comments, optional `export ` prefix, optional surrounding quotes. No `$VAR` expansion, no inline comments. | none | The **real environment wins** over the file (an operator export overrides). Named-but-unreadable → `MalConfig`. Keep it gitignored + `chmod 600`; the known secrets (API key, tokens) are still redacted in session.log, arbitrary extra vars are not. |
@@ -135,6 +136,31 @@ Read across `app/agent_wiring.cpp`, `src/apps/llm/llm.cpp` (`on_start`),
   abandons the turn. `background_timeout_s` is exempt — nothing waits on a background run. See §20.
 - `system_prompt_file`/`user_file`/`memory_file` are **cwd-relative** — run hades from the repo root.
 - `provider = openai_compat` in dev.hades does nothing; the transport is fixed.
+
+**Session lifetime.** A session is a **logical day**, not a process launch. Its id is that day's
+date (`2026-09-06`) and its file is `<sessions_dir>/2026-09-06.jsonl`; the day runs from
+`day_cutoff_hour` to the same hour the next day, local time.
+
+- **One session across every front-end.** The terminal, `--serve`, Telegram, SimpleX and inbound
+  bridge `/ask` all drive one Arbiter with one history and one file — they always have.
+- **A restart rejoins it.** Boot with no flags on a day whose file already exists → that file is
+  reopened and its history reloaded (hades says `rejoined session <id> (N messages)`). No flag
+  needed; `--resume` is for reaching a *different* session.
+- **A running process rolls over.** The day boundary is re-checked at the head of each new user
+  turn: past the cutoff, the session rotates to the new day's file (history, rolling summary and
+  pending state cleared, and the announcement every session-path consumer follows). Idle across
+  04:00 → it rotates on the next turn, not on the stroke; a turn that starts at 03:59 and finishes
+  at 04:01 completes in the old session, because turns are never split.
+- **`/new` still works** and gives a same-day sibling (`2026-09-06-1`, `-2`, …) — a clean context
+  mid-day without ending the day. It does not move the day, so the next rollover still fires.
+- **Old sessions stay readable.** Pre-upgrade `YYYYMMDD-HHMMSS.jsonl` files are left alone:
+  `--resume <that id>`, `session_search` and the embeddings indexer all still see them. Nothing is
+  renamed or converted.
+- **One live hades per session file.** The file is held with an advisory lock while a process is
+  using it, so two agents sharing a `sessions_dir` never interleave one transcript: the second takes
+  a `-N` sibling (and says so), while a named `--resume <id>` of a file another *running* hades holds
+  fails loudly. A dead process holds nothing — that is what makes restart-rejoins work — and a
+  rotation releases the day it has left, so yesterday is resumable elsewhere immediately.
 
 ---
 
@@ -170,7 +196,7 @@ whitespace:
 | `ask_agent` | `<own_name> <secret_env> <ask_timeout_s> <peer=url>…` | `Bridge` + `Peer` blocks | see rules below |
 | `schedule_task` | `<cron_store> <max_tasks> <min_interval_s>` | unnamed `Heartbeat { }` block (§15) | **requires `Module = heartbeat`** (else `MalConfig`); store path whitespace-free |
 | `list_tasks` / `cancel_task` | `<cron_store>` | unnamed `Heartbeat { }` block (§15) | store path whitespace-free |
-| `session_search` | `<sessions_dir> [<live-session filename>]` | `Session.sessions_dir` (default `.hades/sessions`) + the resolved live session | dir whitespace-free; the live session file is excluded from the search |
+| `session_search` | `<sessions_dir>` | `Session.sessions_dir` (default `.hades/sessions`) | dir whitespace-free. The **live** session is excluded too, but not via argv: the Arbiter injects the current session's filename as the `exclude_session` arg at dispatch (stripping anything the LLM sent), so the exclusion follows the daily rollover — a launch-pinned filename would skip yesterday and rank today's live file. |
 | `web_search` | full resolved provider config as `k=v` pairs | `Search` block (§19) | requires the `Search` block (else `MalConfig`); the API key is NEVER in argv — only the env var NAME travels |
 | `todo` | task-list file path | `Session.todo_file` (default `.hades/todo.md`) | path whitespace-free |
 
@@ -1241,9 +1267,9 @@ re-arm.
 
 | Flag | Effect |
 |---|---|
-| `hades <manifest>` | Build the agent and run the stdin REPL (or block on a poll/listener-only roster). |
+| `hades <manifest>` | Build the agent and run the stdin REPL (or block on a poll/listener-only roster). Rejoins **today's** session if one exists (see §3 *Session lifetime*) — no flag needed. |
 | `--serve [port]` | Run the HTTP/web front-end instead of the REPL. Optional port overrides `Serve.port`. |
-| `--resume [id]` | Reload a prior session. With `id`: that session (missing → `MalConfig`). Without: the newest `*.jsonl` in `sessions_dir`; none found → starts fresh with a note. Composes with `--serve`. |
+| `--resume [id]` | Reload a **different** session (today's is rejoined without it). With `id`: that session — a date (`2026-09-04`) or an old launch stamp; missing → `MalConfig`, held by another running hades → `MalConfig`. Without: the most recently modified `*.jsonl` in `sessions_dir` (usually today's, so it is close to a no-op); none found → starts fresh with a note. Composes with `--serve`. |
 
 Missing manifest arg → exit 2. Any `MalConfig` (bad manifest, unset key env, missing resume id) →
 exit 1 with a message.

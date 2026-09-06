@@ -64,15 +64,33 @@ TEST(SessionSearchTool, RanksByTokenOverlapNewestFirst) {
     EXPECT_EQ(h.value("text", "").find("sunny"), std::string::npos);
 }
 
-TEST(SessionSearchTool, LiveSessionExcludedByFilename) {
+// BEHAVIOUR CHANGE (daily sessions): the live-session exclusion travels as the `exclude_session`
+// ARG, injected by the Arbiter per call, instead of argv[2]. A filename pinned into argv at launch
+// cannot follow the daily rollover — it would skip yesterday and rank today's live file.
+TEST(SessionSearchTool, LiveSessionExcludedByArg) {
   const std::string dir = fresh_dir("live");
   write_session(dir, "old.jsonl", {{"magic keyword alpha", "noted"}});
   write_session(dir, "live.jsonl", {{"magic keyword alpha", "live copy"}});
-  auto j = search({dir, "live.jsonl"}, {{"query", "magic keyword alpha"}});
+  auto j = search({dir}, {{"query", "magic keyword alpha"}, {"exclude_session", "live.jsonl"}});
   ASSERT_TRUE(j.value("ok", false));
   ASSERT_EQ(j["result"]["hits"].size(), 1u);
   EXPECT_EQ(j["result"]["hits"][0].value("session", ""), "old");
   EXPECT_EQ(j["result"].value("searched_sessions", 0), 1);
+}
+
+// No exclusion supplied -> nothing is skipped (the pre-injection behaviour of an unset live
+// session). A non-string one is ignored the same way rather than failing the call.
+TEST(SessionSearchTool, AbsentOrNonStringExcludeSearchesEverySession) {
+  const std::string dir = fresh_dir("noexclude");
+  write_session(dir, "old.jsonl", {{"magic keyword alpha", "noted"}});
+  write_session(dir, "live.jsonl", {{"magic keyword alpha", "live copy"}});
+  auto j = search({dir}, {{"query", "magic keyword alpha"}});
+  ASSERT_TRUE(j.value("ok", false));
+  EXPECT_EQ(j["result"]["hits"].size(), 2u);
+  EXPECT_EQ(j["result"].value("searched_sessions", 0), 2);
+  auto j2 = search({dir}, {{"query", "magic keyword alpha"}, {"exclude_session", 7}});
+  ASSERT_TRUE(j2.value("ok", false));
+  EXPECT_EQ(j2["result"].value("searched_sessions", 0), 2);
 }
 
 TEST(SessionSearchTool, MaxResultsClampAndTruncation) {

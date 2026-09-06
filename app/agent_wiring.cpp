@@ -351,11 +351,11 @@ void wire_agent(Agent& a,
                        " " + std::to_string(min_interval_s);
     else if ((t.name == "list_tasks" || t.name == "cancel_task") && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + cron_store;
-    else if (t.name == "session_search" && t.kv.count("native")) {
+    // Only the DIR is pinned into argv (so the LLM cannot redirect the search root). The
+    // live-session exclusion used to be pinned here too and could not follow the daily rollover;
+    // the Arbiter now injects it per call as the `exclude_session` arg (see dispatch_or_gate).
+    else if (t.name == "session_search" && t.kv.count("native"))
       t.kv["native"] = t.kv["native"] + " " + sessions_dir;
-      if (!session_path.empty())
-        t.kv["native"] += " " + std::filesystem::path(session_path).filename().string();
-    }
     else if (t.name == "web_search" && t.kv.count("native"))
       t.kv["native"] += search_argv;
     else if (t.name == "todo" && t.kv.count("native"))

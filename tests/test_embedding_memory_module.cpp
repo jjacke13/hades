@@ -254,3 +254,148 @@ TEST(EmbeddingMemoryModule, RetrievesMixedFactAndSessionSplitsAcrossBothKeys) {
   EXPECT_NE(facts.find("alpha fact"), std::string::npos);   // archival hit -> FACT key
   EXPECT_NE(sess.find("alpha is first"), std::string::npos); // session hit -> SESSION key
 }
+
+// ── SESSION_ROTATED: the live-session exclusion follows the rotation (daily sessions) ────────────
+//
+// A session is a DAY, so the live file moves under a running process. Before this, the exclusion
+// was written once at wiring time and then went stale at the first rollover: the CLOSED start-day
+// file stayed skipped while today's still-being-appended one was indexed and came back injected as
+// "excerpts from earlier sessions". These tests drive the real thing — a fast periodic reindex, an
+// EMBED_INDEX_DONE count as the completion signal, and orthogonal FakeProvider words so which of
+// two session files is in the index is directly observable from a query.
+namespace {
+// One session file holding a single turn built around `word` ("alpha" -> (1,0), "beta" -> (0,1)
+// in FakeProvider, so a query tells two files apart).
+void write_turn(const std::string& dir, const std::string& file, const std::string& word) {
+  std::ofstream o(dir + "/" + file, std::ios::trunc);
+  o << "{\"role\":\"user\",\"content\":\"about " << word << "\"}\n"
+    << "{\"role\":\"assistant\",\"content\":\"" << word << " session turn\"}\n";
+}
+std::string empty_sessions_dir(const char* tag) {
+  namespace fs = std::filesystem;
+  const std::string d = tmp(std::string("em_rot_") + tag);
+  fs::remove_all(d);
+  fs::create_directories(d);
+  return d;
+}
+Block session_cfg(const std::string& store, const std::string& cache, const std::string& sdir) {
+  Block b; b.section = "Embedding";
+  b.kv["memory_store"] = store; b.kv["cache_dir"] = cache; b.kv["min_similarity"] = "0.2";
+  b.kv["index_sessions"] = "true"; b.kv["sessions_dir"] = sdir;
+  b.kv["reindex_interval_s"] = "0.05";     // the rotation is picked up by the next periodic run
+  return b;
+}
+// Drive one USER_MESSAGE turn and read back RETRIEVED_SESSION_SEMANTIC. Subscribes ONCE, in the
+// constructor: a subscribe-per-call would leave the Blackboard holding lambdas that capture a
+// local which is already gone.
+struct Recall {
+  explicit Recall(Blackboard& bb) : bb_(bb) {
+    bb.subscribe("RETRIEVED_SESSION_SEMANTIC",
+                 [this](const Entry& e) { got_ = e.value.get<std::string>(); });
+  }
+  std::string operator()(const std::string& query) {
+    got_.clear();
+    bb_.post("USER_MESSAGE", query, "chat");
+    bb_.pump();
+    return got_;
+  }
+private:
+  Blackboard& bb_;
+  std::string got_;
+};
+// Wait for the periodic reindex to COMPLETE one more run: EMBED_INDEX_DONE is posted at the end of
+// run_index_ (from the timer thread; post() is thread-safe) and counted here on the pump thread, so
+// this is a real completion signal rather than a sleep.
+bool wait_for_reindex(Blackboard& bb, const int& runs) {
+  const int before = runs;
+  for (int i = 0; i < 400; ++i) {                        // up to ~4s
+    bb.pump();
+    if (runs > before) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+}  // namespace
+
+TEST(EmbeddingMemoryModule, SessionRotatedRepointsTheLiveExclusion) {
+  std::string store = tmp("em_rot_store.jsonl"), cache = tmp("em_rot_cache");
+  { std::ofstream f(store, std::ios::trunc); }                       // empty archival store
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  const std::string sdir = empty_sessions_dir("day");
+  write_turn(sdir, "2026-09-06.jsonl", "alpha");                     // the day we boot into
+  Blackboard bb;
+  int runs = 0;
+  bb.subscribe("EMBED_INDEX_DONE", [&](const Entry&) { ++runs; });
+  Recall recall(bb);
+  EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+  m.on_start(session_cfg(store, cache, sdir), bb);
+  m.set_live_session_path(sdir + "/2026-09-06.jsonl");               // yesterday is live at boot
+  m.on_attach(bb);                                                   // initial inline index
+  bb.pump();
+  EXPECT_EQ(recall("about alpha").find("alpha session turn"), std::string::npos)
+      << "the live session must not be indexed";
+  // Midnight passes: the Arbiter rotates onto the new day's (brand-new) file and announces it.
+  write_turn(sdir, "2026-09-07.jsonl", "beta");
+  bb.post("SESSION_ROTATED", {{"from", "2026-09-06"}, {"to", "2026-09-07"},
+                              {"path", sdir + "/2026-09-07.jsonl"}}, "arbiter");
+  bb.pump();
+  ASSERT_TRUE(wait_for_reindex(bb, runs));
+  // Yesterday's file is closed now, so it belongs in the corpus...
+  EXPECT_NE(recall("about alpha").find("alpha session turn"), std::string::npos);
+  // ...and the file the process is now appending to is the one being skipped.
+  EXPECT_EQ(recall("about beta").find("beta session turn"), std::string::npos);
+}
+
+// The retired gotcha: `/new` rotates to a same-day SIBLING (2026-09-07 -> 2026-09-07-1) and posts
+// the same event, so the exclusion follows there too. Before this it did not, and CLAUDE.md carried
+// that as a documented accepted bug.
+TEST(EmbeddingMemoryModule, RotationToASuffixedNewSessionAlsoRepoints) {
+  std::string store = tmp("em_new_store.jsonl"), cache = tmp("em_new_cache");
+  { std::ofstream f(store, std::ios::trunc); }
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  const std::string sdir = empty_sessions_dir("new");
+  write_turn(sdir, "2026-09-07.jsonl", "alpha");
+  Blackboard bb;
+  int runs = 0;
+  bb.subscribe("EMBED_INDEX_DONE", [&](const Entry&) { ++runs; });
+  Recall recall(bb);
+  EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+  m.on_start(session_cfg(store, cache, sdir), bb);
+  m.set_live_session_path(sdir + "/2026-09-07.jsonl");
+  m.on_attach(bb);
+  bb.pump();
+  write_turn(sdir, "2026-09-07-1.jsonl", "beta");                    // `/new`'s same-day sibling
+  bb.post("SESSION_ROTATED", {{"from", "2026-09-07"}, {"to", "2026-09-07-1"},
+                              {"path", sdir + "/2026-09-07-1.jsonl"}}, "chat");
+  bb.pump();
+  ASSERT_TRUE(wait_for_reindex(bb, runs));
+  EXPECT_NE(recall("about alpha").find("alpha session turn"), std::string::npos);
+  EXPECT_EQ(recall("about beta").find("beta session turn"), std::string::npos);
+}
+
+// An Arbiter with no sessions_dir rotates to nowhere and posts {to:"",path:""}. Adopting that
+// blindly would leave NO live session excluded — i.e. index the file being appended to right now —
+// so an empty path is ignored and the last known-good exclusion stands.
+TEST(EmbeddingMemoryModule, EmptyRotationPathIsIgnored) {
+  std::string store = tmp("em_empty_store.jsonl"), cache = tmp("em_empty_cache");
+  { std::ofstream f(store, std::ios::trunc); }
+  std::remove((cache + "/memory.vec.jsonl").c_str());
+  const std::string sdir = empty_sessions_dir("empty");
+  write_turn(sdir, "past.jsonl", "alpha");
+  write_turn(sdir, "live.jsonl", "beta");
+  Blackboard bb;
+  int runs = 0;
+  bb.subscribe("EMBED_INDEX_DONE", [&](const Entry&) { ++runs; });
+  Recall recall(bb);
+  EmbeddingMemoryModule m(std::make_unique<FakeProvider>());
+  m.on_start(session_cfg(store, cache, sdir), bb);
+  m.set_live_session_path(sdir + "/live.jsonl");
+  m.on_attach(bb);
+  bb.pump();
+  bb.post("SESSION_ROTATED", {{"from", "live"}, {"to", ""}, {"path", ""}}, "arbiter");
+  bb.pump();
+  ASSERT_TRUE(wait_for_reindex(bb, runs));                     // a full run happened...
+  EXPECT_NE(recall("about alpha").find("alpha session turn"), std::string::npos);
+  EXPECT_EQ(recall("about beta").find("beta session turn"), std::string::npos)
+      << "an empty rotation path must not clear the exclusion";
+}

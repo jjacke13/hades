@@ -61,6 +61,11 @@ public:
   // Inject the wall clock the rollover check reads (test seam: cross a day boundary without
   // waiting). Unset -> std::time(nullptr).
   void set_clock(std::function<std::time_t()> c) { clock_ = std::move(c); }
+  // Take over the advisory lock hades_main claimed on the BOOT session file. Rotation replaces
+  // this handle with the new day's lock, which RELEASES this one — so a session nobody occupies
+  // any more stops refusing someone else's `--resume <that day>`. Without the hand-off the boot
+  // lock would sit leaked in main and the first rollover would strand it for the process lifetime.
+  void adopt_session_lock(SessionLock l) { session_lock_ = std::move(l); }
   // Reload a session jsonl into history_ (tolerant: skip blank/corrupt lines). No-op if unset.
   void load_history();
   // Cap (chars) on the cumulative serialized size of history_ sent in ONE LLM request. The full
@@ -115,6 +120,9 @@ private:
   std::function<std::string()> id_gen_;  // NEW_SESSION id source (test seam); null -> session_day_
   std::function<std::time_t()> clock_;   // rollover clock (test seam); null -> std::time(nullptr)
   std::string session_day_;     // logical day of the running session; empty -> adopted at first turn
+  // Advisory lock on session_path_ (the boot one, adopted from hades_main; then each rotation's).
+  // Reassigning it in rotate_session_ releases the previous day's — the point of holding a handle.
+  SessionLock session_lock_;
   int day_cutoff_hour_ = kDefaultDayCutoffHour;   // local hour a session day begins
   double history_budget_chars_ = kDefaultHistoryBudgetChars;  // per-turn LLM-request size cap
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).

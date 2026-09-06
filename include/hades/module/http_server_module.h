@@ -12,6 +12,7 @@
 #include <string>
 #include <utility>
 #include <nlohmann/json.hpp>
+#include "hades/live_session_path.h"
 #include "hades/module.h"
 #include "hades/turn_gate.h"
 
@@ -52,7 +53,10 @@ public:
   // The --serve front-end reads the same per-session conversation jsonl that the Arbiter persists,
   // so GET /history can re-render a resumed transcript. Wiring sets this to the resolved session
   // path (empty -> history_json() returns {"history":[]}). Read-only; no coupling to the Arbiter.
-  void set_session_path(std::string p) { session_path_ = std::move(p); }
+  // on_attach also follows SESSION_ROTATED, so an overnight --serve renders TODAY's transcript
+  // instead of the day the process happened to start on. Guarded (LiveSessionPath): the pump
+  // thread writes it, an httplib worker thread reads it in history_json().
+  void set_session_path(std::string p) { session_.set(std::move(p)); }
   // Socket-free body of GET /history: {"history": [ ...raw stored messages... ]} read from disk.
   // Const + socket-free so a test can assert it without binding a socket (mirrors handle_message).
   nlohmann::json history_json() const;
@@ -87,7 +91,7 @@ private:
   std::string last_reply_;
   bool got_reply_ = false;
   nlohmann::json pending_confirm_;  // null when no confirm is outstanding
-  std::string session_path_;  // per-session jsonl read by GET /history (set by wiring; may be empty)
+  LiveSessionPath session_;   // per-session jsonl read by GET /history (set by wiring; may be empty)
   // collect_ idle-timeout override (seconds). 0 = use the production default
   // (kCollectTimeoutS in http_server_module.cpp); set_collect_timeout_s gives tests a small value.
   double collect_timeout_override_s_ = 0.0;

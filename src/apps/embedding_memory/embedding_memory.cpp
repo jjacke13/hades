@@ -102,7 +102,11 @@ void EmbeddingMemoryModule::run_index_() {
   index_archival(*provider_, vc, memory_store_, batch_size_);
   // Past-session corpus (per-turn), excluding the live mid-write session. Same cache + provider:
   // both corpora share the one model-stamped VectorCache (the query path ranks across both).
-  if (index_sessions_) (void)index_sessions(*provider_, vc, sessions_dir_, live_session_path_, batch_size_);
+  // The exclusion is read ONCE per run, under LiveSessionPath's own mutex: a rollover during this
+  // run then simply lands on the next run, instead of the pump thread mutating a string the
+  // indexer is walking.
+  if (index_sessions_)
+    (void)index_sessions(*provider_, vc, sessions_dir_, live_session_.get(), batch_size_);
   bb_->post("EMBED_INDEX_DONE", true, "embedding_memory");
 }
 
@@ -111,6 +115,11 @@ void EmbeddingMemoryModule::on_attach(Blackboard& bb) {
   // Subscribe BEFORE submitting the index worker — the Blackboard's subs list is not thread-safe
   // (see blackboard.h); the worker only post()s (thread-safe), but subscribing first keeps the
   // documented "all subscribe()s before any worker starts" convention with no reasoning needed.
+  // A session is a DAY: the live file moves at the daily rollover and on `/new`, so follow it or
+  // the exclusion goes stale — pointing at a CLOSED session while today's still-being-appended one
+  // is indexed and comes back injected as "excerpts from earlier sessions". Cheap and unconditional
+  // (nothing posts SESSION_ROTATED unless a rotation happened).
+  bb.subscribe("SESSION_ROTATED", [this](const Entry& e) { live_session_.on_rotated(e.value); });
   bb.subscribe("USER_MESSAGE", [this](const Entry& e) {
     // Whole handler in try/catch: this runs on the pump thread, so a throw here would unwind pump()
     // and kill the bus. The EmbeddingProvider contract is no-throw, but a misbehaving provider or

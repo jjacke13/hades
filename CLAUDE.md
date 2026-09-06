@@ -159,6 +159,67 @@ old-session response); intercepted in both REPL loops (not a USER_MESSAGE). **We
 `src/core/session_id.cpp`, `app/hades_main.cpp` (`--resume`), `src/module/chat_module.cpp` (`/new`),
 `docs/superpowers/*2026-06-30-session-resume*`. **Deferred (v2):** embeddings
 over the session-files corpus (the separate-files design enables it) · `/sessions` list+switch · retention/pruning.
+**SUPERSEDED in part 2026-09-07** by daily sessions (below): the id is a logical DATE, not a launch stamp, and a
+plain restart rejoins today's file with no flag — `--resume` is now for reaching a DIFFERENT session.
+
+#### Daily sessions (shipped 2026-09-07, `feat/daily-session`) — a session is a DAY, not a process launch
+The session id is the **logical date** (`2026-09-06`, file `.hades/sessions/2026-09-06.jsonl`), where a "day"
+runs from **`Session.day_cutoff_hour`** (default **4**, local time — 03:59 still belongs to yesterday; `0` =
+calendar midnight) to the same hour next day. Restarting mid-day **rejoins** the morning's conversation with no
+flag (`OnCollision::Reuse` + `load_history`), and the process says so on stderr: `rejoined session <id> (N
+messages)` — a rejoin was otherwise byte-identical to a fresh start at the prompt. Cross-front-end was already
+free (one Arbiter, one `history_`, one file, TurnGate-serialized); this only changes WHICH file that shared
+conversation lands in. `logical_date`/`current_session_id`/`resolve_day_cutoff_hour` live in `src/core/session.cpp`
+(the cutoff parse is strict-whole-hour: `4h`/`4.5`/`24`/`-1`/absent → the default, and **garbage never yields 0**
+because 0 is a real setting).
+- **Lazy rollover at the head of the `USER_MESSAGE` handler — NOT `start_turn()`.** `start_turn()` also runs
+  tool-loop continuations (rotating there would wipe a live turn's `assistant(tool_calls)` mid-flight) and runs
+  AFTER the user message is appended (rotating there would discard the message that started the turn). So an
+  idle process rotates on its NEXT turn, not at 04:00 exactly, and a turn starting 03:59 → finishing 04:01
+  completes in the old session: turns are never split. No timer, no thread — one clock read (`now_()`, an
+  injectable test seam) on a path that already does far more.
+- **Compare against the base DAY (`session_day_`), never the file stem.** After a `/new` the stem is
+  `2026-09-06-1` while the day is still `2026-09-06`; a stem comparison would rotate on EVERY later turn forever.
+  `/new` therefore yields a same-day sibling and deliberately does not move `session_day_`.
+- **`rotate_session_` is one helper for both triggers** (daily rollover + `NEW_SESSION`): clear `history_`/
+  summary/`pending_compact_`, `clear_pending()`, `++turn_epoch_`, claim the new file, post
+  **`SESSION_ROTATED {from,to,path}`**.
+- **flock exclusivity, and it is RELEASED on rotation.** `lock_session_file` takes an advisory `flock` so two
+  hades sharing a `sessions_dir` never interleave one transcript (`OnHeld::Divert` → a `-N` sibling with a
+  stderr line; `OnHeld::Fail` → `MalConfig`, what a named `--resume <id>` gets). The fd IS the lock, so it is now
+  owned by a **`SessionLock`** RAII handle: `hades_main` claims the boot file and hands it over
+  (`Arbiter::adopt_session_lock`), and each rotation's `lock_session_file(..., &session_lock_)` releases the
+  previous day's by assignment. Without that a CLOSED session stayed locked for the process lifetime and failed
+  someone else's `--resume <yesterday>` over a session nobody occupies. Passing `out = nullptr` keeps the old
+  leak-on-purpose (= hold for the process lifetime) — which is also the **trap**: any code that PROBES a path
+  with `lock_session_file` before rotating onto it makes the rotation divert to `-N`.
+- **Every live-session-path consumer follows `SESSION_ROTATED`** — the bug class this feature created, all three
+  fixed at once: (1) `EmbeddingMemoryModule`'s index exclusion, (2) `HttpServerModule`'s `GET /history` (an
+  overnight `--serve` was rendering yesterday as the current transcript), both via the shared mutex-guarded
+  **`LiveSessionPath`** (`include/hades/live_session_path.h` — pump thread writes, index worker / httplib thread
+  reads; **an empty `path` is ignored**, since a dir-less Arbiter posts `{to:"",path:""}` and adopting it would
+  disable the exclusion); and (3) **`session_search`**, whose exclusion was pinned into the tool's ARGV at wiring
+  time and so could not move — now Arbiter-injected per call as the `exclude_session` arg with any LLM-supplied
+  value stripped, exactly the `expect_version` staleness-guard pattern (argv still pins the DIR, so the search
+  root stays operator-owned). This **retires the CLAUDE.md gotcha** that `/new` does not re-point the embeddings
+  exclusion. Attach order puts `embedding` before `arbiter`, so on a rotating turn recall runs BEFORE the
+  rotation and the event lands on the next dispatch — fine for an exclusion, don't build on the opposite order.
+- **Migration: none.** Old `YYYYMMDD-HHMMSS.jsonl` files are left alone — still resumable, still searched by
+  `session_search` and the indexer; they just stop being created. `resolve_session_path`'s bare-`--resume` pick
+  is by **mtime**, not filename, because the two id shapes do not sort together.
+- **Known gap (deliberate):** rotation never REJOINS an existing file for the new day — it goes through
+  `unique_fresh_path`, so if another process already created `2026-09-07.jsonl` the rollover lands on
+  `2026-09-07-1.jsonl`. Rejoining would append into a conversation the freshly-cleared `history_` does not
+  contain; loading it instead is a mid-run resume, a different feature.
+- Pieces: `include/hades/{session_id.h,live_session_path.h,arbiter.h}`, `src/core/session.cpp`,
+  `src/apps/arbiter/arbiter.cpp` (`maybe_roll_day_`/`rotate_session_`/`exclude_session` injection),
+  `src/apps/{embedding_memory/embedding_memory,serve/serve}.cpp`, `tools/session_search_main.cpp`,
+  `app/{hades_main,agent_wiring}.cpp`, tests in `test_{session_id,arbiter,embedding_memory_module,serve,
+  session_search_tool,session_search_wiring}.cpp`. Spec/plan:
+  `docs/superpowers/{specs/2026-09-06-daily-session-design.md,plans/2026-09-06-daily-session.md}`.
+  **895/895 both lanes** (ASan+UBSan AND TSan — the guarded cached path is what the TSan lane gates).
+  **Live-smoke pending** (Vaios: chat, restart → "rejoined session" + the morning's context; `/new` → a `-1`
+  sibling; leave it running past 04:00 → the next turn lands in the new day's file).
 
 #### GET /history web re-render (shipped 2026-06-30, `main` @ `e916084`, 204/204) — closes session-resume's web gap
 `--serve --resume` no longer starts blank. **`GET /history`** (HttpServerModule) returns `{"history":[...raw stored
@@ -1196,7 +1257,8 @@ vs per-app modules, message threading vs the single-session model, webhook (vs l
 4. **Retrieval tuning:** `min_similarity=0.45` may be high for `text-embedding-3-small` (try 0.35); consider re-ranking.
 5. **Cheaper/metered:** `dimensions` request param (smaller vectors); **embed-cost metering** (currently untracked by
    the budget objective — PPQ embeds hit the balance unmetered).
-6. **Freshness:** `/new` does NOT re-point `live_session_path_` (documented gotcha) — a proper session-lifecycle rethink.
+6. ~~**Freshness:** `/new` does NOT re-point `live_session_path_`~~ — **DONE 2026-09-07** (`feat/daily-session`):
+   every rotation posts `SESSION_ROTATED` and the exclusion follows it (guarded). See the Daily sessions subsection.
 (GET /history — DONE `e916084`. Memory embeddings — DONE `20ba94c`. Memory-injection framing — DONE `678a248`.)
 
 ## Voice — STT + TTS (decided 2026-07-05, Vaios) — BOTH SHIPPED 2026-07-05
@@ -1592,9 +1654,24 @@ in this doc, not the tree):
   speak; typed stays text), text-anchored + best-effort + fail-soft, `max_chars` (default 4000) caps spoken length,
   and injected into user-facing front-ends ONLY — the **Bridge is never given one** (a peer never gets audio).
   dev.hades ships the `Tts` block COMMENTED.
-- **Embedding live-session exclusion is fixed at launch.** `/new` rotates the Arbiter's session but does NOT
-  re-point the embedding module's `live_session_path_` (set once, before `on_attach`, to avoid a cross-thread
-  write). So a periodic reindex after a `/new` may index the now-live post-`/new` session mid-write — parser-safe
-  (tolerant read skips a torn line; completed pairs are append-stable) and self-heals next launch. Accepted v1.
+- **A session is a DAY** (`feat/daily-session`): the file is `<sessions_dir>/<logical date>.jsonl` and a plain
+  restart REJOINS today's (`--resume` is now for reaching a *different* session). `Session.day_cutoff_hour`
+  (default 4) is **machine-LOCAL**, like cron — set the box's TZ deliberately; garbage/out-of-range → 4, never 0.
+  A running process rotates at its next turn after the cutoff (not on the stroke). The file is **flock'd** while
+  in use, so a second hades on the same `sessions_dir` takes a `-N` sibling (says so on stderr) and a named
+  `--resume <id>` of a LIVE holder is a `MalConfig`; a dead process holds nothing, and a rotation releases the
+  day it left. **Trap:** `lock_session_file` with no `SessionLock*` holds the fd for the PROCESS lifetime — so
+  probing a path with it before rotating onto it makes that rotation divert to `-N`.
+- ~~**Embedding live-session exclusion is fixed at launch.**~~ **RETIRED 2026-09-07** (daily sessions, Task 3):
+  the exclusion now FOLLOWS the session. All three live-session-path consumers subscribe `SESSION_ROTATED` —
+  the embedding module's exclusion, `--serve`'s `GET /history`, and (Arbiter-injected per call, expect_version
+  style) `session_search`'s — so BOTH rotation triggers, the daily rollover and `/new`, re-point all three. The
+  old gotcha ("`/new` does not re-point `live_session_path_`, so a reindex may index the now-live session
+  mid-write") is FIXED, not worked around. The cached path is mutex-guarded now (`LiveSessionPath`,
+  `include/hades/live_session_path.h`): pump thread writes, index worker / httplib thread reads. **An EMPTY
+  `path` in the event is IGNORED** — an Arbiter with no `sessions_dir` rotates to nowhere and posts
+  `{to:"",path:""}`, and adopting that would disable the exclusion entirely. Standing limit (not a bug): the
+  index is append-only, so the exclusion stops FURTHER indexing of the live file, it never retracts what was
+  already embedded.
 - **Embedding cost is NOT metered** by the budget objective (`price_per_mtok` meters only the LLM). HTTP-provider
   embed calls (e.g. PPQ) hit the key's balance unmetered; indexing is incremental + the query is 1 short embed/turn.

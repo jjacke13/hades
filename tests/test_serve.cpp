@@ -130,6 +130,30 @@ TEST(HttpServer, HistoryJsonEmptyWhenNoSessionPath) {
   EXPECT_TRUE(out["history"].empty());
 }
 
+// A session is a DAY, so an overnight --serve must render TODAY's transcript, not the one the
+// process happened to start on. The path is set once at boot and read on an httplib worker thread,
+// so it follows SESSION_ROTATED (guarded — that part is the TSan lane's business).
+TEST(HttpServer, HistoryJsonFollowsSessionRotation) {
+  const std::string y = testing::TempDir() + "/serve_hist_2026-09-06.jsonl";
+  const std::string t = testing::TempDir() + "/serve_hist_2026-09-07.jsonl";
+  { std::ofstream f(y); f << "{\"role\":\"user\",\"content\":\"yesterday\"}\n"; }
+  { std::ofstream f(t); f << "{\"role\":\"user\",\"content\":\"today\"}\n"; }
+  Blackboard bb;
+  HttpServerModule srv;
+  srv.on_attach(bb);
+  srv.set_session_path(y);
+  ASSERT_EQ(srv.history_json()["history"][0].value("content", ""), "yesterday");
+  bb.post("SESSION_ROTATED", {{"from", "2026-09-06"}, {"to", "2026-09-07"}, {"path", t}}, "arbiter");
+  bb.pump();
+  ASSERT_EQ(srv.history_json()["history"].size(), 1u);
+  EXPECT_EQ(srv.history_json()["history"][0].value("content", ""), "today");
+  // An Arbiter with no sessions_dir rotates to nowhere ({to:"",path:""}); adopting that would
+  // blank the transcript, so it is ignored and the last known-good path stands.
+  bb.post("SESSION_ROTATED", {{"from", "2026-09-07"}, {"to", ""}, {"path", ""}}, "arbiter");
+  bb.pump();
+  EXPECT_EQ(srv.history_json()["history"][0].value("content", ""), "today");
+}
+
 TEST(HttpServer, AuthorizeGatesHistoryAndPostsButExemptsStaticGet) {
   httplib::Request get_hist;
   get_hist.method = "GET";

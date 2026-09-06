@@ -6,6 +6,7 @@
 // Session block, unset api key env var) exits with code 1 via MalConfig; missing
 // argv exits 2.
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -111,8 +112,9 @@ int main(int argc, char** argv) {
     // A session is a DAY: the id is today's logical date, and OnCollision::Reuse says an existing
     // file for it is this morning's conversation to REJOIN, not a collision to sidestep with a
     // `-N` suffix. (`/new` keeps the suffixing contract — it rotates via unique_fresh_path.)
-    // TODO(task-3): read the cutoff from `Session.day_cutoff_hour` instead of the default.
-    const int day_cutoff_hour = kDefaultDayCutoffHour;
+    const int day_cutoff_hour = resolve_day_cutoff_hour(
+        session && session->kv.count("day_cutoff_hour") ? session->kv.at("day_cutoff_hour")
+                                                        : std::string());
     const std::string new_id = current_session_id(day_cutoff_hour);
     const SessionResolution sr =
         resolve_session_path(sessions_dir, resume, resume_id, new_id, OnCollision::Reuse);
@@ -123,8 +125,17 @@ int main(int argc, char** argv) {
     // released its lock, so the rejoin-on-restart behaviour this feature exists for is unaffected.
     // A named `--resume <id>` asked for ONE session, so a live holder is a hard error (OnHeld::Fail,
     // like the absent-id MalConfig); the default boot path and bare `--resume` take a `-N` sibling.
+    // Did the file exist BEFORE this call? lock_session_file opens it O_CREAT, so the question has
+    // to be asked first — it is the difference between rejoining this morning's conversation and
+    // starting a new one, which are otherwise indistinguishable at the prompt.
+    const bool session_file_existed = std::filesystem::exists(sr.path);
+    // The lock is held in a handle, not leaked: the Arbiter adopts it below and each rotation
+    // releases the previous day's, so a session this process has CLOSED does not keep failing
+    // another process's `--resume <that day>`.
+    SessionLock session_lock;
     const std::string session_path =
-        lock_session_file(sr.path, resume_id.empty() ? OnHeld::Divert : OnHeld::Fail);
+        lock_session_file(sr.path, resume_id.empty() ? OnHeld::Divert : OnHeld::Fail,
+                          &session_lock);
     // fresh_fallback is set ONLY when a resume found nothing to resume (explicit flag, not a
     // string compare — a new session's `-N` collision suffix no longer breaks this note).
     if (sr.fresh_fallback)
@@ -197,6 +208,10 @@ int main(int argc, char** argv) {
     // continues an old file but the running day is still today, so it must not rotate immediately.
     agent.arbiter->set_day_cutoff_hour(day_cutoff_hour);
     agent.arbiter->set_session_day(new_id);
+    // Hand the boot file's lock over: rotation replaces it with the new day's, which releases
+    // this one. Left here it would be held for the whole process lifetime and yesterday's closed
+    // session would stay unresumable elsewhere.
+    agent.arbiter->adopt_session_lock(std::move(session_lock));
     // The --serve front-end reads the same session jsonl for GET /history (resumed-transcript
     // render). Null-guarded: a REPL-only roster omits `serve`. Same resolved path as the Arbiter.
     if (agent.serve) agent.serve->set_session_path(session_path);
@@ -204,6 +219,13 @@ int main(int argc, char** argv) {
     // file (a restart mid-day), and that history must come back. load_history is tolerant of a
     // missing file, so it is a no-op on the first launch of a new day.
     agent.arbiter->load_history();
+    // Say so. A restart that rejoins the day's conversation is otherwise byte-identical at the
+    // prompt to a fresh start, and the difference matters (the agent already knows what you told
+    // it this morning). Only when history actually came back — an existing but empty/corrupt file
+    // is a fresh start in every way that counts.
+    if (session_file_existed && agent.arbiter->history_size() > 0)
+      std::cerr << "hades: rejoined session " << std::filesystem::path(session_path).stem().string()
+                << " (" << agent.arbiter->history_size() << " messages)\n";
 
     // Telegram front-end: start the poll loop AFTER the full graph is wired (never inside
     // wire_agent — no surprise threads in tests). Runs alongside whichever blocking front-end

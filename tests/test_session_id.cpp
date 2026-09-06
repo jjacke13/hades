@@ -245,3 +245,50 @@ TEST(SessionId, NamedResumeOfAHeldSessionThrowsInsteadOfDiverting) {
   EXPECT_FALSE(std::filesystem::exists(dir + "/2026-09-04-1.jsonl"));  // no silent substitute
   ::close(held);
 }
+
+// ── SessionLock: a released lock stops holding a CLOSED session hostage ──────────────────────────
+//
+// lock_session_file's fd is normally leaked on purpose (= held for the process lifetime). With a
+// handle it is owned instead, and dropping the handle releases the flock — which is how the daily
+// rotation stops failing another process's `--resume <yesterday>` for a session it has left.
+TEST(SessionId, SessionLockReleasesOnReset) {
+  const std::string dir = fresh_dir("lockhandle");
+  const std::string p = dir + "/2026-09-06.jsonl";
+  SessionLock lk;
+  EXPECT_EQ(lock_session_file(p, OnHeld::Divert, &lk), p);
+  EXPECT_TRUE(lk.held());
+  EXPECT_THROW(lock_session_file(p, OnHeld::Fail), MalConfig);   // held: a second claim fails
+  lk.reset();
+  EXPECT_FALSE(lk.held());
+  EXPECT_EQ(lock_session_file(p, OnHeld::Fail), p);              // released: claimable again
+}
+
+// Move-assignment is how a rotation swaps locks: the new day's handle replaces the old one and
+// the previous file is released by the same statement.
+TEST(SessionId, MovingIntoAHeldSessionLockReleasesThePrevious) {
+  const std::string dir = fresh_dir("lockmove");
+  const std::string yesterday = dir + "/2026-09-06.jsonl";
+  const std::string today = dir + "/2026-09-07.jsonl";
+  SessionLock lk;
+  ASSERT_EQ(lock_session_file(yesterday, OnHeld::Divert, &lk), yesterday);
+  ASSERT_EQ(lock_session_file(today, OnHeld::Divert, &lk), today);   // assigns through the same handle
+  EXPECT_EQ(lock_session_file(yesterday, OnHeld::Fail), yesterday);  // yesterday freed
+  EXPECT_THROW(lock_session_file(today, OnHeld::Fail), MalConfig);   // today still held
+}
+
+// ── Session.day_cutoff_hour ─────────────────────────────────────────────────────────────────────
+TEST(DayCutoffHour, IsParsed) {
+  EXPECT_EQ(resolve_day_cutoff_hour("6"), 6);
+  EXPECT_EQ(resolve_day_cutoff_hour("0"), 0);     // an explicit 0 IS a setting: calendar midnight
+  EXPECT_EQ(resolve_day_cutoff_hour("23"), 23);
+}
+TEST(DayCutoffHour, GarbageFallsBackToFour) {
+  // Never 0: garbage must not silently move every session boundary to midnight.
+  for (const char* v : {"", "abc", "4h", "4 5", "4.5", " ", "--4"})
+    EXPECT_EQ(resolve_day_cutoff_hour(v), kDefaultDayCutoffHour) << v;
+}
+TEST(DayCutoffHour, OutOfRangeFallsBackToFour) {
+  EXPECT_EQ(resolve_day_cutoff_hour("-1"), kDefaultDayCutoffHour);
+  EXPECT_EQ(resolve_day_cutoff_hour("24"), kDefaultDayCutoffHour);
+  EXPECT_EQ(resolve_day_cutoff_hour("999999999999999999999"), kDefaultDayCutoffHour);  // out of int
+}

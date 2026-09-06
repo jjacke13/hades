@@ -50,6 +50,9 @@ void HttpServerModule::on_attach(Blackboard& bb) {
   });
   bb.subscribe("CONFIRM_REQUEST",
                [this](const Entry& e) { pending_confirm_ = e.value; });
+  // A session is a DAY: follow the rotation, or an overnight --serve keeps rendering the session
+  // the process started on as though it were the current conversation.
+  bb.subscribe("SESSION_ROTATED", [this](const Entry& e) { session_.on_rotated(e.value); });
 }
 
 double HttpServerModule::effective_collect_timeout_s() const {
@@ -102,9 +105,11 @@ nlohmann::json HttpServerModule::collect_() {
 }
 
 nlohmann::json HttpServerModule::history_json() const {
-  // Disk read only; no shared mutable state -> no turn_mu_(). A concurrent Arbiter append that leaves a
-  // half-written final line is skipped by read_session_jsonl's tolerant parse.
-  return {{"history", read_session_jsonl(session_path_)}};
+  // Disk read only; the only shared mutable state is the session path itself, which LiveSessionPath
+  // guards (this runs on an httplib worker thread, the rotation writes on the pump thread) -> still
+  // no turn_mu_(). A concurrent Arbiter append that leaves a half-written final line is skipped by
+  // read_session_jsonl's tolerant parse.
+  return {{"history", read_session_jsonl(session_.get())}};
 }
 
 nlohmann::json HttpServerModule::handle_message(const std::string& text) {
