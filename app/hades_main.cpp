@@ -112,7 +112,8 @@ int main(int argc, char** argv) {
     // file for it is this morning's conversation to REJOIN, not a collision to sidestep with a
     // `-N` suffix. (`/new` keeps the suffixing contract — it rotates via unique_fresh_path.)
     // TODO(task-3): read the cutoff from `Session.day_cutoff_hour` instead of the default.
-    const std::string new_id = current_session_id(kDefaultDayCutoffHour);
+    const int day_cutoff_hour = kDefaultDayCutoffHour;
+    const std::string new_id = current_session_id(day_cutoff_hour);
     const SessionResolution sr =
         resolve_session_path(sessions_dir, resume, resume_id, new_id, OnCollision::Reuse);
     // Then CLAIM it. Reuse means a resolved path is no longer ours by construction: two hades with
@@ -190,6 +191,12 @@ int main(int argc, char** argv) {
     // Also give the Arbiter the sessions dir so a `/new` mid-run rotates to a fresh file in the
     // same dir (no id-gen injection in prod -> defaults to make_session_id()).
     agent.arbiter->set_session_dir(sessions_dir);
+    // Daily rollover: tell the Arbiter which logical day this session belongs to and where the
+    // day boundary is, so a process running across the cutoff rotates onto the new day's file at
+    // its next turn. `new_id` (not the resolved file's stem) is deliberate: a `--resume <old-id>`
+    // continues an old file but the running day is still today, so it must not rotate immediately.
+    agent.arbiter->set_day_cutoff_hour(day_cutoff_hour);
+    agent.arbiter->set_session_day(new_id);
     // The --serve front-end reads the same session jsonl for GET /history (resumed-transcript
     // render). Null-guarded: a REPL-only roster omits `serve`. Same resolved path as the Arbiter.
     if (agent.serve) agent.serve->set_session_path(session_path);

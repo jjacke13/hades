@@ -9,6 +9,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <functional>
 #include <map>
 #include <memory>
@@ -17,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include "hades/entry.h"
 #include "hades/history_budget.h"   // kDefaultHistoryBudgetChars
+#include "hades/session_id.h"   // kDefaultDayCutoffHour
 #include "hades/module.h"
 #include "hades/objective.h"
 #include "hades/llm/provider.h"   // ToolSpec
@@ -43,8 +45,21 @@ public:
   // rotation (session_path_ stays put, history still clears).
   void set_session_dir(std::string d) { sessions_dir_ = std::move(d); }
   // Inject the id generator used by NEW_SESSION to name the rotated file (test seam: deterministic
-  // ids without a clock). Unset -> the handler falls back to make_session_id() (prod default).
+  // ids without a clock). Unset -> `/new` names the file from the session's logical DAY, so it
+  // rotates to a same-day sibling (2026-09-06 -> 2026-09-06-1) via unique_fresh_path.
   void set_id_generator(std::function<std::string()> g) { id_gen_ = std::move(g); }
+  // Local hour a session "day" begins (Session.day_cutoff_hour; see session_id.h). Read only by
+  // the lazy rollover check at turn start.
+  void set_day_cutoff_hour(int h) { day_cutoff_hour_ = h; }
+  // The logical day the RUNNING session belongs to ("YYYY-MM-DD") — the base id its file was
+  // resolved from at boot. The rollover check compares today's logical date against THIS, never
+  // against the file stem: after a `/new` the file is "2026-09-06-1" while the day is still
+  // "2026-09-06", and comparing against the stem would rotate on every later turn forever.
+  // Unset -> the first turn adopts today's date (no rotation), so tests need not set it.
+  void set_session_day(std::string d) { session_day_ = std::move(d); }
+  // Inject the wall clock the rollover check reads (test seam: cross a day boundary without
+  // waiting). Unset -> std::time(nullptr).
+  void set_clock(std::function<std::time_t()> c) { clock_ = std::move(c); }
   // Reload a session jsonl into history_ (tolerant: skip blank/corrupt lines). No-op if unset.
   void load_history();
   // Cap (chars) on the cumulative serialized size of history_ sent in ONE LLM request. The full
@@ -58,6 +73,14 @@ public:
 
 private:
   void start_turn();
+  // A session is a DAY: re-derive today's logical date and rotate if it moved. Called at the top
+  // of a NEW user turn only (the USER_MESSAGE handler says why not in start_turn()).
+  void maybe_roll_day_();
+  // Rotate onto a fresh session file named from `id`: clear the conversation + compaction state,
+  // bump the turn epoch, CLAIM the first free dir/<id>[-N].jsonl (same advisory lock the boot path
+  // takes) and post SESSION_ROTATED. Shared by `/new` (id = the current logical day -> a same-day
+  // sibling) and the daily rollover (id = the new day), so both paths behave identically.
+  void rotate_session_(const std::string& id);
   // First history_ index the budget window includes: the most-recent suffix within
   // history_budget_chars_, beginning on a valid (non-orphan {role:tool}) boundary.
   // start_turn() sends history_[window_start_()..); everything before it is compaction's
@@ -85,7 +108,10 @@ private:
   std::string todo_path_;       // task-list file (todo tool); folded into the system message each turn
   std::string session_path_;    // per-session conversation jsonl; append-per-message when set
   std::string sessions_dir_;    // dir for a `/new` rotation (dir/<id>.jsonl); empty -> no rotation
-  std::function<std::string()> id_gen_;  // NEW_SESSION id source (test seam); null -> make_session_id
+  std::function<std::string()> id_gen_;  // NEW_SESSION id source (test seam); null -> session_day_
+  std::function<std::time_t()> clock_;   // rollover clock (test seam); null -> std::time(nullptr)
+  std::string session_day_;     // logical day of the running session; empty -> adopted at first turn
+  int day_cutoff_hour_ = kDefaultDayCutoffHour;   // local hour a session day begins
   double history_budget_chars_ = kDefaultHistoryBudgetChars;  // per-turn LLM-request size cap
   // single pending confirm slot; the turn is suspended until it resolves (no second pending can form).
   nlohmann::json pending_;      // action awaiting confirm

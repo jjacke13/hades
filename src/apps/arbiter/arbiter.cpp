@@ -10,10 +10,11 @@
 #include "hades/blackboard.h"
 #include "hades/compact/compact.h"   // digest_span, sidecar codec, session_stem/path (compaction)
 #include "hades/prompt.h"   // read_memory_layer
-#include "hades/session_id.h"   // make_session_id + unique_fresh_path (NEW_SESSION rotation)
+#include "hades/session_id.h"   // logical_date, unique_fresh_path, lock_session_file (rotation)
 #include "hades/session_history.h"   // read_session_jsonl (shared tolerant parse)
 #include <algorithm>   // std::find (merge_memory_blocks dedup)
 #include <cstdio>   // std::remove (sidecar tmp cleanup)
+#include <ctime>   // std::time (daily rollover check)
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -95,6 +96,13 @@ void Arbiter::on_attach(Blackboard& bb) {
   bb_ = &bb;
   bb.subscribe("USER_MESSAGE", [this](const Entry& e) {
     if (!e.value.is_string()) return;  // ignore malformed user input
+    // A session is a DAY: check the day boundary HERE, at the head of a new user turn, rather
+    // than in start_turn(). start_turn() also runs tool-loop continuations, where rotating would
+    // wipe the running turn's own history mid-flight (leaving an assistant(tool_calls) orphan and
+    // an empty request); and it runs AFTER the append below, so a rotation there would discard the
+    // very message that started the turn. Consequence, as designed: a turn that starts at 03:59
+    // and finishes at 04:01 completes in the old session — turns are never split.
+    maybe_roll_day_();
     append_history({{"role", "user"}, {"content", e.value}});
     steps_ = 0;
     ++turn_epoch_;   // a new user turn: later LLM_RESPONSEs stamped with prior epochs are stale
@@ -138,29 +146,71 @@ void Arbiter::on_attach(Blackboard& bb) {
   });
   // `/new` (REPL) posts NEW_SESSION to start a FRESH session mid-run: drop the in-memory
   // conversation and rotate session_path_ to a brand-new file so subsequent appends land there,
-  // leaving the prior session intact on disk. Bumping turn_epoch_ (like TURN_ABANDONED) makes a
-  // brand-new turn context: any in-flight LLM_RESPONSE stamped with the old epoch is dropped by
-  // the freshness gate instead of landing in the fresh session. The id generator is injectable
-  // (test seam); in prod it is unset and falls back to make_session_id().
+  // leaving the prior session intact on disk. The id is the session's LOGICAL DAY, so `/new`
+  // yields a same-day sibling (2026-09-06 -> 2026-09-06-1) and does NOT move session_day_ — the
+  // next rollover still fires at the cutoff. The id generator stays injectable (test seam); with
+  // no day set either (a bare test Arbiter) it falls back to today's logical date.
   bb.subscribe("NEW_SESSION", [this](const Entry&) {
-    history_.clear();
-    clear_pending();
-    // Fresh session: drop the rolling summary state so a stale summary can't leak into it.
-    summary_text_.clear();
-    summarized_upto_ = 0;
-    pending_compact_ = false;
-    const std::string id = id_gen_ ? id_gen_() : make_session_id();
-    // Collision-safe rotation (same as the initial resolve_session_path): if dir/<id>.jsonl already
-    // exists — e.g. two `/new` within one wall-clock second — take the first free `-N` suffix so the
-    // fresh session never merges into an existing file. With no sessions_dir (test/no-dir path) there
-    // is nowhere to rotate to: clear session_path_ so post-/new turns are in-memory-only rather than
-    // silently appending to the OLD session file.
-    if (!sessions_dir_.empty())
-      session_path_ = unique_fresh_path(sessions_dir_, id);
-    else
-      session_path_.clear();
-    ++turn_epoch_;
+    rotate_session_(id_gen_ ? id_gen_()
+                            : (session_day_.empty() ? current_session_id(day_cutoff_hour_)
+                                                    : session_day_));
   });
+}
+
+// Rotate onto a fresh session file. Shared by `/new` and the daily rollover so the two can never
+// drift: same state reset, same collision-safe naming, same lock, same SESSION_ROTATED post.
+// Bumping turn_epoch_ (like TURN_ABANDONED) makes a brand-new turn context: an in-flight
+// LLM_RESPONSE stamped with the old epoch is dropped by the freshness gate instead of landing in
+// the fresh session.
+void Arbiter::rotate_session_(const std::string& id) {
+  const std::string from = session_stem(session_path_);
+  history_.clear();
+  clear_pending();
+  // Fresh session: drop the rolling summary state so a stale summary can't leak into it.
+  summary_text_.clear();
+  summarized_upto_ = 0;
+  pending_compact_ = false;
+  ++turn_epoch_;
+  if (sessions_dir_.empty()) {
+    // Nowhere to rotate to (test/no-dir path): clear session_path_ so post-rotation turns are
+    // in-memory-only rather than silently appending to the OLD session file.
+    session_path_.clear();
+  } else {
+    // Collision-safe (same as the boot resolve): an existing dir/<id>.jsonl means a session for
+    // this id already exists — `/new` twice in a day, or a rollover onto a day some other process
+    // already opened — so take the first free `-N` rather than merging two conversations that our
+    // freshly-cleared history_ does not contain. Then CLAIM it with the same advisory lock the
+    // boot path takes: OnCollision::Reuse means a path is not ours by construction, and the
+    // exclusivity Task 1 established would silently lapse at the first rotation otherwise (after
+    // a rollover the process would hold yesterday's lock and none on today's file).
+    // ponytail: the previous file's lock is never released (lock_session_file keeps the fd for the
+    // process lifetime by design), so a rotation leaks one fd and leaves the closed session
+    // locked against an explicit `--resume <that id>` elsewhere. Bounded — one per rollover (a
+    // day) or per `/new` (human-paced). Releasing it needs lock_session_file to hand back the fd.
+    session_path_ = lock_session_file(unique_fresh_path(sessions_dir_, id), OnHeld::Divert);
+  }
+  // Both rotation triggers announce themselves on ONE key: the embedding module's live-session
+  // exclusion (and any future session-path consumer) re-points from this, and doing it for only
+  // one of the two would leave them inconsistent for no reason.
+  bb_->post("SESSION_ROTATED",
+            {{"from", from}, {"to", session_stem(session_path_)}, {"path", session_path_}},
+            "arbiter");
+}
+
+// Lazy daily rollover: a session is a DAY, so a process running across the cutoff must move on to
+// the new day's file. Compared against session_day_ (the base id), never against the file stem —
+// after a `/new` the stem is "2026-09-06-1" but the day is still "2026-09-06". An unset day means
+// nobody told us which day this session belongs to (a bare test Arbiter): adopt today's and never
+// rotate on the first turn.
+void Arbiter::maybe_roll_day_() {
+  const std::string today =
+      logical_date(clock_ ? clock_() : std::time(nullptr), day_cutoff_hour_);
+  if (session_day_.empty() || today == session_day_) {
+    session_day_ = today;
+    return;
+  }
+  rotate_session_(today);
+  session_day_ = today;
 }
 
 void Arbiter::clear_pending() {

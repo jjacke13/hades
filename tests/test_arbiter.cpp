@@ -7,10 +7,13 @@
 // the max-steps guard that terminates runaway tool loops.
 
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 #include <vector>
 #include <unistd.h>   // ::getpid (todo-fold temp filenames)
 #include <gtest/gtest.h>
@@ -737,6 +740,266 @@ TEST(Arbiter, NewSessionEmptyDirClearsPath) {
   bb.post("USER_MESSAGE","fresh start","chat"); bb.pump();             // turn epoch -> 3
   bb.post("LLM_RESPONSE", {{"text","reply two"},{"epoch",3}}, "llm"); bb.pump();
   EXPECT_EQ(read_lines(old_path).size(), 2u);                    // old.jsonl untouched (still 2 lines)
+}
+
+// --- Daily rollover (Task 2): a session is a DAY, checked lazily at the head of a user turn ---
+//
+// The Arbiter never reads the wall clock in these tests: set_clock injects one, so a day passes in
+// a single assignment. The instants are built through std::mktime for the same reason
+// test_session_id.cpp does — logical_date resolves through localtime_r, so a LOCAL-time fixture
+// keeps these TZ-independent.
+namespace {
+std::time_t local_at(int y, int mo, int d, int h, int mi) {
+  std::tm tm{};
+  tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
+  tm.tm_hour = h; tm.tm_min = mi; tm.tm_isdst = -1;
+  return std::mktime(&tm);
+}
+// Fresh per-test sessions dir (rotation CLAIMS files with an flock held for the process lifetime,
+// so tests must never share a directory).
+std::string fresh_dir(const std::string& name) {
+  const std::string dir = ::testing::TempDir() + "/" + name;
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  return dir;
+}
+std::vector<std::string> jsonl_lines(const std::string& p) {
+  std::vector<std::string> lines; std::ifstream f(p); std::string l;
+  while (std::getline(f, l)) if (!l.empty()) lines.push_back(l);
+  return lines;
+}
+}  // namespace
+
+// A user turn taken after the cutoff, in a process that started the previous day, rotates onto the
+// NEW day's file: the turn's messages land in 2026-09-07.jsonl and the previous day's file is left
+// closed and intact.
+TEST(Arbiter, TurnAfterTheCutoffRotatesTheSession) {
+  const std::string dir = fresh_dir("dayroll_rotates");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "late night", "chat"); bb.pump();                    // epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();
+  // 04:00 the next morning is the first instant of the new logical day.
+  now = local_at(2026, 9, 7, 4, 0);
+  bb.post("USER_MESSAGE", "morning", "chat"); bb.pump();                       // rotate -> 2, turn -> 3
+  bb.post("LLM_RESPONSE", {{"text","good morning"},{"epoch",3}}, "llm"); bb.pump();
+  const auto yesterday = jsonl_lines(dir + "/2026-09-06.jsonl");
+  ASSERT_EQ(yesterday.size(), 2u);                                  // closed, not appended to
+  EXPECT_EQ(nlohmann::json::parse(yesterday[0]).value("content",""), "late night");
+  const auto today = jsonl_lines(dir + "/2026-09-07.jsonl");
+  ASSERT_EQ(today.size(), 2u);                                      // the new day's own file
+  EXPECT_EQ(nlohmann::json::parse(today[0]).value("content",""), "morning");
+  EXPECT_EQ(nlohmann::json::parse(today[1]).value("content",""), "good morning");
+}
+
+// 03:59 with cutoff 4 is still the PREVIOUS logical day (the whole point of a non-midnight
+// boundary): the late-night turn stays in the same file and no rotation happens.
+TEST(Arbiter, TurnBeforeTheCutoffDoesNotRotate) {
+  const std::string dir = fresh_dir("dayroll_before");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  bool rotated = false;
+  bb.subscribe("SESSION_ROTATED", [&](const Entry&) { rotated = true; });
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "late night", "chat"); bb.pump();                    // epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();
+  now = local_at(2026, 9, 7, 3, 59);                                 // still 2026-09-06 logically
+  bb.post("USER_MESSAGE", "still up", "chat"); bb.pump();                      // epoch -> 2
+  bb.post("LLM_RESPONSE", {{"text","still here"},{"epoch",2}}, "llm"); bb.pump();
+  EXPECT_FALSE(rotated);
+  EXPECT_EQ(jsonl_lines(dir + "/2026-09-06.jsonl").size(), 4u);      // one conversation, one file
+  EXPECT_FALSE(std::filesystem::exists(dir + "/2026-09-07.jsonl"));
+}
+
+// Rotation is the full NEW_SESSION reset: the conversation, the rolling compaction summary and any
+// pending confirm are dropped, and the turn epoch advances so an in-flight response from the old
+// day cannot land in the new one.
+TEST(Arbiter, RotationClearsHistorySummaryAndPendingAndBumpsTheEpoch) {
+  const std::string dir = fresh_dir("dayroll_clears");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.add_objective(std::make_unique<AvoidDestructive>());
+  std::vector<nlohmann::json> reqs;
+  bool tool_called = false;
+  std::string answer;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.subscribe("TOOL_REQUEST", [&](const Entry&) { tool_called = true; });
+  bb.subscribe("ASSISTANT_MESSAGE", [&](const Entry& e) { answer = e.value; });
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "wipe it", "chat"); bb.pump();                       // epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","shell"},
+          {"arguments",{{"cmd","rm -rf /"}}}}}}, "llm"); bb.pump();  // confirm-gated: pending_ set
+  ASSERT_FALSE(tool_called);
+  // A rolling summary from the compactor, adopted for THIS session.
+  bb.post("SESSION_SUMMARY", {{"session","2026-09-06"},{"upto",1},{"text","we discussed cleanup"}},
+          "compactor"); bb.pump();
+  now = local_at(2026, 9, 7, 5, 0);
+  bb.post("USER_MESSAGE", "new day", "chat"); bb.pump();                       // rotate -> 2, turn -> 3
+  // History: only the message that opened the new day (the old day's turn is gone).
+  EXPECT_EQ(a.history_size(), 1u);
+  // Summary: the "Earlier in this session" fold is gone from the new day's request.
+  ASSERT_FALSE(reqs.empty());
+  const auto& msgs = reqs.back()["messages"];
+  for (const auto& m : msgs)
+    if (m.value("role","") == "system")
+      EXPECT_EQ(m.value("content", std::string()).find("Earlier in this session"), std::string::npos);
+  // Pending confirm: a late approval for the old day's gated action must not execute it.
+  bb.post("CONFIRM_RESPONSE", {{"id","c1"},{"approved",true}}, "chat"); bb.pump();
+  EXPECT_FALSE(tool_called);
+  // Epoch: a response stamped with the old day's epoch is stale and dropped; the fresh one lands.
+  bb.post("LLM_RESPONSE", {{"text","from yesterday"},{"epoch",1}}, "llm"); bb.pump();
+  EXPECT_TRUE(answer.empty());
+  bb.post("LLM_RESPONSE", {{"text","fresh"},{"epoch",3}}, "llm"); bb.pump();
+  EXPECT_EQ(answer, "fresh");
+}
+
+// SESSION_ROTATED names both sessions and the file now being appended to (its `path` is what the
+// embedding module's live-session exclusion re-points to).
+TEST(Arbiter, RotationPostsSessionRotatedWithFromToAndPath) {
+  const std::string dir = fresh_dir("dayroll_event");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json ev;
+  bb.subscribe("SESSION_ROTATED", [&](const Entry& e) { ev = e.value; });
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  now = local_at(2026, 9, 7, 4, 0);
+  bb.post("USER_MESSAGE", "morning", "chat"); bb.pump();
+  ASSERT_TRUE(ev.is_object());
+  EXPECT_EQ(ev.value("from",""), "2026-09-06");
+  EXPECT_EQ(ev.value("to",""), "2026-09-07");
+  EXPECT_EQ(ev.value("path",""), dir + "/2026-09-07.jsonl");
+}
+
+// `/new` rotates too, so it must announce itself on the SAME key — Task 3's embeddings fix
+// subscribes once and both triggers have to reach it (this also retires the standing gotcha that
+// `/new` left the live-session exclusion pointing at the old file).
+TEST(Arbiter, ANewSessionCommandAlsoPostsSessionRotated) {
+  const std::string dir = fresh_dir("dayroll_newsession_event");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  nlohmann::json ev;
+  bb.subscribe("SESSION_ROTATED", [&](const Entry& e) { ev = e.value; });
+  a.set_clock([] { return local_at(2026, 9, 6, 12, 0); });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  { std::ofstream touch(dir + "/2026-09-06.jsonl"); touch << "{}\n"; }
+  bb.post("NEW_SESSION", nlohmann::json::object(), "chat"); bb.pump();
+  ASSERT_TRUE(ev.is_object());
+  EXPECT_EQ(ev.value("from",""), "2026-09-06");
+  EXPECT_EQ(ev.value("to",""), "2026-09-06-1");     // same day, next sibling
+  EXPECT_EQ(ev.value("path",""), dir + "/2026-09-06-1.jsonl");
+}
+
+// The rotation happens BEFORE the turn's request is built, not after it: the first request of the
+// new day carries only that day's user message, never the previous day's conversation.
+TEST(Arbiter, RotationHappensBeforeTheTurnIsSentNotAfter) {
+  const std::string dir = fresh_dir("dayroll_ordering");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::vector<nlohmann::json> reqs;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "yesterday's topic", "chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","noted"},{"epoch",1}}, "llm"); bb.pump();
+  now = local_at(2026, 9, 7, 6, 0);
+  bb.post("USER_MESSAGE", "today's topic", "chat"); bb.pump();
+  ASSERT_EQ(reqs.size(), 2u);
+  const auto& msgs = reqs.back()["messages"];
+  int user_msgs = 0;
+  for (const auto& m : msgs) {
+    EXPECT_NE(m.value("content", std::string()), "yesterday's topic");   // not carried over
+    if (m.value("role","") == "user") ++user_msgs;
+  }
+  EXPECT_EQ(user_msgs, 1);
+  EXPECT_EQ(msgs.back().value("content",""), "today's topic");
+}
+
+// A turn is never SPLIT by the boundary. start_turn() also runs tool-loop continuations, so the
+// check lives at the head of a USER_MESSAGE instead: a turn that crosses the cutoff mid-tool-loop
+// finishes in the old session with its assistant(tool_calls)+tool pair intact.
+TEST(Arbiter, ToolLoopContinuationDoesNotRotateMidTurn) {
+  const std::string dir = fresh_dir("dayroll_toolloop");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  a.set_tools({ ToolSpec{"fs_read","",{}} });
+  std::vector<nlohmann::json> reqs;
+  bool rotated = false;
+  bb.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  bb.subscribe("SESSION_ROTATED", [&](const Entry&) { rotated = true; });
+  std::time_t now = local_at(2026, 9, 7, 3, 59);          // logically still 2026-09-06
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "read it", "chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text",""},{"epoch",1},{"tool_call",{{"id","c1"},{"name","fs_read"},
+          {"arguments",{{"path","/a"}}}}}}, "llm"); bb.pump();
+  now = local_at(2026, 9, 7, 4, 1);                       // the day turns mid-turn
+  bb.post("TOOL_RESULT", {{"id","c1"},{"ok",true},{"content",{{"content","DATA"}}}}, "tool_runner");
+  bb.pump();
+  EXPECT_FALSE(rotated);                                  // the running turn is not split
+  ASSERT_GE(reqs.size(), 2u);
+  const auto& msgs = reqs.back()["messages"];
+  bool paired = false;
+  for (std::size_t i = 0; i + 1 < msgs.size(); ++i)
+    if (msgs[i].value("role","") == "assistant" && msgs[i].contains("tool_calls") &&
+        msgs[i+1].value("role","") == "tool")
+      paired = true;
+  EXPECT_TRUE(paired);                                    // the pair survived the boundary
+  // The NEXT user turn is the one that rotates.
+  bb.post("LLM_RESPONSE", {{"text","done"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("USER_MESSAGE", "next", "chat"); bb.pump();
+  EXPECT_TRUE(rotated);
+}
+
+// `/new` names the fresh file from the session's logical DAY (not a launch timestamp), and must
+// NOT move that day: comparing the rollover against the FILE STEM ("2026-09-06-1") instead of the
+// base id would make every later turn believe the day had changed and rotate forever.
+TEST(Arbiter, NewSessionKeepsTheLogicalDayAndSuffixesTheFile) {
+  const std::string dir = fresh_dir("dayroll_newsession_sameday");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  int rotations = 0;
+  bb.subscribe("SESSION_ROTATED", [&](const Entry&) { ++rotations; });
+  a.set_clock([] { return local_at(2026, 9, 6, 12, 0); });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "before", "chat"); bb.pump();                        // epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("NEW_SESSION", nlohmann::json::object(), "chat"); bb.pump();         // epoch -> 2
+  // Three same-day turns after the `/new`: none of them may rotate again.
+  for (int i = 0; i < 3; ++i) {
+    bb.post("USER_MESSAGE", "after " + std::to_string(i), "chat"); bb.pump();
+    bb.post("LLM_RESPONSE", {{"text","ack"},{"epoch", 3 + i}}, "llm"); bb.pump();
+  }
+  EXPECT_EQ(rotations, 1);                                          // only the `/new` itself
+  EXPECT_EQ(jsonl_lines(dir + "/2026-09-06.jsonl").size(), 2u);     // pre-/new turn only
+  EXPECT_EQ(jsonl_lines(dir + "/2026-09-06-1.jsonl").size(), 6u);   // the three post-/new turns
+  EXPECT_FALSE(std::filesystem::exists(dir + "/2026-09-06-2.jsonl"));
 }
 
 TEST(Arbiter, MergesKeywordAndSemanticMemoryDeduped) {

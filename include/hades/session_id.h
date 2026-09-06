@@ -3,7 +3,8 @@
 // A session is a DAY, not a process launch: current_session_id() stamps the logical date
 // ("YYYY-MM-DD") of the current local clock, so a restart mid-day resolves to the SAME file and
 // rejoins the morning's conversation. make_session_id() ("YYYYMMDD-HHMMSS") is the older
-// launch-stamp id, still used by the Arbiter's `/new` rotation. The binary may read the wall
+// launch-stamp id, kept for reading pre-upgrade sessions but no longer used to NAME one (`/new`
+// now rotates to a same-day sibling of the logical date). The binary may read the wall
 // clock (only workflow scripts forbid it). resolve_session_path() turns the `--resume [id]` CLI +
 // the Session block's sessions_dir into one jsonl path:
 //   - new session (boot)  -> dir/<new_id>.jsonl  (OnCollision decides what an existing file means)
@@ -28,7 +29,8 @@ std::string logical_date(std::time_t t, int cutoff_hour);
 // logical_date() of the current local clock — the session id at boot and at daily rollover.
 std::string current_session_id(int cutoff_hour);
 
-// Launch timestamp id, e.g. "20260630-221544" (local time). Collision-safe for human-paced launches.
+// Launch timestamp id, e.g. "20260630-221544" (local time). The pre-daily-session id shape; no
+// production caller mints one any more (kept: it documents the shape resume/search still read).
 std::string make_session_id();
 
 // First NON-EXISTING path among dir/<id>.jsonl, dir/<id>-1.jsonl, dir/<id>-2.jsonl, … (capped),
