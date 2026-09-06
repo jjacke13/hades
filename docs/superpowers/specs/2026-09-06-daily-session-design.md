@@ -62,6 +62,19 @@ Rotation does exactly what `NEW_SESSION` already does, plus the session path:
 - switch the append path to the new logical date's file
 - post **`SESSION_ROTATED { from, to, path }`**
 
+**Known gap: rotation never rejoins an existing file for the new day.** "Switch the append path to
+the new logical date's file" is really *to a FRESH file for the new logical date* — the switch goes
+through `unique_fresh_path`, so an already-existing `<new day>.jsonl` is suffixed rather than
+rejoined. Process A boots 09-06 23:00 and idles; a second short-lived hades runs at 09-07 06:00,
+creates `2026-09-07.jsonl` and exits; A's first turn at 10:00 rotates and lands on
+`2026-09-07-1.jsonl`. The day ends in two files where a plain restart of A would have rejoined one
+(the boot path's `OnCollision::Reuse` — the rejoin-today's-file feature — has no counterpart here).
+
+Left as is deliberately: rejoining would append into a conversation the freshly-cleared `history_`
+does not contain, so the process would write into a transcript it cannot see — exactly the
+interleaving the boot lock exists to prevent. Fixing it properly means loading the existing file
+into `history_` on rotation, which is a different feature (a mid-run resume), not a rotation tweak.
+
 ## Embeddings — the one non-obvious interaction
 
 `EmbeddingMemoryModule` excludes the **live** session from its index, and that exclusion is

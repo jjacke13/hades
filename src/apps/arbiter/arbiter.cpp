@@ -152,7 +152,7 @@ void Arbiter::on_attach(Blackboard& bb) {
   // no day set either (a bare test Arbiter) it falls back to today's logical date.
   bb.subscribe("NEW_SESSION", [this](const Entry&) {
     rotate_session_(id_gen_ ? id_gen_()
-                            : (session_day_.empty() ? current_session_id(day_cutoff_hour_)
+                            : (session_day_.empty() ? logical_date(now_(), day_cutoff_hour_)
                                                     : session_day_));
   });
 }
@@ -197,18 +197,22 @@ void Arbiter::rotate_session_(const std::string& id) {
             "arbiter");
 }
 
+// The ONE wall-clock read in this file, behind the injected seam (set_clock). Every clock-reading
+// path goes through it so an injected clock can never be bypassed by a later caller.
+std::time_t Arbiter::now_() const { return clock_ ? clock_() : std::time(nullptr); }
+
 // Lazy daily rollover: a session is a DAY, so a process running across the cutoff must move on to
 // the new day's file. Compared against session_day_ (the base id), never against the file stem —
 // after a `/new` the stem is "2026-09-06-1" but the day is still "2026-09-06". An unset day means
-// nobody told us which day this session belongs to (a bare test Arbiter): adopt today's and never
-// rotate on the first turn.
+// nobody told us which day this session belongs to (a bare test Arbiter): there is no session to
+// roll, so return before reading a clock at all. Adopting today's date here instead would ARM the
+// rollover for later — two turns of a bare Arbiter straddling real local 04:00 would then clear
+// history_, bump the epoch and move the append path, a failure a nightly run makes plausible and
+// which would look random.
 void Arbiter::maybe_roll_day_() {
-  const std::string today =
-      logical_date(clock_ ? clock_() : std::time(nullptr), day_cutoff_hour_);
-  if (session_day_.empty() || today == session_day_) {
-    session_day_ = today;
-    return;
-  }
+  if (session_day_.empty()) return;
+  const std::string today = logical_date(now_(), day_cutoff_hour_);
+  if (today == session_day_) return;
   rotate_session_(today);
   session_day_ = today;
 }

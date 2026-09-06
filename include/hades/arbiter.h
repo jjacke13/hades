@@ -55,7 +55,8 @@ public:
   // resolved from at boot. The rollover check compares today's logical date against THIS, never
   // against the file stem: after a `/new` the file is "2026-09-06-1" while the day is still
   // "2026-09-06", and comparing against the stem would rotate on every later turn forever.
-  // Unset -> the first turn adopts today's date (no rotation), so tests need not set it.
+  // Unset -> no session to roll: the check returns immediately and NO turn ever rotates, so tests
+  // need not set it (and a bare Arbiter cannot rotate by straddling the real cutoff).
   void set_session_day(std::string d) { session_day_ = std::move(d); }
   // Inject the wall clock the rollover check reads (test seam: cross a day boundary without
   // waiting). Unset -> std::time(nullptr).
@@ -76,6 +77,9 @@ private:
   // A session is a DAY: re-derive today's logical date and rotate if it moved. Called at the top
   // of a NEW user turn only (the USER_MESSAGE handler says why not in start_turn()).
   void maybe_roll_day_();
+  // The single wall-clock read: clock_ when injected, std::time(nullptr) otherwise. Every
+  // clock-reading path calls this, so injecting a clock is never silently bypassed.
+  std::time_t now_() const;
   // Rotate onto a fresh session file named from `id`: clear the conversation + compaction state,
   // bump the turn epoch, CLAIM the first free dir/<id>[-N].jsonl (same advisory lock the boot path
   // takes) and post SESSION_ROTATED. Shared by `/new` (id = the current logical day -> a same-day

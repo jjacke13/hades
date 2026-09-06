@@ -20,7 +20,9 @@
 #include "hades/arbiter.h"
 #include "hades/blackboard.h"
 #include "hades/compact/compact.h"   // serialize/parse_summary_sidecar, SidecarSummary (compaction tests)
+#include "hades/launcher.h"          // MalConfig (rotation lock-claim test)
 #include "hades/objective/avoid_destructive.h"
+#include "hades/session_id.h"        // lock_session_file, OnHeld (rotation lock-claim test)
 using namespace hades;
 
 namespace {
@@ -983,7 +985,8 @@ TEST(Arbiter, NewSessionKeepsTheLogicalDayAndSuffixesTheFile) {
   Blackboard bb; Arbiter a; a.on_attach(bb);
   int rotations = 0;
   bb.subscribe("SESSION_ROTATED", [&](const Entry&) { ++rotations; });
-  a.set_clock([] { return local_at(2026, 9, 6, 12, 0); });
+  std::time_t now = local_at(2026, 9, 6, 12, 0);
+  a.set_clock([&] { return now; });
   a.set_day_cutoff_hour(4);
   a.set_session_dir(dir);
   a.set_session_day("2026-09-06");
@@ -1000,6 +1003,108 @@ TEST(Arbiter, NewSessionKeepsTheLogicalDayAndSuffixesTheFile) {
   EXPECT_EQ(jsonl_lines(dir + "/2026-09-06.jsonl").size(), 2u);     // pre-/new turn only
   EXPECT_EQ(jsonl_lines(dir + "/2026-09-06-1.jsonl").size(), 6u);   // the three post-/new turns
   EXPECT_FALSE(std::filesystem::exists(dir + "/2026-09-06-2.jsonl"));
+  // ...and the other half of the same regression: a REAL day change after the `/new` must still
+  // rotate, exactly once. The comparison runs against the stored base id ("2026-09-06"), not the
+  // "-1"-suffixed filename — a stem comparison would already have rotated on each turn above, and
+  // a `/new` that had moved session_day_ would not rotate here at all.
+  now = local_at(2026, 9, 7, 4, 0);
+  bb.post("USER_MESSAGE", "next day", "chat"); bb.pump();           // rotate -> 6, turn -> 7
+  bb.post("LLM_RESPONSE", {{"text","ack"},{"epoch",7}}, "llm"); bb.pump();
+  EXPECT_EQ(rotations, 2);                                          // the `/new` + one rollover
+  EXPECT_EQ(jsonl_lines(dir + "/2026-09-06-1.jsonl").size(), 6u);   // closed, not appended to
+  EXPECT_EQ(jsonl_lines(dir + "/2026-09-07.jsonl").size(), 2u);     // the new day's own file
+}
+
+// An Arbiter with NO session day has no session to roll, so it must never rotate — not on the
+// first turn, and not on a later one either. The check returns before reading a clock at all:
+// adopting today's date on the first turn would ARM the rollover, and a bare Arbiter whose turns
+// straddle the cutoff would then silently wipe history_ and move its append path.
+TEST(Arbiter, NoSessionDayNeverRotates) {
+  const std::string dir = fresh_dir("dayroll_no_day");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  bool rotated = false;
+  bb.subscribe("SESSION_ROTATED", [&](const Entry&) { rotated = true; });
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_path(dir + "/bare.jsonl");
+  // No set_session_day: the shape every pre-daily-session test uses.
+  bb.post("USER_MESSAGE", "one", "chat"); bb.pump();                           // epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();
+  now = local_at(2026, 9, 7, 12, 0);                                 // a whole day later
+  bb.post("USER_MESSAGE", "two", "chat"); bb.pump();                           // epoch -> 2
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",2}}, "llm"); bb.pump();
+  EXPECT_FALSE(rotated);
+  EXPECT_EQ(a.history_size(), 4u);                                   // the conversation survived
+  EXPECT_EQ(jsonl_lines(dir + "/bare.jsonl").size(), 4u);            // one file, still appended to
+}
+
+// Compaction's sidecar follows the rotation: on_session_summary derives both its session-id guard
+// and the sidecar path from session_path_, which rotation moved, so the new day's summary is
+// written next to the NEW jsonl, is found there on resume, and yesterday's sidecar is untouched.
+TEST(Arbiter, RotationMovesTheCompactionSidecarToTheNewSession) {
+  const std::string dir = fresh_dir("dayroll_sidecar");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  bb.post("USER_MESSAGE", "yesterday", "chat"); bb.pump();                     // epoch -> 1
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();
+  bb.post("SESSION_SUMMARY", {{"session","2026-09-06"},{"upto",1},{"text","yesterday's summary"}},
+          "compactor"); bb.pump();
+  const std::string old_sc = dir + "/2026-09-06.summary.md";
+  ASSERT_TRUE(std::filesystem::exists(old_sc));
+  now = local_at(2026, 9, 7, 4, 0);
+  bb.post("USER_MESSAGE", "today", "chat"); bb.pump();                         // rotate -> 2, turn -> 3
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",3}}, "llm"); bb.pump();
+  bb.post("SESSION_SUMMARY", {{"session","2026-09-07"},{"upto",1},{"text","today's summary"}},
+          "compactor"); bb.pump();
+  auto slurp = [](const std::string& p) {
+    std::ifstream f(p); std::stringstream ss; ss << f.rdbuf(); return ss.str();
+  };
+  const std::string new_sc = dir + "/2026-09-07.summary.md";
+  ASSERT_TRUE(std::filesystem::exists(new_sc));                      // written beside the NEW jsonl
+  const SidecarSummary fresh = parse_summary_sidecar(slurp(new_sc));
+  EXPECT_EQ(fresh.upto, 1u);
+  EXPECT_EQ(fresh.text, "today's summary");
+  EXPECT_EQ(parse_summary_sidecar(slurp(old_sc)).text, "yesterday's summary");   // untouched
+  // Read back the way a resume does: load_history() finds the sidecar at the new session's path
+  // and folds it into the next request.
+  Blackboard bb2; Arbiter b; b.on_attach(bb2);
+  std::vector<nlohmann::json> reqs;
+  bb2.subscribe("LLM_REQUEST", [&](const Entry& e) { reqs.push_back(e.value); });
+  b.set_session_path(dir + "/2026-09-07.jsonl");
+  b.load_history();
+  bb2.post("USER_MESSAGE", "resumed", "chat"); bb2.pump();
+  ASSERT_EQ(reqs.size(), 1u);
+  bool folded = false;
+  for (const auto& m : reqs.back()["messages"])
+    if (m.value("role","") == "system" &&
+        m.value("content", std::string()).find("today's summary") != std::string::npos)
+      folded = true;
+  EXPECT_TRUE(folded);
+}
+
+// Rotation CLAIMS the new file with the same advisory lock the boot path takes — without it the
+// exclusivity the boot lock establishes would silently lapse at the first rollover (the process
+// would hold yesterday's lock and none on today's file). flock conflicts across distinct file
+// descriptors even inside one process, so a second claim on the rotated path must throw.
+TEST(Arbiter, RotationClaimsTheNewSessionFileLock) {
+  const std::string dir = fresh_dir("dayroll_lock");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  std::time_t now = local_at(2026, 9, 6, 23, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_day("2026-09-06");
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  now = local_at(2026, 9, 7, 4, 0);
+  bb.post("USER_MESSAGE", "morning", "chat"); bb.pump();
+  EXPECT_THROW(lock_session_file(dir + "/2026-09-07.jsonl", OnHeld::Fail), MalConfig);
 }
 
 TEST(Arbiter, MergesKeywordAndSemanticMemoryDeduped) {
