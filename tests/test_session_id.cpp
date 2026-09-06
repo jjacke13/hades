@@ -3,10 +3,14 @@
 // make_session_id() returns a "YYYYMMDD-HHMMSS" launch stamp; resolve_session_path()
 // returns a SessionResolution{path, fresh_fallback}: a collision-safe NEW file when not
 // resuming (a `-N` suffix when same-second files already exist), a NAMED file on
-// `--resume <id>` (MalConfig if absent), the lexical-newest file on `--resume`, or a
+// `--resume <id>` (MalConfig if absent), the most recently modified file on `--resume`, or a
 // fresh path with fresh_fallback=true when `--resume` finds an empty/missing directory.
 
+#include <fcntl.h>     // open (the "other live hades" stand-in in the lock tests)
+#include <sys/file.h>  // flock
+#include <unistd.h>    // close
 #include <cctype>
+#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -76,7 +80,7 @@ TEST(SessionId, ResolveNewestSession) {
   touch(dir + "/20260630-090000.jsonl");
   touch(dir + "/20260630-100000.jsonl");
   const auto sr = resolve_session_path(dir, /*resume=*/true, "", "");
-  EXPECT_EQ(sr.path, dir + "/20260630-100000.jsonl");  // lexical-max == newest timestamp
+  EXPECT_EQ(sr.path, dir + "/20260630-100000.jsonl");  // written second -> newest mtime
   EXPECT_FALSE(sr.fresh_fallback);
 }
 
@@ -155,4 +159,89 @@ TEST(SessionId, DailyBootCreatesTodaysFileWhenAbsent) {
   const auto sr = resolve_session_path(dir, /*resume=*/false, "", "2026-09-06", OnCollision::Reuse);
   EXPECT_EQ(sr.path, dir + "/2026-09-06.jsonl");
   EXPECT_FALSE(sr.fresh_fallback);
+}
+
+// ── bare `--resume` picks the newest by MTIME, not by filename ──────────────────────────
+// The two id shapes do not sort together: at index 4 a date id has '-' (0x2D) and a launch stamp
+// a digit (0x30+), so every "YYYY-MM-DD.jsonl" sorts BELOW every "YYYYMMDD-HHMMSS.jsonl" — a
+// lexical pick would resume a pre-upgrade July session forever, no matter how new the date file.
+TEST(SessionId, ResumeNoIdPicksNewestByMtimeNotFilename) {
+  namespace fs = std::filesystem;
+  const std::string dir = fresh_dir("mtimeorder");
+  const std::string old_stamp = dir + "/20260720-191734.jsonl";  // lexically the MAX
+  const std::string today = dir + "/2026-09-06.jsonl";           // but written far more recently
+  touch(old_stamp);
+  touch(today);
+  const auto now = fs::file_time_type::clock::now();
+  fs::last_write_time(old_stamp, now - std::chrono::hours(48));
+  fs::last_write_time(today, now - std::chrono::hours(1));
+
+  const auto sr = resolve_session_path(dir, /*resume=*/true, "", "");
+  EXPECT_EQ(sr.path, today);  // newest by mtime wins over the lexically larger old-format name
+  EXPECT_FALSE(sr.fresh_fallback);
+}
+
+// Equal mtimes (coarse filesystem stamps) must still resolve deterministically: filename breaks
+// the tie, so the pick never depends on directory-iteration order.
+TEST(SessionId, ResumeNoIdBreaksMtimeTiesOnFilename) {
+  namespace fs = std::filesystem;
+  const std::string dir = fresh_dir("mtimetie");
+  touch(dir + "/2026-09-05.jsonl");
+  touch(dir + "/2026-09-06.jsonl");
+  const auto same = fs::file_time_type::clock::now() - std::chrono::hours(2);
+  fs::last_write_time(dir + "/2026-09-05.jsonl", same);
+  fs::last_write_time(dir + "/2026-09-06.jsonl", same);
+
+  const auto sr = resolve_session_path(dir, /*resume=*/true, "", "");
+  EXPECT_EQ(sr.path, dir + "/2026-09-06.jsonl");
+}
+
+// ── lock_session_file: a concurrently LIVE process never shares the file ────────────────
+// flock locks belong to the open file description, so a SECOND open() of the same file is denied
+// even from within this process — which is exactly what a second hades looks like to the kernel,
+// and lets the divert path be tested without spawning one.
+TEST(SessionId, LockedSessionFileDivertsToAFreeSibling) {
+  const std::string dir = fresh_dir("locked");
+  const std::string today = dir + "/2026-09-06.jsonl";
+  touch(today);
+  const int held = ::open(today.c_str(), O_RDWR);  // stand-in for the other live hades
+  ASSERT_GE(held, 0);
+  ASSERT_EQ(::flock(held, LOCK_EX | LOCK_NB), 0);
+
+  EXPECT_EQ(lock_session_file(today), dir + "/2026-09-06-1.jsonl");  // diverted, not shared
+  ::close(held);
+}
+
+// The whole point of the day-session feature: a DEAD process released its lock, so an unheld file
+// is returned untouched and the restart rejoins this morning's conversation.
+TEST(SessionId, UnheldSessionFileIsClaimedAsIs) {
+  const std::string dir = fresh_dir("unheld");
+  const std::string today = dir + "/2026-09-06.jsonl";
+  touch(today);
+  EXPECT_EQ(lock_session_file(today), today);
+}
+
+// A missing sessions_dir (first boot ever) is created, not misreported as a lock conflict.
+TEST(SessionId, MissingSessionsDirIsCreatedAndClaimed) {
+  const std::string dir = fresh_dir("mkdir") + "/nested";
+  const std::string today = dir + "/2026-09-06.jsonl";
+  EXPECT_EQ(lock_session_file(today), today);
+  EXPECT_TRUE(std::filesystem::exists(today));
+}
+
+// …but a NAMED `--resume <id>` asked for THAT session specifically: handing back a different file
+// is the surprise, and it would be inconsistent with the `--resume <absent-id>` MalConfig. It must
+// fail loudly instead of diverting. (Bare `--resume` keeps diverting — it means "newest, whatever
+// that is", which LockedSessionFileDivertsToAFreeSibling covers.)
+TEST(SessionId, NamedResumeOfAHeldSessionThrowsInsteadOfDiverting) {
+  const std::string dir = fresh_dir("heldnamed");
+  const std::string named = dir + "/2026-09-04.jsonl";
+  touch(named);
+  const int held = ::open(named.c_str(), O_RDWR);  // stand-in for the other live hades
+  ASSERT_GE(held, 0);
+  ASSERT_EQ(::flock(held, LOCK_EX | LOCK_NB), 0);
+
+  EXPECT_THROW(lock_session_file(named, OnHeld::Fail), MalConfig);
+  EXPECT_FALSE(std::filesystem::exists(dir + "/2026-09-04-1.jsonl"));  // no silent substitute
+  ::close(held);
 }

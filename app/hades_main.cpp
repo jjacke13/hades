@@ -17,7 +17,7 @@
 #include "hades/history_budget.h"  // kDefaultHistoryBudgetChars
 #include "hades/launcher.h"  // MalConfig
 #include "hades/serve_config.h"
-#include "hades/session_id.h"  // current_session_id, resolve_session_path
+#include "hades/session_id.h"  // current_session_id, resolve_session_path, lock_session_file
 using namespace hades;
 
 namespace {
@@ -115,7 +115,15 @@ int main(int argc, char** argv) {
     const std::string new_id = current_session_id(kDefaultDayCutoffHour);
     const SessionResolution sr =
         resolve_session_path(sessions_dir, resume, resume_id, new_id, OnCollision::Reuse);
-    const std::string session_path = sr.path;
+    // Then CLAIM it. Reuse means a resolved path is no longer ours by construction: two hades with
+    // the same sessions_dir (dev.local + dev2, both launched from the repo root) resolve to one
+    // dir/<today>.jsonl, which would interleave their appends and load each conversation into the
+    // other. lock_session_file holds an advisory lock for the process lifetime; a dead process
+    // released its lock, so the rejoin-on-restart behaviour this feature exists for is unaffected.
+    // A named `--resume <id>` asked for ONE session, so a live holder is a hard error (OnHeld::Fail,
+    // like the absent-id MalConfig); the default boot path and bare `--resume` take a `-N` sibling.
+    const std::string session_path =
+        lock_session_file(sr.path, resume_id.empty() ? OnHeld::Divert : OnHeld::Fail);
     // fresh_fallback is set ONLY when a resume found nothing to resume (explicit flag, not a
     // string compare — a new session's `-N` collision suffix no longer breaks this note).
     if (sr.fresh_fallback)

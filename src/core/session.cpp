@@ -4,9 +4,13 @@
 // unique_fresh_path, --resume resolution) + session_history (tolerant per-session
 // jsonl reader shared by the Arbiter's load_history and GET /history).
 
+#include <fcntl.h>     // open
+#include <sys/file.h>  // flock
+#include <unistd.h>    // close
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -89,19 +93,90 @@ SessionResolution resolve_session_path(const std::string& dir, bool resume,
     return {named, false};
   }
 
-  // resume with no id: pick the lexical-MAX *.jsonl filename (== newest timestamp). All entries
-  // share the .jsonl suffix, so the full filename ordering matches the stem ordering.
+  // resume with no id: pick the most recently MODIFIED *.jsonl. Ordering by filename is wrong now
+  // that two id shapes coexist — at index 4 a date id has '-' (0x2D) and a launch stamp a digit
+  // (0x30+), so EVERY "YYYY-MM-DD.jsonl" sorts below EVERY "YYYYMMDD-HHMMSS.jsonl" and a bare
+  // `--resume` would append today's turns to a pre-upgrade session forever. mtime is what "newest"
+  // means and is format-independent. An unreadable stamp sorts oldest; equal stamps (coarse
+  // filesystem granularity) break the tie on filename, so the pick is always deterministic.
   std::error_code ec;
   std::string newest;  // filename only
+  fs::file_time_type newest_mtime = fs::file_time_type::min();
   for (const auto& entry : fs::directory_iterator(dir, ec)) {
     if (!entry.is_regular_file()) continue;
     if (entry.path().extension() != ".jsonl") continue;
     const std::string fn = entry.path().filename().string();
-    if (fn > newest) newest = fn;
+    std::error_code tec;
+    fs::file_time_type mtime = entry.last_write_time(tec);
+    if (tec) mtime = fs::file_time_type::min();
+    if (newest.empty() || mtime > newest_mtime || (mtime == newest_mtime && fn > newest)) {
+      newest = fn;
+      newest_mtime = mtime;
+    }
   }
   // Nothing to resume (none found / dir missing) -> fresh path AND signal the fallback explicitly.
   if (newest.empty()) return {unique_fresh_path(dir, new_id), true};
   return {dir + "/" + newest, false};
+}
+
+namespace {
+constexpr int kHeldByOther = -1;  // flock refused: another LIVE process owns this file
+constexpr int kCannotOpen = -2;   // open() itself failed (perms) — locking is moot, not a conflict
+
+// Open (creating if absent) + exclusively flock `path`, non-blocking. Returns the fd on success —
+// INTENTIONALLY leaked by the caller, because flock is released by the last close of the open file
+// description (and by process exit), so "hold the lock for the process lifetime" is spelled "never
+// close the fd".
+int open_locked(const std::string& path) {
+  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  if (fd < 0) return kCannotOpen;
+  if (::flock(fd, LOCK_EX | LOCK_NB) == 0) return fd;  // ours until we exit
+  ::close(fd);
+  return kHeldByOther;
+}
+}  // namespace
+
+std::string lock_session_file(const std::string& path, OnHeld on_held) {
+  if (path.empty()) return path;
+  namespace fs = std::filesystem;
+  const fs::path p(path);
+  std::error_code ec;
+  if (!p.parent_path().empty()) fs::create_directories(p.parent_path(), ec);  // first boot ever
+  // Ours now (fd leaked on purpose), or unopenable — an unwritable sessions_dir is not a conflict
+  // and gets reported by the first append; only a real lock conflict may divert the path.
+  if (open_locked(path) != kHeldByOther) return path;
+
+  // An explicit `--resume <id>` asked for THIS session; quietly handing back a DIFFERENT one is
+  // the surprising outcome, and inconsistent with the `--resume <absent-id>` MalConfig right next
+  // to it in resolve_session_path — an explicit request that cannot be honoured should fail loudly.
+  // The default boot path and bare `--resume` ("newest, whatever that is") express no preference,
+  // so they divert instead.
+  if (on_held == OnHeld::Fail)
+    throw MalConfig("session is open in another running hades: " + path);
+
+  // Taken by a LIVE hades (a dead one released its lock, so a plain restart still rejoins today's
+  // file). Divert to a private `-N` sibling. Re-checking the lock each iteration is load-bearing,
+  // not paranoia: two hades booting together both see the same free suffix before either has
+  // created it, and the loser must take the next one instead of silently sharing.
+  const std::string dir = p.parent_path().empty() ? std::string(".") : p.parent_path().string();
+  std::string alt = path;
+  for (int tries = 0; tries < 16; ++tries) {
+    const std::string cand = unique_fresh_path(dir, p.stem().string());
+    if (cand == path) break;  // suffix space exhausted (10k files) — nothing free to divert to
+    if (open_locked(cand) >= 0) {
+      alt = cand;
+      break;
+    }
+  }
+  // Always say it: a session silently splitting in two is exactly the kind of divergence that is
+  // impossible to diagnose after the fact, so name both paths.
+  if (alt == path)
+    std::cerr << "hades: session file " << path << " is held by another running hades and no free"
+              << " sibling remains; sharing it (appends WILL interleave)\n";
+  else
+    std::cerr << "hades: session file " << path << " is held by another running hades; using "
+              << alt << " instead\n";
+  return alt;
 }
 
 }  // namespace hades

@@ -8,7 +8,7 @@
 // the Session block's sessions_dir into one jsonl path:
 //   - new session (boot)  -> dir/<new_id>.jsonl  (OnCollision decides what an existing file means)
 //   - resume <id>         -> dir/<id>.jsonl   (throws MalConfig if that file is absent)
-//   - resume (no id)      -> the lexical-newest dir/*.jsonl; fresh dir/<new_id>.jsonl if none.
+//   - resume (no id)      -> the most recently MODIFIED dir/*.jsonl; fresh dir/<new_id>.jsonl if none.
 
 #pragma once
 #include <ctime>
@@ -32,8 +32,9 @@ std::string current_session_id(int cutoff_hour);
 std::string make_session_id();
 
 // First NON-EXISTING path among dir/<id>.jsonl, dir/<id>-1.jsonl, dir/<id>-2.jsonl, … (capped),
-// so two sessions resolving to the same `id` never share one jsonl and interleave. Used by the
-// Arbiter's `/new` rotation (a deliberate fresh context mid-day -> dir/<date>-2.jsonl).
+// so two sessions resolving to the same `id` never share one jsonl and interleave. Called by
+// resolve_session_path (its Suffix collision policy, and its nothing-to-resume fallback), by the
+// Arbiter's `/new` rotation, and by lock_session_file when a live process already holds the file.
 std::string unique_fresh_path(const std::string& dir, const std::string& id);
 
 // What an EXISTING dir/<new_id>.jsonl means for a new (non-resume) session. The two boot-shaped
@@ -58,5 +59,24 @@ struct SessionResolution {
 SessionResolution resolve_session_path(const std::string& dir, bool resume,
                                        const std::string& id, const std::string& new_id,
                                        OnCollision on_collision = OnCollision::Suffix);
+
+// What a HELD file means to the caller — same shape as OnCollision above: the two callers want
+// opposite things from one lock conflict, so it is a parameter, not a policy.
+enum class OnHeld {
+  Divert,  // "any usable session will do": default boot + bare `--resume` -> take a free `-N`
+  Fail,    // "THIS session or nothing": `--resume <id>` named it -> MalConfig
+};
+
+// Claim `path` for THIS process with an exclusive advisory lock (flock LOCK_EX|LOCK_NB) and return
+// the path actually claimed. OnCollision::Reuse dropped the old guarantee that a resolved path was
+// ours alone — two hades sharing a sessions_dir now resolve to the SAME dir/<today>.jsonl, and
+// sharing it interleaves their appends (an assistant(tool_calls) and its `tool` result land apart,
+// which load_history only repairs at the ENDS of a file -> a provider 400 on every turn) besides
+// loading each agent's whole conversation into the other. So: lock it, and when a LIVE process
+// already holds it, either divert to the first free `-N` sibling (saying so on stderr) or throw,
+// per `on_held`. A DEAD process has released its lock, so the point of the feature — a restart
+// rejoins today's file — is untouched. The lock is held by keeping the fd open for the process
+// lifetime (see the .cpp). Throws MalConfig on a held file when `on_held == OnHeld::Fail`.
+std::string lock_session_file(const std::string& path, OnHeld on_held = OnHeld::Divert);
 
 }  // namespace hades
