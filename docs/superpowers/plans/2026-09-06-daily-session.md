@@ -199,6 +199,16 @@ stale on every rollover — same bug class, one fix pattern, so one task owns th
    NOT a one-line hook: pump-thread write vs httplib-thread read needs the same mutex treatment and
    the same TSan gate as (1).
 
+4. **Release the OLD file's flock on rotation.** Carried over from the Task 2 review: `rotate_session_`
+   claims the new path via `lock_session_file` but the old fd is never released, because that
+   function keeps its fd for the process lifetime and does not hand it back. Two costs: one leaked
+   fd per rotation (trivial), and — the real one — a **closed** session stays locked, so another
+   process doing `--resume <yesterday>` hard-fails with "session is open in another running hades"
+   for a session nobody occupies. Needs a Task-1 signature change: return an RAII handle, or add an
+   explicit release. Note the trap the Task 2 fixer found: because the fd is held for the process
+   lifetime, any code that probes a path with `lock_session_file` before rotating will make the
+   rotation divert to `-N`.
+
 Two notes from the reviewer that bind this task:
 - **Ignore an empty `path` in `SESSION_ROTATED`.** With an empty `sessions_dir` the event carries
   `{to:"", path:""}`; a subscriber assigning it blindly would DISABLE the exclusion entirely.
