@@ -1,23 +1,47 @@
 // include/hades/session_id.h — session-id generation + per-session jsonl path resolution
 //
-// make_session_id() stamps a launch id from the real local clock ("YYYYMMDD-HHMMSS");
-// the binary may read the wall clock (only workflow scripts forbid it). resolve_session_path()
-// turns the `--resume [id]` CLI + the Session block's sessions_dir into one jsonl path:
-//   - new session       -> dir/<new_id>.jsonl  (first free `-N` suffix if that file exists)
-//   - resume <id>        -> dir/<id>.jsonl   (throws MalConfig if that file is absent)
-//   - resume (no id)     -> the lexical-newest dir/*.jsonl; fresh dir/<new_id>.jsonl if none.
+// A session is a DAY, not a process launch: current_session_id() stamps the logical date
+// ("YYYY-MM-DD") of the current local clock, so a restart mid-day resolves to the SAME file and
+// rejoins the morning's conversation. make_session_id() ("YYYYMMDD-HHMMSS") is the older
+// launch-stamp id, still used by the Arbiter's `/new` rotation. The binary may read the wall
+// clock (only workflow scripts forbid it). resolve_session_path() turns the `--resume [id]` CLI +
+// the Session block's sessions_dir into one jsonl path:
+//   - new session (boot)  -> dir/<new_id>.jsonl  (OnCollision decides what an existing file means)
+//   - resume <id>         -> dir/<id>.jsonl   (throws MalConfig if that file is absent)
+//   - resume (no id)      -> the lexical-newest dir/*.jsonl; fresh dir/<new_id>.jsonl if none.
 
 #pragma once
+#include <ctime>
 #include <string>
 namespace hades {
+
+// Local hour a session "day" begins. 4 = 04:00, so 03:59 still belongs to yesterday; 0 = plain
+// calendar midnight. The `Session.day_cutoff_hour` manifest key defaults to this.
+inline constexpr int kDefaultDayCutoffHour = 4;
+
+// Logical session date for an instant, as "YYYY-MM-DD". A session "day" runs from `cutoff_hour`
+// to the same hour next day, LOCAL time, so anything before the cutoff belongs to the previous day
+// (03:59 with cutoff 4 is still yesterday). cutoff_hour 0 = plain calendar date. Out-of-range
+// cutoffs are clamped to [0,23] here so a bad config can never shift the date wildly.
+std::string logical_date(std::time_t t, int cutoff_hour);
+
+// logical_date() of the current local clock — the session id at boot and at daily rollover.
+std::string current_session_id(int cutoff_hour);
 
 // Launch timestamp id, e.g. "20260630-221544" (local time). Collision-safe for human-paced launches.
 std::string make_session_id();
 
 // First NON-EXISTING path among dir/<id>.jsonl, dir/<id>-1.jsonl, dir/<id>-2.jsonl, … (capped),
-// so two sessions resolving to the same `id` in the same wall-clock second never share one jsonl
-// and interleave. Used by both the initial resolve_session_path and the Arbiter's `/new` rotation.
+// so two sessions resolving to the same `id` never share one jsonl and interleave. Used by the
+// Arbiter's `/new` rotation (a deliberate fresh context mid-day -> dir/<date>-2.jsonl).
 std::string unique_fresh_path(const std::string& dir, const std::string& id);
+
+// What an EXISTING dir/<new_id>.jsonl means for a new (non-resume) session. The two boot-shaped
+// callers want opposite things from the same collision, so it is a parameter, not a policy:
+enum class OnCollision {
+  Suffix,  // never share a file: take the first free `-N` (`/new`, and same-second launch ids)
+  Reuse,   // rejoin it: the daily boot path, where colliding with today's file IS the feature
+};
 
 // Result of resolving the per-session jsonl path. `fresh_fallback` is TRUE only when the caller
 // asked to resume but the directory was empty/missing, so a fresh path was substituted — the
@@ -28,10 +52,11 @@ struct SessionResolution {
 };
 
 // Resolve the conversation jsonl path. `new_id` seeds a fresh path (no resume, or resume with
-// nothing to resume); a NEW session that collides with an existing same-second file gets the first
-// free `dir/<new_id>-N.jsonl` so two launches never share one file. Throws MalConfig when
-// `resume && !id.empty()` but the named file is absent.
+// nothing to resume); `on_collision` decides whether an existing dir/<new_id>.jsonl is rejoined
+// (daily boot) or suffixed (never-share-a-file). Throws MalConfig when `resume && !id.empty()`
+// but the named file is absent.
 SessionResolution resolve_session_path(const std::string& dir, bool resume,
-                                       const std::string& id, const std::string& new_id);
+                                       const std::string& id, const std::string& new_id,
+                                       OnCollision on_collision = OnCollision::Suffix);
 
 }  // namespace hades

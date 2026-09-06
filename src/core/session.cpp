@@ -36,6 +36,28 @@ std::string unique_fresh_path(const std::string& dir, const std::string& id) {
   return base;  // 10k same-second collisions is not real; fall back to base rather than loop forever
 }
 
+// Logical session date: the calendar date of (t − cutoff_hour). Implemented by subtracting
+// SECONDS and letting localtime_r normalise — a hand-rolled day/month decrement gets 2026-01-01
+// and DST days wrong; the C library gets both right for free. The cutoff is clamped so a garbage
+// config can shift the date by at most a day, never wildly.
+// ponytail: the shift is 4 ELAPSED hours, so on a spring-forward DST day the boundary lands one
+// wall-clock hour late (04:30 still reads as yesterday). Once a year, invisible to a conversation;
+// wall-clock-exact would need a normalise-twice dance for no user-visible gain.
+std::string logical_date(std::time_t t, int cutoff_hour) {
+  if (cutoff_hour < 0) cutoff_hour = 0;
+  if (cutoff_hour > 23) cutoff_hour = 23;
+  const std::time_t shifted = t - static_cast<std::time_t>(cutoff_hour) * 3600;
+  std::tm tm_buf{};
+  localtime_r(&shifted, &tm_buf);  // POSIX, thread-safe (platform is linux)
+  char buf[16] = {};
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm_buf);  // 10 chars + NUL
+  return std::string(buf);
+}
+
+std::string current_session_id(int cutoff_hour) {
+  return logical_date(std::time(nullptr), cutoff_hour);
+}
+
 std::string make_session_id() {
   const std::time_t now = std::time(nullptr);
   std::tm tm_buf{};
@@ -46,10 +68,18 @@ std::string make_session_id() {
 }
 
 SessionResolution resolve_session_path(const std::string& dir, bool resume,
-                                       const std::string& id, const std::string& new_id) {
+                                       const std::string& id, const std::string& new_id,
+                                       OnCollision on_collision) {
   namespace fs = std::filesystem;
-  // New session: collision-safe fresh path (append creates it). Not a fallback — it's deliberate.
-  if (!resume) return {unique_fresh_path(dir, new_id), false};
+  // New session (append creates the file). Not a fallback — it's deliberate. What an EXISTING file
+  // for `new_id` MEANS is the caller's call, and the two callers disagree by design:
+  //   Reuse  — the daily boot path: `new_id` is today's logical date, so an existing file is this
+  //            morning's conversation and rejoining it is the entire point of the feature.
+  //   Suffix — never share a file: two sessions resolving one id get separate jsonls (`/new`).
+  if (!resume) {
+    if (on_collision == OnCollision::Reuse) return {dir + "/" + new_id + ".jsonl", false};
+    return {unique_fresh_path(dir, new_id), false};
+  }
 
   if (!id.empty()) {
     const std::string named = dir + "/" + id + ".jsonl";

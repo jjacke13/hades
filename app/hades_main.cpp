@@ -17,7 +17,7 @@
 #include "hades/history_budget.h"  // kDefaultHistoryBudgetChars
 #include "hades/launcher.h"  // MalConfig
 #include "hades/serve_config.h"
-#include "hades/session_id.h"  // make_session_id, resolve_session_path
+#include "hades/session_id.h"  // current_session_id, resolve_session_path
 using namespace hades;
 
 namespace {
@@ -97,9 +97,9 @@ int main(int argc, char** argv) {
     const std::string key = resolve_api_key(manifest);
 
     // Resolve the per-session conversation jsonl + the per-turn history budget from the Session
-    // block, then pick the file path from the --resume flag. Done BEFORE building the agent so a
-    // `--resume <missing-id>` fails fast (MalConfig -> caught below) before any heavy setup. The
-    // resolved path + budget are wired into the Arbiter after build_agent (REPL and --serve both).
+    // block, then pick the file path from today's logical date + the --resume flag. Done BEFORE
+    // building the agent so `--resume <missing-id>` fails fast (MalConfig -> caught below) before
+    // heavy setup. Path + budget are wired into the Arbiter after build_agent (REPL and --serve).
     auto session = manifest.session();  // resolve_api_key already verified it exists
     std::string sessions_dir = ".hades/sessions";
     double history_budget = kDefaultHistoryBudgetChars;
@@ -108,8 +108,13 @@ int main(int argc, char** argv) {
       if (session->kv.count("history_budget_chars"))
         set_pos_double_on_string(session->kv.at("history_budget_chars"), history_budget);
     }
-    const std::string new_id = make_session_id();
-    const SessionResolution sr = resolve_session_path(sessions_dir, resume, resume_id, new_id);
+    // A session is a DAY: the id is today's logical date, and OnCollision::Reuse says an existing
+    // file for it is this morning's conversation to REJOIN, not a collision to sidestep with a
+    // `-N` suffix. (`/new` keeps the suffixing contract — it rotates via unique_fresh_path.)
+    // TODO(task-3): read the cutoff from `Session.day_cutoff_hour` instead of the default.
+    const std::string new_id = current_session_id(kDefaultDayCutoffHour);
+    const SessionResolution sr =
+        resolve_session_path(sessions_dir, resume, resume_id, new_id, OnCollision::Reuse);
     const std::string session_path = sr.path;
     // fresh_fallback is set ONLY when a resume found nothing to resume (explicit flag, not a
     // string compare — a new session's `-N` collision suffix no longer breaks this note).
@@ -180,7 +185,10 @@ int main(int argc, char** argv) {
     // The --serve front-end reads the same session jsonl for GET /history (resumed-transcript
     // render). Null-guarded: a REPL-only roster omits `serve`. Same resolved path as the Arbiter.
     if (agent.serve) agent.serve->set_session_path(session_path);
-    if (resume) agent.arbiter->load_history();
+    // Unconditional now: with a per-day session id the no-flag path can land on today's EXISTING
+    // file (a restart mid-day), and that history must come back. load_history is tolerant of a
+    // missing file, so it is a no-op on the first launch of a new day.
+    agent.arbiter->load_history();
 
     // Telegram front-end: start the poll loop AFTER the full graph is wired (never inside
     // wire_agent — no surprise threads in tests). Runs alongside whichever blocking front-end
