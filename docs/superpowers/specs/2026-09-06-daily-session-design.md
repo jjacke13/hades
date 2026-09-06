@@ -99,8 +99,9 @@ default daily) picks up the closed day, which is what "as we have them now" mean
 
 ## `/new`
 
-Kept, and now yields a **same-day suffixed** session: `2026-09-06-2`, `-3`, … via the existing
-`unique_fresh_path`. So the rule is "one session per day *by default*", with a deliberate escape
+Kept, and now yields a **same-day suffixed** session: `2026-09-06-1`, `-2`, … via the existing
+`unique_fresh_path` (that helper is `-1`-based; an earlier draft of this spec said `-2`, which was
+wrong about the existing contract, not a requirement on it). So the rule is "one session per day *by default*", with a deliberate escape
 hatch for a clean context mid-day. Everything else about `/new` is unchanged.
 
 A suffixed session does **not** change the logical date, so the next rollover check compares

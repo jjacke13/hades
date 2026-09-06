@@ -180,7 +180,33 @@ it from the filename.
 
 ---
 
-### Task 3: Embeddings re-point, config, docs
+### Task 3: Every live-session-path consumer follows rotation, config, docs
+
+**SCOPE EXPANDED 2026-09-06** after the Task 2 review. The original scope named only the embeddings
+exclusion. There are in fact **three** consumers that cache the live session path, and all three go
+stale on every rollover — same bug class, one fix pattern, so one task owns them:
+
+1. `EmbeddingMemoryModule::live_session_path_` — the originally specced one.
+2. **`session_search`** — its exclusion filename is baked into the subprocess argv at wiring time
+   (`app/agent_wiring.cpp`), so no bus event can move it. After a rollover the tool SKIPS yesterday
+   (which it should now be searching) and RANKS today's live file (which it should be skipping),
+   handing back the current conversation as past-session excerpts. Fix in the house style: have the
+   Arbiter inject the live filename at dispatch and strip any LLM-supplied one — the same pattern
+   `expect_version` already uses for the staleness guard. Alternative: pass only the directory and
+   let the tool exclude the newest-mtime `*.jsonl`.
+3. **`HttpServerModule::session_path_`** — set once in `hades_main`, read on an httplib worker
+   thread, so an overnight `--serve` renders yesterday's transcript as the current one. This is
+   NOT a one-line hook: pump-thread write vs httplib-thread read needs the same mutex treatment and
+   the same TSan gate as (1).
+
+Two notes from the reviewer that bind this task:
+- **Ignore an empty `path` in `SESSION_ROTATED`.** With an empty `sessions_dir` the event carries
+  `{to:"", path:""}`; a subscriber assigning it blindly would DISABLE the exclusion entirely.
+- Module attach order puts `embedding` before `arbiter`, so on a rotating turn recall runs BEFORE
+  the rotation and `SESSION_ROTATED` lands on the next dispatch. Fine for the exclusion — but do not
+  build anything that depends on the opposite order.
+
+### Task 3 (original heading): Embeddings re-point, config, docs
 
 **Files:**
 - Modify: `include/hades/module/embedding_memory_module.h`, `src/apps/embedding_memory/embedding_memory.cpp`
