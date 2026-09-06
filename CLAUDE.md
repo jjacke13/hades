@@ -271,7 +271,16 @@ scripted `FakeApi`, no socket — and the **module** (`SimplexModule`, `src/apps
   `packages.x86_64-linux.simplex-chat-cli` (official v6.5.6 release binary, autoPatchelf'd: zlib/openssl/gmp/
   glibc) on the devShell PATH (`build: bfbfe8a`); the Pi uses the official aarch64 release binary directly.
 
-### SimpleX voice input (shipped 2026-09-05, `feat/simplex-voice`) — a voice note becomes an ordinary turn
+### SimpleX voice input (shipped 2026-09-05, `feat/simplex-voice`) — a voice note becomes an ordinary turn — LIVE-VALIDATED 2026-09-06
+**LIVE-VALIDATED 2026-09-06 (Vaios, first smoke, worked immediately):** SimpleX voice note -> `/freceive`
+-> `rcvFileComplete` -> PPQ `nova-3` transcription -> normal turn -> text reply. **None of the four
+recorded live-smoke risks materialised** — the offered `fileName` carried an accepted audio extension,
+the XFTP file was not refused despite us sending no `approved_relays=on`, `/freceive` did answer
+`rcvFileAccepted`, and the daemon did honour our destination path (we never read `fileSource.filePath`).
+Those four stay documented as untested-in-adverse-conditions rather than proven safe.
+**Observed gap (not a bug):** the transcript is never echoed to the contact, so a mishearing is
+indistinguishable from the agent behaving oddly — same as Telegram. Sending voice BACK is still
+out of scope by design (needs an XFTP upload + a duration-carrying send).
 The SimpleX half of what Telegram got in `feat/voice-stt`: a voice message from an allowlisted contact is
 downloaded, transcribed through the existing **`SttProvider`** seam and driven as a normal gated turn —
 same TurnGate, same `TURN_ORIGIN=human`, same objectives and capability gates as a typed message. Before
