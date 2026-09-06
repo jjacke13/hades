@@ -278,8 +278,12 @@ recorded live-smoke risks materialised** — the offered `fileName` carried an a
 the XFTP file was not refused despite us sending no `approved_relays=on`, `/freceive` did answer
 `rcvFileAccepted`, and the daemon did honour our destination path (we never read `fileSource.filePath`).
 Those four stay documented as untested-in-adverse-conditions rather than proven safe.
-**Observed gap (not a bug):** the transcript is never echoed to the contact, so a mishearing is
-indistinguishable from the agent behaving oddly — same as Telegram. Sending voice BACK is still
+**Transcript echo (added 2026-09-06 after the live smoke):** on a successful transcription the
+module sends `heard: "<transcript>"` to the contact BEFORE driving the turn — a mishearing was
+otherwise indistinguishable from the agent answering oddly, and since accepting an offer sends
+nothing, this is also the first sign the voice message arrived (a turn can take many seconds). An
+empty transcript still replies "didn't catch that" and echoes nothing. Telegram has the same gap
+and did NOT get this. Sending voice BACK is still
 out of scope by design (needs an XFTP upload + a duration-carrying send).
 The SimpleX half of what Telegram got in `feat/voice-stt`: a voice message from an allowlisted contact is
 downloaded, transcribed through the existing **`SttProvider`** seam and driven as a normal gated turn —

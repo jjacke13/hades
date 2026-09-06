@@ -335,10 +335,48 @@ TEST(SimplexModuleVoice, AllowlistedVoiceIsAcceptedThenTranscribedIntoATurn) {
   ASSERT_EQ(stt.paths.size(), 1u);
   EXPECT_EQ(stt.paths[0], dest);
   EXPECT_EQ(user_msg, "hello from voice");                // a normal turn, like a typed one
-  ASSERT_EQ(r.api->sent.size(), 1u);
+  // Two messages now: the transcript echo, THEN the turn reply.
+  ASSERT_EQ(r.api->sent.size(), 2u);
   EXPECT_EQ(r.api->sent[0].first, 2);
-  EXPECT_EQ(r.api->sent[0].second, "echo:hello from voice");
+  EXPECT_EQ(r.api->sent[0].second, "heard: \"hello from voice\"");
+  EXPECT_EQ(r.api->sent[1].first, 2);
+  EXPECT_EQ(r.api->sent[1].second, "echo:hello from voice");
   EXPECT_FALSE(std::filesystem::exists(dest));            // temp deleted on the success path
+}
+
+// The echo must land BEFORE the turn runs: it is the sender's only view of what was heard, and
+// with a slow turn it is also the first sign the voice message arrived at all.
+TEST(SimplexModuleVoice, TranscriptIsEchoedBeforeTheTurnReply) {
+  Rig r;
+  FakeStt stt;
+  stt.transcript = "turn left at the lights";
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(voice_ev(2, "whoever", 12, 4096));
+  r.pump_events();
+  ASSERT_EQ(r.api->received.size(), 1u);
+  const std::string dest = r.api->received[0].second;
+  touch_file(dest);
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 12));
+  r.pump_events();
+  ASSERT_EQ(r.api->sent.size(), 2u);
+  EXPECT_EQ(r.api->sent[0].second, "heard: \"turn left at the lights\"");   // echo first
+  EXPECT_EQ(r.api->sent[1].second, "echo:turn left at the lights");        // then the reply
+}
+
+// A failed transcription must NOT echo — there is nothing heard to show.
+TEST(SimplexModuleVoice, NoEchoWhenTheTranscriptIsEmpty) {
+  Rig r;
+  FakeStt stt;
+  stt.transcript = "";
+  r.mod->set_stt(&stt);
+  r.api->events.push_back(voice_ev(2, "whoever", 13, 4096));
+  r.pump_events();
+  const std::string dest = r.api->received[0].second;
+  touch_file(dest);
+  r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 13));
+  r.pump_events();
+  ASSERT_EQ(r.api->sent.size(), 1u);
+  EXPECT_EQ(r.api->sent[0].second, "Sorry, I didn't catch that.");
 }
 
 TEST(SimplexModuleVoice, NonAllowlistedVoiceNeverCallsReceiveFile) {
@@ -463,7 +501,8 @@ TEST(SimplexModuleVoice, PendingTableIsCappedAndEvictsOldest) {
   r.api->events.push_back(file_ev(SxEvent::Kind::FileDone, 109));   // still pending -> works
   r.pump_events();
   ASSERT_EQ(stt.paths.size(), 1u);
-  EXPECT_EQ(r.api->sent.size(), 1u);
+  ASSERT_EQ(r.api->sent.size(), 2u);                       // transcript echo, then the reply
+  EXPECT_EQ(r.api->sent[0].second, "heard: \"hello from voice\"");
 }
 
 TEST(SimplexModuleVoice, ReceiveFileFailureRepliesAndLeavesNoPendingEntry) {

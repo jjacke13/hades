@@ -603,6 +603,11 @@ void SimplexModule::handle_file_done_(const SxEvent& ev) {
     send_reply_(pv.contact_id, "Sorry, I didn't catch that.");
     return;
   }
+  // Echo what we heard BEFORE the turn runs. Two reasons: a mishearing is otherwise
+  // indistinguishable from the agent answering oddly (the transcript never appears anywhere the
+  // sender can see), and accepting the offer sends nothing, so this is also the first signal that
+  // the voice message arrived at all — the turn itself can take many seconds.
+  send_reply_(pv.contact_id, "heard: \"" + transcript + "\"");
   drive_turn_(pv.contact_id, nlohmann::json(transcript), "USER_MESSAGE");
 }
 
