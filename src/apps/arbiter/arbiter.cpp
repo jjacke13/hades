@@ -216,7 +216,12 @@ std::time_t Arbiter::now_() const { return clock_ ? clock_() : std::time(nullptr
 void Arbiter::maybe_roll_day_() {
   if (session_day_.empty()) return;
   const std::string today = logical_date(now_(), day_cutoff_hour_);
-  if (today == session_day_) return;
+  // `>` not `!=`: ids are YYYY-MM-DD, so lexical order IS chronological order, and a BACKWARDS
+  // clock step must not rotate. Otherwise one NTP correction costs two wipes and two orphan files
+  // (jump back -> rotate, jump forward -> rotate again). The concrete case here is a Raspberry Pi
+  // Zero, which has no RTC: it boots pre-sync computing 1970-01-01, and would name AND flock that
+  // session before the first turn rotated away from it — a junk session per cold boot.
+  if (today <= session_day_) return;
   rotate_session_(today);
   session_day_ = today;
 }

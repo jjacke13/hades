@@ -64,6 +64,29 @@ TEST(SessionSearchTool, RanksByTokenOverlapNewestFirst) {
     EXPECT_EQ(h.value("text", "").find("sunny"), std::string::npos);
 }
 
+// The ordering test above uses two LEGACY-shaped ids, which is exactly why a green suite could
+// coexist with the bug this pins: stems were compared as strings, and at index 4 a date id has
+// '-' (0x2D) while a stamp has a digit (0x30+), so EVERY "2026-09-06" sorted below EVERY
+// "20260601-101010". Scores are small token-overlap counts, so ties are the common case and a few
+// legacy sessions pushed the current day off the end of max_results entirely.
+TEST(SessionSearchTool, ADailyIdSessionOutranksAnOlderLegacyIdSessionOnEqualScore) {
+  const std::string dir = fresh_dir("mixedshape");
+  write_session(dir, "20260601-101010.jsonl", {{"zeta topic", "OLD ANSWER from June"}});
+  write_session(dir, "2026-09-06.jsonl", {{"zeta topic", "NEW ANSWER from today"}});
+  // Make the date-id session unambiguously the newer file; equal scores then decide on mtime.
+  const auto now = std::filesystem::file_time_type::clock::now();
+  std::error_code ec;
+  std::filesystem::last_write_time(dir + "/20260601-101010.jsonl", now - std::chrono::hours(24), ec);
+  std::filesystem::last_write_time(dir + "/2026-09-06.jsonl", now, ec);
+  ASSERT_FALSE(ec);
+  auto j = search({dir}, {{"query", "zeta"}});
+  ASSERT_TRUE(j.value("ok", false)) << j.dump();
+  const auto& hits = j["result"]["hits"];
+  ASSERT_GE(hits.size(), 2u);
+  EXPECT_EQ(hits[0].value("session", ""), "2026-09-06");
+  EXPECT_NE(hits[0].value("text", "").find("NEW ANSWER"), std::string::npos);
+}
+
 // BEHAVIOUR CHANGE (daily sessions): the live-session exclusion travels as the `exclude_session`
 // ARG, injected by the Arbiter per call, instead of argv[2]. A filename pinned into argv at launch
 // cannot follow the daily rollover — it would skip yesterday and rank today's live file.

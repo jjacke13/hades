@@ -151,12 +151,22 @@ int open_locked(const std::string& path) {
   return kHeldByOther;
 }
 
-// Take ownership of the fd we ended up holding (which may be "none": kCannotOpen, or a shared
-// file we could not lock at all). With no handle to give it to, the fd is leaked on purpose =
-// held until the process exits. Assigning through `out` releases whatever it held before, which
-// is how a rotation stops holding the CLOSED previous session locked.
+// Take ownership of the fd we ended up holding. With no handle to give it to, the fd is leaked
+// on purpose = held until the process exits. Assigning through `out` releases whatever it held
+// before, which is how a rotation stops holding the CLOSED previous session locked.
+//
+// A FAILED acquire (kCannotOpen, or the suffix space exhausted) must NOT do that: replacing the
+// live handle with an empty one would drop the lock we still hold while acquiring nothing, so the
+// process would hold ZERO locks on a file it also cannot open — appends then silently no-op.
+// Reachable if sessions_dir permissions change mid-run, or under EMFILE. Keep the old lock and
+// say so; the caller's path is still the one it asked for.
 void hand_over(hades::SessionLock* out, int fd) {
-  if (out) *out = hades::SessionLock(fd < 0 ? -1 : fd);
+  if (!out) return;
+  if (fd < 0) {
+    std::cerr << "hades: could not lock the session file; keeping the previous lock\n";
+    return;
+  }
+  *out = hades::SessionLock(fd);
 }
 }  // namespace
 
@@ -191,10 +201,22 @@ std::string lock_session_file(const std::string& path, OnHeld on_held, SessionLo
   // not paranoia: two hades booting together both see the same free suffix before either has
   // created it, and the loser must take the next one instead of silently sharing.
   const std::string dir = p.parent_path().empty() ? std::string(".") : p.parent_path().string();
+  // Diverting off an ALREADY-suffixed path (a rotation landing on "2026-09-07-1") must not stack
+  // into "2026-09-07-1-1": strip one trailing -N so every sibling of a day shares one stem.
+  // Matched STRICTLY as YYYY-MM-DD-N and nothing else — a naive "last dash followed by digits"
+  // test would eat the date's own last dash ("2026-09-07" -> "2026-09") and a legacy stem's
+  // ("20260601-101010" -> "20260601"), inventing collisions instead of avoiding them.
+  std::string base = p.stem().string();
+  if (base.size() > 11 && base[4] == '-' && base[7] == '-' && base[10] == '-' &&
+      base.find_first_not_of("0123456789", 11) == std::string::npos &&
+      base.find_first_not_of("0123456789", 0) == 4 &&
+      base.find_first_not_of("0123456789", 5) == 7 &&
+      base.find_first_not_of("0123456789", 8) == 10)
+    base.erase(10);
   std::string alt = path;
   int alt_fd = -1;
   for (int tries = 0; tries < 16; ++tries) {
-    const std::string cand = unique_fresh_path(dir, p.stem().string());
+    const std::string cand = unique_fresh_path(dir, base);
     if (cand == path) break;  // suffix space exhausted (10k files) — nothing free to divert to
     if (const int fd = open_locked(cand); fd >= 0) {
       alt = cand;

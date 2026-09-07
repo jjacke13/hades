@@ -1040,6 +1040,32 @@ TEST(Arbiter, NoSessionDayNeverRotates) {
   EXPECT_EQ(jsonl_lines(dir + "/bare.jsonl").size(), 4u);            // one file, still appended to
 }
 
+// A BACKWARDS clock step must not rotate. One NTP correction would otherwise cost two wipes and
+// two orphan files (jump back -> rotate, jump forward -> rotate again). Concretely: a Raspberry Pi
+// Zero has no RTC, so it boots pre-sync believing it is 1970 and would name and flock that session.
+TEST(Arbiter, ABackwardsClockStepDoesNotRotate) {
+  const std::string dir = fresh_dir("dayroll_backwards");
+  Blackboard bb; Arbiter a; a.on_attach(bb);
+  int rotations = 0;
+  bb.subscribe("SESSION_ROTATED", [&](const Entry&) { ++rotations; });
+  std::time_t now = local_at(2026, 9, 6, 12, 0);
+  a.set_clock([&] { return now; });
+  a.set_day_cutoff_hour(4);
+  a.set_session_dir(dir);
+  a.set_session_path(dir + "/2026-09-06.jsonl");
+  a.set_session_day("2026-09-06");
+  bb.post("USER_MESSAGE", "one", "chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",1}}, "llm"); bb.pump();
+  now = local_at(2026, 9, 4, 12, 0);                       // clock jumps BACK two days
+  bb.post("USER_MESSAGE", "two", "chat"); bb.pump();
+  bb.post("LLM_RESPONSE", {{"text","ok"},{"epoch",2}}, "llm"); bb.pump();
+  EXPECT_EQ(rotations, 0);
+  EXPECT_EQ(a.history_size(), 4u);                         // nothing wiped
+  now = local_at(2026, 9, 7, 12, 0);                       // and forward again: one rotation only
+  bb.post("USER_MESSAGE", "three", "chat"); bb.pump();
+  EXPECT_EQ(rotations, 1);
+}
+
 // Compaction's sidecar follows the rotation: on_session_summary derives both its session-id guard
 // and the sidecar path from session_path_, which rotation moved, so the new day's summary is
 // written next to the NEW jsonl, is found there on resume, and yesterday's sidecar is untouched.

@@ -42,9 +42,16 @@ std::set<std::string> tokens_of(const std::string& s) {
 
 struct Hit {
   std::size_t score;
-  std::string session;  // file stem — timestamp ids sort lexically = chronologically
+  std::string session;  // file stem
   std::size_t turn;
   std::string text;
+  // Two id shapes coexist on disk (legacy "20260601-101010" and daily "2026-09-06"), and
+  // comparing stems ranks EVERY legacy session above EVERY daily one: at index 4 a date has "-"
+  // (0x2D) and a stamp has a digit (0x30+). Scores here are small token-overlap counts, so ties
+  // are the common case, and with a few legacy sessions the current day falls off the end of
+  // max_results entirely. Order by mtime instead — the same fix, for the same reason, as
+  // resolve_session_path's newest-session branch in src/core/session.cpp; keep the two together.
+  std::filesystem::file_time_type mtime;
 };
 }  // namespace
 
@@ -108,6 +115,9 @@ int main(int argc, char** argv) {
         if (!live.empty() && it->path().filename().string() == live) continue;  // live session
         ++searched;
         const std::string stem = it->path().stem().string();
+        std::error_code mec;
+        auto mtime = it->last_write_time(mec);
+        if (mec) mtime = std::filesystem::file_time_type::min();   // unreadable -> sorts oldest
         std::size_t idx = 0;
         for (const auto& t : hades::extract_session_turns(it->path().string())) {
           const auto utok = tokens_of(t.text);
@@ -116,14 +126,15 @@ int main(int argc, char** argv) {
             if (utok.count(q)) ++score;
           if (score > 0) {
             std::string text = t.text.substr(0, kUnitTruncate);
-            hits.push_back({score, stem, idx, std::move(text)});
+            hits.push_back({score, stem, idx, std::move(text), mtime});
           }
           ++idx;
         }
       }
       std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
         if (a.score != b.score) return a.score > b.score;      // best overlap first
-        if (a.session != b.session) return a.session > b.session;  // newer session first
+        if (a.mtime != b.mtime) return a.mtime > b.mtime;      // newer session first (by mtime)
+        if (a.session != b.session) return a.session > b.session;  // determinism on equal mtime
         return a.turn > b.turn;                                // later turn first
       });
       if (hits.size() > max_results) hits.resize(max_results);
